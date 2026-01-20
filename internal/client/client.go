@@ -184,9 +184,7 @@ func (c *Client) Lease() lease.Client {
 
 // initializeDomainClients creates concrete domain clients that use the mux.
 // This is called after a successful connection.
-// TODO: Replace with concrete implementations once domain impl packages exist.
 func (c *Client) initializeDomainClients() {
-	// Placeholder: in the real implementation, each domain client is
-	// initialized with a reference to the mux so it can send/receive frames.
-	// For now, these are left as nil; the real implementations will populate them.
+	c.domainClients.kv = kv.NewClient(c.mux)
+	// TODO: Initialize remaining domain clients (notice, stream, queue, rpc, lease)
 }
