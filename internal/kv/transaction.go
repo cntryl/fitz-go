@@ -20,9 +20,6 @@ type KVPair struct {
 type ReadTx interface {
 	Get(ctx context.Context, key []byte) ([]byte, bool, error)
 	Scan(ctx context.Context, query []byte, limit uint32) (iter.Iterator[KVPair], error)
-
-	Commit(ctx context.Context) error
-	Rollback(ctx context.Context) error
 }
 
 // Tx is a read/write transaction. It embeds ReadTx and adds mutation methods.
@@ -32,16 +29,6 @@ type Tx interface {
 	Insert(ctx context.Context, key []byte, value []byte) error
 	Delete(ctx context.Context, key []byte) error
 	DeleteRange(ctx context.Context, startKey []byte, endKey []byte) (int, error)
-}
-
-// Client provides transaction-based key-value operations only. All data
-// interactions MUST occur through transactions returned by Begin/BeginRead.
-// Convenience helpers were intentionally removed to avoid accidental
-// non-transactional use.
-type Client interface {
-	// Begin opens a read/write transaction scoped to the provided route.
-	Begin(ctx context.Context, route string) (Tx, error)
-
-	// BeginRead opens a read-only transaction scoped to the provided route.
-	BeginRead(ctx context.Context, route string) (ReadTx, error)
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
 }
