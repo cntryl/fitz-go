@@ -1,0 +1,16 @@
+# Binaries for programs and plugins
+/bin/
+
+# Vendor directory
+/vendor/
+
+# Test binary, coverage
+coverage.out
+*.test
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Go workspace
+pkg/
