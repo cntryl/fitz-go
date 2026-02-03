@@ -98,7 +98,7 @@ func (f *fakeWS) ReadMessage() ([]byte, error) {
 }
 
 func (f *fakeWS) Read(p []byte) (int, error) { return 0, io.EOF }
-func (f *fakeWS) Close() error                   { close(f.messages); return nil }
+func (f *fakeWS) Close() error               { close(f.messages); return nil }
 
 // TestMux_WebSocketEncodeDecode_HeaderIncluded verifies that WebSocket writes
 // include the frame header (type|flags|channel) and CONNECT wraps token in TagToken TLV.
