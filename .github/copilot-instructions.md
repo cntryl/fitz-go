@@ -39,6 +39,15 @@
 - Domain interface packages should not assert implementation behavior. When adding tests for a concrete implementation (in an implementation package), follow the testing conventions below and prefer the `NewNoop()` pattern in the implementation if a no-op is useful for test scaffolding.
 - Integration tests that intentionally cover multiple behaviours belong under `test/` and must document why they are broader (name and top comment).
 
+### Assertion style (require/assert)
+- Use `github.com/stretchr/testify/require` and `github.com/stretchr/testify/assert` consistently.
+  - **require** for fatal preconditions (e.g., setup errors, required responses) — use when the test cannot continue.
+  - **assert** for non-fatal, behavior-verification checks (e.g., value equality, boolean conditions) so multiple assertions can run in a single test.
+- Avoid calling `t.Fatal`/`t.Fatalf` from background goroutines. Instead:
+  - Use an `errCh := make(chan error, 1)` and send errors from goroutines back to the main test goroutine, then `require.NoError(t, <-errCh)` in the main test body.
+  - Prefer `require` for checking the channel result immediately after the operation.
+- Use `require` for preconditions and `assert` for postconditions in a consistent order.
+
 ### Reviewer checklist (use in PRs) 🧾
 - [ ] Test names follow the naming convention and are descriptive.
 - [ ] Each test focuses on a single behavior.

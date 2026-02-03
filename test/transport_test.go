@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldConnectViaTCPGivenValidAddressWhenTCPTransportUsed verifies
@@ -21,15 +22,11 @@ func TestShouldConnectViaTCPGivenValidAddressWhenTCPTransportUsed(t *testing.T) 
 	err := f.Connect(ctx)
 
 	// Assert
-	if err != nil {
-		t.Fatalf("TCP connection failed: %v (expected successful connection per AC-CONN-001)", err)
-	}
+	require.NoError(t, err, "expected successful TCP connection (AC-CONN-001)")
 
 	// Verify client is accessible and not nil.
 	client := f.Client()
-	if client == nil {
-		t.Fatal("expected non-nil client after successful connection")
-	}
+	require.NotNil(t, client, "expected non-nil client after successful connection")
 }
 
 // TestShouldConnectViaWebSocketGivenValidAddressWhenWebSocketTransportUsed

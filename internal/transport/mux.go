@@ -117,6 +117,13 @@ const (
 	FrameTypeAck       uint8 = 2
 	FrameTypeErr       uint8 = 3
 	FrameTypeHeartbeat uint8 = 0xFE
+	// FrameTypeResp is the standard response frame type used by data domains.
+	FrameTypeResp uint8 = 11
+)
+
+// Well-known channel IDs used for multiplexing domain traffic.
+const (
+	ChannelLease uint32 = 4
 )
 
 // readLoop decodes frames and publishes them onto m.inCh. Exits when context

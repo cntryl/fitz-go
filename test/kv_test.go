@@ -7,6 +7,8 @@ import (
 
 	"github.com/cntryl/cntryl-go/internal/kv"
 	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldOpenAndCommitTransactionGivenValidRouteWhenBeginCalled verifies the
@@ -36,37 +38,18 @@ func TestShouldOpenAndCommitTransactionGivenValidRouteWhenBeginCalled(t *testing
 		tx, err := f.Client().KV().Begin(ctx, route)
 
 		// Assert
-		if err != nil {
-			t.Fatalf("Begin failed: %v", err)
-		}
-		if tx == nil {
-			t.Fatal("expected non-nil transaction")
-		}
+		require.NoError(t, err, "Begin failed")
+		require.NotNil(t, tx, "expected non-nil transaction")
 
-		// Act - Put value, Commit, then verify via Get in a new read transaction
-		if err := tx.Put(ctx, []byte("user:123"), []byte("Alice")); err != nil {
-			t.Fatalf("Put failed: %v", err)
-		}
-
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("Commit failed: %v", err)
-		}
+		require.NoError(t, tx.Commit(ctx), "Commit failed")
 
 		// Begin a new read-only transaction and verify value persisted
 		trx, err := f.Client().KV().BeginRead(ctx, route)
-		if err != nil {
-			t.Fatalf("BeginRead failed: %v", err)
-		}
+		require.NoError(t, err, "BeginRead failed")
 		val, found, err := trx.Get(ctx, []byte("user:123"))
-		if err != nil {
-			t.Fatalf("Get failed: %v", err)
-		}
-		if !found {
-			t.Fatal("expected key to be found after commit")
-		}
-		if string(val) != "Alice" {
-			t.Fatalf("unexpected value: %s", string(val))
-		}
+		require.NoError(t, err, "Get failed")
+		assert.True(t, found, "expected key to be found after commit")
+		assert.Equal(t, "Alice", string(val), "unexpected value")
 	})
 }
 

@@ -191,7 +191,8 @@ func (c *Client) Lease() lease.Client {
 // This is called after a successful connection.
 func (c *Client) initializeDomainClients() {
 	c.domainClients.kv = kv.NewClient(c.mux)
-	// TODO: Initialize remaining domain clients (notice, stream, queue, rpc, lease)
+	// Initialize lease client; other domains initialized as implemented.
+	c.domainClients.lease = lease.NewClient(c.mux)
 }
 
 // sendConnect sends the CONNECT frame with JWT token per CLIENT_SPEC.md.
