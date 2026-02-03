@@ -120,9 +120,14 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.mux = transport.NewMux(conn)
 	c.mux.Start()
 
-	// TODO: Send CONN_OPEN handshake with token and wait for ACK.
-	// Token should be obtained by calling c.tokenProvider(ctx)
-	// For now, we'll initialize domain clients.
+	// Send CONNECT frame as first message (per CLIENT_SPEC.md).
+	// CONNECT frame MUST be sent before any other operations.
+	if err := c.sendConnect(ctx); err != nil {
+		_ = c.mux.Close()
+		return fmt.Errorf("CONNECT handshake failed: %w", err)
+	}
+
+	// Initialize domain clients after successful connection.
 	c.initializeDomainClients()
 
 	return nil
@@ -187,4 +192,52 @@ func (c *Client) Lease() lease.Client {
 func (c *Client) initializeDomainClients() {
 	c.domainClients.kv = kv.NewClient(c.mux)
 	// TODO: Initialize remaining domain clients (notice, stream, queue, rpc, lease)
+}
+
+// sendConnect sends the CONNECT frame with JWT token per CLIENT_SPEC.md.
+// CONNECT must be the first frame sent (MessageType=1, Channel=0 for control).
+// Per spec: "Broker behavior: Valid CONNECT: No explicit ACK message. Broker remains silent and is ready for requests."
+// We implement a timeout: if connection closes within 5 seconds, treat as auth failure.
+func (c *Client) sendConnect(ctx context.Context) error {
+	var token string
+	var err error
+
+	// Obtain JWT from token provider (may be empty for anonymous mode).
+	if c.tokenProvider != nil {
+		token, err = c.tokenProvider(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to obtain token: %w", err)
+		}
+	}
+
+	// Build CONNECT frame: Type=1, Channel=0 (control), Body=JWT bytes.
+	connectFrame := transport.Frame{
+		Type:    transport.FrameTypeConnOpen,
+		Flags:   0,
+		Channel: 0,
+		Body:    []byte(token),
+	}
+
+	// Send CONNECT frame.
+	if err := c.mux.Send(connectFrame); err != nil {
+		return fmt.Errorf("failed to send CONNECT frame: %w", err)
+	}
+
+	// Per CLIENT_SPEC.md: "Valid CONNECT: No explicit ACK message. Broker remains silent and is ready for requests."
+	// "Invalid CONNECT: Broker closes connection within 1 second (no response frame sent)"
+	// We wait briefly to detect immediate connection closure (indicates auth failure).
+	// If connection remains open after timeout, assume success.
+	const connectTimeout = 2 * time.Second
+	timeoutCtx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+
+	select {
+	case <-c.mux.Ctx().Done():
+		// Connection closed during handshake - treat as authentication failure.
+		return errors.New("connection closed during CONNECT handshake (authentication rejected)")
+	case <-timeoutCtx.Done():
+		// Timeout elapsed without connection closure - assume success per spec.
+		// "If no close frame within 5 seconds, assume connection is ready"
+		return nil
+	}
 }

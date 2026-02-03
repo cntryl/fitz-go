@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -167,8 +168,38 @@ func (m *Mux) writeLoop() {
 }
 
 // encodeFrame writes a single frame in the canonical format.
-// Format: length(u32 BE) = len(type+flags+channel+body), type(u8), flags(u8), channel(u32 BE), body...
+// For TCP transport (length-prefixed): length(u32 BE) = len(type+flags+channel+body), type(u8), flags(u8), channel(u32 BE), body...
+// For WebSocket transport (binary frames): send type+flags+channel+body as a single binary message (no length prefix).
 func (m *Mux) encodeFrame(f Frame) error {
+	// Detect WebSocket-style connection if the underlying reader exposes ReadMessage().
+	if _, ok := m.rw.(interface{ ReadMessage() ([]byte, error) }); ok {
+		// WebSocket path: each binary message MUST include the top-level frame header
+		// type(u8) | flags(u8) | channel(u32 BE) followed by the body (TLV payload).
+		var chBuf [4]byte
+		binary.BigEndian.PutUint32(chBuf[:], f.Channel)
+		header := []byte{f.Type, f.Flags, chBuf[0], chBuf[1], chBuf[2], chBuf[3]}
+
+		if f.Type == FrameTypeConnOpen {
+			// For CONNECT, wrap provided token bytes in TagToken TLV when present.
+			if len(f.Body) == 0 {
+				// Empty body -> send header only.
+				_, err := m.rw.Write(header)
+				return err
+			}
+			e := NewTLVEncoder()
+			e.AddBytes(TagToken, f.Body)
+			payload := append(header, e.Encode()...)
+			_, err := m.rw.Write(payload)
+			return err
+		}
+
+		// Default: write header + body.
+		payload := append(header, f.Body...)
+		_, err := m.rw.Write(payload)
+		return err
+	}
+
+	// TCP (length-prefixed) path
 	bufLen := 1 + 1 + 4 + len(f.Body)
 	var lenBuf [4]byte
 	binary.BigEndian.PutUint32(lenBuf[:], uint32(bufLen))
@@ -181,12 +212,31 @@ func (m *Mux) encodeFrame(f Frame) error {
 	mParts = append(mParts, chBuf[:]...)
 	mParts = append(mParts, f.Body...)
 	_, err := m.rw.Write(mParts)
+	fmt.Printf("[mux] tcp write: len=%d payload=%x\n", len(mParts), mParts)
 	return err
 }
 
 // decodeFrame reads and parses a single frame. Returns an error on EOF or
 // protocol errors.
 func (m *Mux) decodeFrame() (Frame, error) {
+	// WebSocket path: read a whole message if supported by underlying conn.
+	if wsReader, ok := m.rw.(interface{ ReadMessage() ([]byte, error) }); ok {
+		data, err := wsReader.ReadMessage()
+		if err != nil {
+			return Frame{}, err
+		}
+		if len(data) < 6 { // type(1) + flags(1) + channel(4)
+			return Frame{}, errors.New("invalid frame length")
+		}
+		f := Frame{
+			Type:    data[0],
+			Flags:   data[1],
+			Channel: binary.BigEndian.Uint32(data[2:6]),
+			Body:    append([]byte(nil), data[6:]...),
+		}
+		return f, nil
+	}
+
 	var lenBuf [4]byte
 	if _, err := io.ReadFull(m.r, lenBuf[:]); err != nil {
 		return Frame{}, err

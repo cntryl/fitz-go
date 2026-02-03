@@ -26,6 +26,19 @@ const (
 	ChannelKV       uint32 = 6 // extended for KV domain
 )
 
+// Transport-agnostic wire codes for KV ops (per CLIENT_SPEC.md: 100+)
+const (
+	KVBegin       uint8 = 100
+	KVCommit      uint8 = 101
+	KVRollback    uint8 = 102
+	KVGet         uint8 = 103
+	KVPut         uint8 = 104
+	KVInsert      uint8 = 105
+	KVDelete      uint8 = 106
+	KVDeleteRange uint8 = 107
+	KVScan        uint8 = 108
+)
+
 // Frame type constants (per Fitz protocol).
 const (
 	FrameTypeReq  uint8 = 10 // Request (RPC-like)

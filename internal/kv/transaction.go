@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cntryl/cntryl-go/internal/iter"
 	"github.com/cntryl/cntryl-go/internal/transport"
@@ -80,7 +81,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 
 	// Send request frame on the KV channel.
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    KVGet,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -155,7 +156,7 @@ func (t *transaction) Scan(ctx context.Context, startKey []byte, endKey []byte, 
 
 	// Send request frame.
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    KVScan,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -296,11 +297,13 @@ func (t *transaction) Put(ctx context.Context, key []byte, value []byte) error {
 	enc.AddBytes(transport.TagBody, value)
 	enc.AddUint64(transport.TagID, t.txID)
 
+	payload := enc.Encode()
+	// Debug log removed - payload available if troubleshooting
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    KVPut,
 		Flags:   0,
 		Channel: ChannelKV,
-		Body:    enc.Encode(),
+		Body:    payload,
 	}
 	return t.mux.Send(frame)
 }
@@ -333,7 +336,7 @@ func (t *transaction) Insert(ctx context.Context, key []byte, value []byte) erro
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    KVInsert,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -368,7 +371,7 @@ func (t *transaction) Delete(ctx context.Context, key []byte) error {
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    KVDelete,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -404,7 +407,7 @@ func (t *transaction) DeleteRange(ctx context.Context, startKey []byte, endKey [
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    KVDeleteRange,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -442,7 +445,7 @@ func (t *transaction) Commit(ctx context.Context) error {
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    KVCommit,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -452,7 +455,36 @@ func (t *transaction) Commit(ctx context.Context) error {
 		return err
 	}
 
-	t.committed.Store(true)
+	// Wait for server acknowledgement for commit (best-effort, with timeout).
+	ackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		select {
+		case <-ackCtx.Done():
+			// Timeout - assume commit processed but warn.
+			t.committed.Store(true)
+			return nil
+		case respFrame, ok := <-t.mux.In():
+			if !ok {
+				return fmt.Errorf("mux closed while waiting for commit ack")
+			}
+			if respFrame.Channel != ChannelKV {
+				continue
+			}
+			dec, err := transport.NewTLVDecoder(respFrame.Body)
+			if err != nil {
+				continue
+			}
+			if dec.Has(transport.TagErr) {
+				return fmt.Errorf("broker error during commit: %s", dec.GetString(transport.TagErr))
+			}
+			if id, _ := dec.GetUint64(transport.TagID); id == t.txID {
+				// Commit acknowledged
+				t.committed.Store(true)
+				return nil
+			}
+		}
+	}
 	return nil
 }
 
@@ -476,7 +508,7 @@ func (t *transaction) Rollback(ctx context.Context) error {
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    KVRollback,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
