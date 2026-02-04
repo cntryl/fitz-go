@@ -111,6 +111,17 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 				return nil, false, fmt.Errorf("decode response: %w", err)
 			}
 
+			// Debug: log received TLV entries and ID
+			fmt.Printf("[kv.tx] resp body hex=%x\n", respFrame.Body)
+			for k, v := range dec.All() {
+				fmt.Printf("[kv.tx] TLV tag=%02x len=%d\n", k, len(v))
+			}
+			if dec.Has(transport.TagID) {
+				if id, err := dec.GetUint64(transport.TagID); err == nil {
+					fmt.Printf("[kv.tx] received resp id=%d for request=%d\n", id, requestID)
+				}
+			}
+
 			// Check for error response.
 			if dec.Has(transport.TagErr) {
 				errMsg := dec.GetString(transport.TagErr)

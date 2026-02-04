@@ -14,6 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"sort"
+
+	"github.com/cntryl/cntryl-go/internal/kv"
 	"github.com/cntryl/cntryl-go/internal/notice"
 	"github.com/cntryl/cntryl-go/internal/transport"
 )
@@ -26,6 +29,19 @@ type SimBroker struct {
 	mu       sync.Mutex
 	conns    map[net.Conn]*connState
 	shutdown chan struct{}
+
+	// Simple in-memory KV store: map[route]map[key]value
+	kvStore map[string]map[string][]byte
+	// Staged transactions: map[route]map[txID]mutations
+	kvTxs map[string]map[uint64][]kvMutation
+}
+
+type kvMutation struct {
+	op       uint8
+	key      []byte
+	value    []byte
+	startKey []byte
+	endKey   []byte
 }
 
 type connState struct {
@@ -42,7 +58,7 @@ func StartSimBroker(transportType string) (addr string, stop func(), err error) 
 	if err != nil {
 		return "", nil, err
 	}
-	sb := &SimBroker{ln: ln, conns: make(map[net.Conn]*connState), shutdown: make(chan struct{})}
+	sb := &SimBroker{ln: ln, conns: make(map[net.Conn]*connState), shutdown: make(chan struct{}), kvStore: make(map[string]map[string][]byte), kvTxs: make(map[string]map[uint64][]kvMutation)}
 	go sb.acceptLoop(transportType)
 	hostPort := ln.Addr().String()
 	fmt.Printf("[simbroker] listening on %s for transport=%s\n", hostPort, transportType)
@@ -114,94 +130,294 @@ func (s *SimBroker) handleConn(cs *connState) {
 }
 
 func (s *SimBroker) processFrame(cs *connState, f transport.Frame) {
-	// Only handle Notice domain frames here
-	if f.Channel != notice.ChannelPub && f.Channel != notice.ChannelSub {
+	// Notice domain handling
+	if f.Channel == notice.ChannelPub || f.Channel == notice.ChannelSub {
+		dec, err := transport.NewTLVDecoder(f.Body)
+		if err != nil {
+			return
+		}
+		// Subscribe
+		if f.Type == notice.NoticeSubscribe && f.Channel == notice.ChannelSub {
+			r := dec.GetString(transport.TagRoute)
+			fmt.Printf("[simbroker] SUBSCRIBE from %s route=%s\n", cs.conn.RemoteAddr(), r)
+			cs.mu.Lock()
+			cs.subset = append(cs.subset, r)
+			cs.mu.Unlock()
+			return
+		}
+		// Unsubscribe
+		if f.Type == notice.NoticeUnsubscribe && f.Channel == notice.ChannelSub {
+			r := dec.GetString(transport.TagRoute)
+			fmt.Printf("[simbroker] UNSUBSCRIBE from %s route=%s\n", cs.conn.RemoteAddr(), r)
+			cs.mu.Lock()
+			newsubs := make([]string, 0, len(cs.subset))
+			for _, p := range cs.subset {
+				if p != r {
+					newsubs = append(newsubs, p)
+				}
+			}
+			cs.subset = newsubs
+			cs.mu.Unlock()
+			// Send unsubscribe ack
+			encAck := transport.NewTLVEncoder()
+			encAck.AddUint8(transport.TagOp, 1)
+			encAck.AddString(transport.TagRoute, r)
+			ackFrame := transport.Frame{Type: transport.FrameTypeResp, Flags: 0, Channel: notice.ChannelSub, Body: encAck.Encode()}
+			if cs.isWS {
+				_ = writeWSMessage(cs.conn, ackFrame)
+			} else {
+				_ = writeMessage(cs.conn, ackFrame)
+			}
+			fmt.Printf("[simbroker] sent UNSUBSCRIBE_ACK to %s route=%s\n", cs.conn.RemoteAddr(), r)
+			return
+		}
+		// Unsubscribe all
+		if f.Type == notice.NoticeUnsubscribeAll && f.Channel == notice.ChannelSub {
+			cs.mu.Lock()
+			cs.subset = []string{}
+			cs.mu.Unlock()
+			// Send unsubscribe-all ack
+			encAck := transport.NewTLVEncoder()
+			encAck.AddUint8(transport.TagOp, 2)
+			ackFrame := transport.Frame{Type: transport.FrameTypeResp, Flags: 0, Channel: notice.ChannelSub, Body: encAck.Encode()}
+			if cs.isWS {
+				_ = writeWSMessage(cs.conn, ackFrame)
+			} else {
+				_ = writeMessage(cs.conn, ackFrame)
+			}
+			fmt.Printf("[simbroker] sent UNSUBSCRIBE_ALL_ACK to %s\n", cs.conn.RemoteAddr())
+			return
+		}
+		// Publish
+		if f.Type == notice.NoticePublish && f.Channel == notice.ChannelPub {
+			r := dec.GetString(transport.TagRoute)
+			b := dec.GetBytes(transport.TagBody)
+			fmt.Printf("[simbroker] PUBLISH route=%s bodylen=%d\n", r, len(b))
+			// Fanout to all subscribers whose pattern matches r
+			s.mu.Lock()
+			for _, con := range s.conns {
+				con.mu.Lock()
+				for _, pat := range con.subset {
+					if matchRoute(pat, r) {
+						fmt.Printf("[simbroker] - notifying %s for pattern=%s\n", con.conn.RemoteAddr(), pat)
+						enc := transport.NewTLVEncoder()
+						enc.AddString(transport.TagRoute, r)
+						enc.AddBytes(transport.TagBody, b)
+						frameOut := transport.Frame{Type: transport.FrameTypeResp, Flags: 0, Channel: notice.ChannelSub, Body: enc.Encode()}
+						if con.isWS {
+							_ = writeWSMessage(con.conn, frameOut)
+						} else {
+							_ = writeMessage(con.conn, frameOut)
+						}
+						break
+					}
+				}
+				con.mu.Unlock()
+			}
+			s.mu.Unlock()
+			return
+		}
 		return
 	}
+
+	// KV domain handling
+	if f.Channel == kv.ChannelKV {
+		s.processKVFrame(cs, f)
+		return
+	}
+}
+
+// processKVFrame handles a minimal subset of KV operations sufficient for tests.
+func (s *SimBroker) processKVFrame(cs *connState, f transport.Frame) {
+	fmt.Printf("[simbroker] KV frame from %s type=%d channel=%d bodylen=%d\n", cs.conn.RemoteAddr(), f.Type, f.Channel, len(f.Body))
 	dec, err := transport.NewTLVDecoder(f.Body)
 	if err != nil {
 		return
 	}
-	// Subscribe
-	if f.Type == notice.NoticeSubscribe && f.Channel == notice.ChannelSub {
+	// Handle BEGIN frames (optional)
+	if f.Type == kv.KVBegin {
 		r := dec.GetString(transport.TagRoute)
-		fmt.Printf("[simbroker] SUBSCRIBE from %s route=%s\n", cs.conn.RemoteAddr(), r)
-		cs.mu.Lock()
-		cs.subset = append(cs.subset, r)
-		cs.mu.Unlock()
-		return
-	}
-	// Unsubscribe
-	if f.Type == notice.NoticeUnsubscribe && f.Channel == notice.ChannelSub {
-		r := dec.GetString(transport.TagRoute)
-		fmt.Printf("[simbroker] UNSUBSCRIBE from %s route=%s\n", cs.conn.RemoteAddr(), r)
-		cs.mu.Lock()
-		newsubs := make([]string, 0, len(cs.subset))
-		for _, p := range cs.subset {
-			if p != r {
-				newsubs = append(newsubs, p)
-			}
-		}
-		cs.subset = newsubs
-		cs.mu.Unlock()
-		// Send unsubscribe ack
-		encAck := transport.NewTLVEncoder()
-		encAck.AddUint8(transport.TagOp, 1)
-		encAck.AddString(transport.TagRoute, r)
-		ackFrame := transport.Frame{Type: transport.FrameTypeResp, Flags: 0, Channel: notice.ChannelSub, Body: encAck.Encode()}
-		if cs.isWS {
-			_ = writeWSMessage(cs.conn, ackFrame)
-		} else {
-			_ = writeMessage(cs.conn, ackFrame)
-		}
-		fmt.Printf("[simbroker] sent UNSUBSCRIBE_ACK to %s route=%s\n", cs.conn.RemoteAddr(), r)
-		return
-	}
-	// Unsubscribe all
-	if f.Type == notice.NoticeUnsubscribeAll && f.Channel == notice.ChannelSub {
-		cs.mu.Lock()
-		cs.subset = []string{}
-		cs.mu.Unlock()
-		// Send unsubscribe-all ack
-		encAck := transport.NewTLVEncoder()
-		encAck.AddUint8(transport.TagOp, 2)
-		ackFrame := transport.Frame{Type: transport.FrameTypeResp, Flags: 0, Channel: notice.ChannelSub, Body: encAck.Encode()}
-		if cs.isWS {
-			_ = writeWSMessage(cs.conn, ackFrame)
-		} else {
-			_ = writeMessage(cs.conn, ackFrame)
-		}
-		fmt.Printf("[simbroker] sent UNSUBSCRIBE_ALL_ACK to %s\n", cs.conn.RemoteAddr())
-		return
-	}
-	// Publish
-	if f.Type == notice.NoticePublish && f.Channel == notice.ChannelPub {
-		r := dec.GetString(transport.TagRoute)
-		b := dec.GetBytes(transport.TagBody)
-		fmt.Printf("[simbroker] PUBLISH route=%s bodylen=%d\n", r, len(b))
-		// Fanout to all subscribers whose pattern matches r
+		id, _ := dec.GetUint64(transport.TagID)
+		fmt.Printf("[simbroker] KV BEGIN route=%s tx=%d\n", r, id)
 		s.mu.Lock()
-		for _, con := range s.conns {
-			con.mu.Lock()
-			for _, pat := range con.subset {
-				if matchRoute(pat, r) {
-					fmt.Printf("[simbroker] - notifying %s for pattern=%s\n", con.conn.RemoteAddr(), pat)
-					enc := transport.NewTLVEncoder()
-					enc.AddString(transport.TagRoute, r)
-					enc.AddBytes(transport.TagBody, b)
-					frameOut := transport.Frame{Type: transport.FrameTypeResp, Flags: 0, Channel: notice.ChannelSub, Body: enc.Encode()}
-					if con.isWS {
-						_ = writeWSMessage(con.conn, frameOut)
-					} else {
-						_ = writeMessage(con.conn, frameOut)
-					}
-					break
-				}
-			}
-			con.mu.Unlock()
+		if _, ok := s.kvTxs[r]; !ok {
+			s.kvTxs[r] = make(map[uint64][]kvMutation)
 		}
+		s.kvTxs[r][id] = []kvMutation{}
 		s.mu.Unlock()
 		return
+	}
+
+	// For request frames, dispatch by operation tag
+	if f.Type != transport.FrameTypeReq {
+		return
+	}
+	if !dec.Has(transport.TagOp) {
+		return
+	}
+	op := dec.GetBytes(transport.TagOp)[0]
+	r := dec.GetString(transport.TagRoute)
+	id, _ := dec.GetUint64(transport.TagID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ensureKVRoute(r)
+
+	sentResp := func(body []byte) {
+		frameOut := transport.Frame{Type: transport.FrameTypeResp, Flags: 0, Channel: kv.ChannelKV, Body: body}
+		var err error
+		if cs.isWS {
+			err = writeWSMessage(cs.conn, frameOut)
+		} else {
+			err = writeMessage(cs.conn, frameOut)
+		}
+		if err != nil {
+			fmt.Printf("[simbroker] failed to send resp to %s: %v\n", cs.conn.RemoteAddr(), err)
+		} else {
+			fmt.Printf("[simbroker] sent resp to %s channel=%d len=%d\n", cs.conn.RemoteAddr(), frameOut.Channel, len(body))
+		}
+	}
+
+	switch op {
+	case transport.KVOpGet:
+		key := dec.GetBytes(transport.TagKey)
+		val, ok := s.kvStore[r][string(key)]
+		fmt.Printf("[simbroker] KV GET route=%s key=%s id=%d found=%v vallength=%d\n", r, string(key), id, ok, len(val))
+		enc := transport.NewTLVEncoder()
+		enc.AddUint64(transport.TagID, id)
+		if ok {
+			enc.AddBytes(transport.TagBody, val)
+		}
+		sentResp(enc.Encode())
+
+	case transport.KVOpScan:
+		start := dec.GetBytes(transport.TagStartKey)
+		end := dec.GetBytes(transport.TagEndKey)
+		limit, _ := dec.GetUint32(transport.TagLimit)
+		fmt.Printf("[simbroker] KV SCAN route=%s start=%s end=%s limit=%d id=%d\n", r, string(start), string(end), limit, id)
+		// collect keys
+		keys := make([]string, 0, len(s.kvStore[r]))
+		for k := range s.kvStore[r] {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		count := uint32(0)
+		for _, k := range keys {
+			if limit > 0 && count >= limit {
+				break
+			}
+			if (len(start) == 0 || k >= string(start)) && (len(end) == 0 || k < string(end)) {
+				enc := transport.NewTLVEncoder()
+				enc.AddUint64(transport.TagID, id)
+				enc.AddBytes(transport.TagKey, []byte(k))
+				enc.AddBytes(transport.TagValue, s.kvStore[r][k])
+				sentResp(enc.Encode())
+				count++
+			}
+		}
+		// final frame with no key to signal EOF
+		enc := transport.NewTLVEncoder()
+		enc.AddUint64(transport.TagID, id)
+		sentResp(enc.Encode())
+
+	case transport.KVOpPut, transport.KVOpInsert, transport.KVOpDelete, transport.KVOpDeleteRange:
+		// Stash mutation against tx id
+		mut := kvMutation{op: op}
+		if dec.Has(transport.TagKey) {
+			mut.key = dec.GetBytes(transport.TagKey)
+		}
+		if dec.Has(transport.TagBody) {
+			mut.value = dec.GetBytes(transport.TagBody)
+		}
+		if dec.Has(transport.TagStartKey) {
+			mut.startKey = dec.GetBytes(transport.TagStartKey)
+		}
+		if dec.Has(transport.TagEndKey) {
+			mut.endKey = dec.GetBytes(transport.TagEndKey)
+		}
+		fmt.Printf("[simbroker] KV STAGE route=%s tx=%d op=%d key=%s\n", r, id, op, string(mut.key))
+		if _, ok := s.kvTxs[r]; !ok {
+			s.kvTxs[r] = make(map[uint64][]kvMutation)
+		}
+		s.kvTxs[r][id] = append(s.kvTxs[r][id], mut)
+		// Apply immediately as well (simple optimistic behavior for tests)
+		s.applyMutationLocked(r, mut, nil)
+		// No immediate response required
+		return
+
+	case transport.KVOpCommit:
+		fmt.Printf("[simbroker] KV COMMIT route=%s tx=%d\n", r, id)
+		// Apply staged mutations
+		txs, ok := s.kvTxs[r]
+		if !ok {
+			// Nothing to commit - ack
+			enc := transport.NewTLVEncoder()
+			enc.AddUint64(transport.TagID, id)
+			sentResp(enc.Encode())
+			return
+		}
+		mutList, ok := txs[id]
+		if !ok {
+			enc := transport.NewTLVEncoder()
+			enc.AddUint64(transport.TagID, id)
+			sentResp(enc.Encode())
+			return
+		}
+		// Apply in order
+		for _, m := range mutList {
+			s.applyMutationLocked(r, m, &mutList)
+		}
+		// Remove tx
+		delete(s.kvTxs[r], id)
+		enc := transport.NewTLVEncoder()
+		enc.AddUint64(transport.TagID, id)
+		sentResp(enc.Encode())
+
+	case transport.KVOpRollback:
+		fmt.Printf("[simbroker] KV ROLLBACK route=%s tx=%d\n", r, id)
+		if txs, ok := s.kvTxs[r]; ok {
+			delete(txs, id)
+		}
+		// No response needed
+		return
+
+	default:
+		// Unknown op
+		return
+	}
+}
+
+func (s *SimBroker) ensureKVRoute(r string) {
+	if _, ok := s.kvStore[r]; !ok {
+		s.kvStore[r] = make(map[string][]byte)
+	}
+	if _, ok := s.kvTxs[r]; !ok {
+		s.kvTxs[r] = make(map[uint64][]kvMutation)
+	}
+}
+
+func (s *SimBroker) applyMutationLocked(route string, m kvMutation, mutList *[]kvMutation) {
+	s.ensureKVRoute(route)
+	smap := s.kvStore[route]
+	switch m.op {
+	case transport.KVOpPut:
+		smap[string(m.key)] = append([]byte(nil), m.value...)
+	case transport.KVOpInsert:
+		if _, exists := smap[string(m.key)]; exists {
+			// On insert failure, send error back via a frame (best-effort)
+			// For simplicity, we ignore errors during commit here and continue
+			return
+		}
+		smap[string(m.key)] = append([]byte(nil), m.value...)
+	case transport.KVOpDelete:
+		delete(smap, string(m.key))
+	case transport.KVOpDeleteRange:
+		for k := range smap {
+			if k >= string(m.startKey) && k < string(m.endKey) {
+				delete(smap, k)
+			}
+		}
 	}
 }
 

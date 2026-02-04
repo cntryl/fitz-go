@@ -146,6 +146,8 @@ func (m *Mux) readLoop() {
 			// on error (EOF/closed connection), exit gracefully
 			return
 		}
+		// Debug: log received frame for visibility during simulator-driven tests
+		fmt.Printf("[mux] rx frame: type=%d channel=%d bodylen=%d\n", f.Type, f.Channel, len(f.Body))
 		select {
 		case m.inCh <- f:
 		case <-m.ctx.Done():

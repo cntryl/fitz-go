@@ -98,14 +98,23 @@ func (f *TestFixture) SetBrokerAddr(addr string) {
 	f.brokerAddr = addr
 }
 
-// StartBrokerIfNeeded returns a broker address to use for tests. If the environment
-// variable FITZ_BROKER_ADDR is set, it returns that address (and a no-op stop
-// function). Otherwise it starts an in-process simulator broker for the requested
-// transport and returns its address and stop function.
+// StartBrokerIfNeeded returns a broker address to use for tests. Behavior:
+//   - If the environment variable FITZ_BROKER_ADDR is set, it returns that address
+//     (and a no-op stop function).
+//   - Otherwise it starts an in-process simulator broker for the requested transport
+//     and returns its address and stop function.
+//
+// If FITZ_REQUIRE_REAL_BROKER is set to "true", this function will fail with an
+// error when FITZ_BROKER_ADDR is not provided. Use this to run tests strictly
+// against your real broker (e.g., when validating broker implementation).
 func StartBrokerIfNeeded(transport TransportType) (addr string, stop func(), err error) {
 	// If a broker address is explicit in env, prefer that
 	if b := os.Getenv("FITZ_BROKER_ADDR"); b != "" {
 		return b, func() {}, nil
+	}
+	// If tests require a real broker, fail fast instead of starting a simulator
+	if os.Getenv("FITZ_REQUIRE_REAL_BROKER") == "true" || os.Getenv("FITZ_REQUIRE_REAL_BROKER") == "TRUE" {
+		return "", nil, fmt.Errorf("FITZ_REQUIRE_REAL_BROKER set but FITZ_BROKER_ADDR not provided")
 	}
 	return StartSimBroker(string(transport))
 }

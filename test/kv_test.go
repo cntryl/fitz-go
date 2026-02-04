@@ -21,6 +21,12 @@ func TestShouldOpenAndCommitTransactionGivenValidRouteWhenBeginCalled(t *testing
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
+
 		require.NoError(t, f.Connect(ctx))
 
 		realm := f.UniqueRealm()
@@ -39,6 +45,8 @@ func TestShouldOpenAndCommitTransactionGivenValidRouteWhenBeginCalled(t *testing
 		require.NoError(t, err, "Begin failed")
 		require.NotNil(t, tx, "expected non-nil transaction")
 
+		// Put a value, commit, then verify it persisted
+		require.NoError(t, tx.Put(ctx, []byte("user:123"), []byte("Alice")))
 		require.NoError(t, tx.Commit(ctx), "Commit failed")
 
 		// Begin a new read-only transaction and verify value persisted
@@ -61,6 +69,12 @@ func TestShouldReadValueGivenExistingKeyWhenGetCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
+
 		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
@@ -77,6 +91,12 @@ func TestShouldReturnNotFoundGivenNonExistentKeyWhenGetCalled(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
 
 		require.NoError(t, f.Connect(ctx))
 
@@ -95,6 +115,12 @@ func TestShouldWriteValueGivenValidKeyWhenPutCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
+
 		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
@@ -111,6 +137,12 @@ func TestShouldInsertNewKeyGivenNonExistentKeyWhenInsertCalled(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
 
 		require.NoError(t, f.Connect(ctx))
 
@@ -129,6 +161,12 @@ func TestShouldFailGivenExistingKeyWhenInsertCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
+
 		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
@@ -145,6 +183,12 @@ func TestShouldDeleteKeyGivenExistingKeyWhenDeleteCalled(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
 
 		require.NoError(t, f.Connect(ctx))
 
@@ -163,6 +207,12 @@ func TestShouldScanKeysInOrderGivenRangeWhenScanCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
+
 		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
@@ -180,6 +230,12 @@ func TestShouldRollbackChangesGivenActiveTransactionWhenRollbackCalled(t *testin
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
+
 		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
@@ -196,6 +252,12 @@ func TestShouldIsolateTransactionsGivenConcurrentAccessWhenMultipleTransactions(
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		// Start a broker (prefer env FITZ_BROKER_ADDR, otherwise simulator)
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
+		require.NoError(t, err)
+		f.SetBrokerAddr(addr)
+		f.AddCleanup(func() { stop() })
 
 		require.NoError(t, f.Connect(ctx))
 

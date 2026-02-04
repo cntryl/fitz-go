@@ -21,6 +21,18 @@ import (
 
 // Client implements the fitz.Client interface with connection management,
 // retry logic, and mux-based domain routing.
+type domainMux struct {
+	send func(transport.Frame) error
+	in   <-chan transport.Frame
+	ctx  context.Context
+}
+
+func (d *domainMux) Send(f transport.Frame) error { return d.send(f) }
+func (d *domainMux) In() <-chan transport.Frame   { return d.in }
+func (d *domainMux) Ctx() context.Context         { return d.ctx }
+
+// Client implements the fitz.Client interface with connection management,
+// retry logic, and mux-based domain routing.
 type Client struct {
 	addr          string
 	tokenProvider fitz.TokenProvider
@@ -30,6 +42,9 @@ type Client struct {
 	closed        bool
 	retryBackoff  time.Duration
 	maxRetries    int
+	// per-domain inbound channels (dispatcher will route frames here)
+	kvIn chan transport.Frame
+
 	domainClients struct {
 		notice   notice.Client
 		stream   stream.Client
@@ -122,6 +137,24 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.mux = transport.NewMux(conn)
 	c.mux.Start()
 
+	// Initialize per-domain channels and start dispatcher before creating
+	// domain clients so they can receive frames from their dedicated channels.
+	c.kvIn = make(chan transport.Frame, 128)
+	go func() {
+		for f := range c.mux.In() {
+			switch f.Channel {
+			case kv.ChannelKV:
+				select {
+				case c.kvIn <- f:
+				default:
+					// Drop if receiver overloaded to avoid blocking the dispatcher
+				}
+			default:
+				// Other domains currently read directly from c.mux.In().
+			}
+		}
+	}()
+
 	// Send CONNECT frame as first message (per CLIENT_SPEC.md).
 	// CONNECT frame MUST be sent before any other operations.
 	if err := c.sendConnect(ctx); err != nil {
@@ -199,7 +232,8 @@ func (c *Client) Lease() lease.Client {
 // initializeDomainClients creates concrete domain clients that use the mux.
 // This is called after a successful connection.
 func (c *Client) initializeDomainClients() {
-	c.domainClients.kv = kv.NewClient(c.mux)
+	// KV client uses a domain-specific mux adapter to avoid competing readers on the shared mux
+	c.domainClients.kv = kv.NewClient(&domainMux{send: c.mux.Send, in: c.kvIn, ctx: c.mux.Ctx()})
 	// Initialize lease client; other domains initialized as implemented.
 	c.domainClients.lease = lease.NewClient(c.mux)
 	// Notice domain client

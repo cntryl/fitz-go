@@ -19,14 +19,18 @@ type Client interface {
 	BeginRead(ctx context.Context, route Route) (ReadTx, error)
 }
 
-// client is a concrete implementation of Client using the transport mux.
+// client is a concrete implementation of Client using the provided mux provider.
+// Using the muxProvider interface allows domain-specific adapters to be injected
+// (e.g., per-domain channels to avoid competing readers on the shared mux).
 type client struct {
-	mux *transport.Mux
+	mux muxProvider
 	mu  sync.RWMutex
 }
 
-// NewClient creates a new KV domain client backed by the transport mux.
-func NewClient(mux *transport.Mux) Client {
+// NewClient creates a new KV domain client backed by the provided mux provider.
+// Accepting the muxProvider interface allows the top-level client to inject a
+// domain-specific channel that avoids competing readers on the shared mux.
+func NewClient(mux muxProvider) Client {
 	return &client{
 		mux: mux,
 	}
