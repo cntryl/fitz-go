@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/cntryl-go/internal/kv"
+	"github.com/cntryl/cntryl-go/internal/domains/kv"
 	"github.com/cntryl/cntryl-go/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/cntryl/cntryl-go/internal/transport"
+	"github.com/cntryl/cntryl-go/internal/core/transport"
 )
 
 // Client provides transaction-based key-value operations only. All data

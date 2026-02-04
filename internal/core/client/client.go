@@ -8,19 +8,18 @@ import (
 	"sync"
 	"time"
 
-	fitz "github.com/cntryl/cntryl-go"
-	"github.com/cntryl/cntryl-go/internal/kv"
-	"github.com/cntryl/cntryl-go/internal/lease"
-	"github.com/cntryl/cntryl-go/internal/notice"
-	"github.com/cntryl/cntryl-go/internal/queue"
-	"github.com/cntryl/cntryl-go/internal/rpc"
-	"github.com/cntryl/cntryl-go/internal/schedule"
-	"github.com/cntryl/cntryl-go/internal/stream"
-	"github.com/cntryl/cntryl-go/internal/transport"
+	"github.com/cntryl/cntryl-go/internal/core/transport"
+	"github.com/cntryl/cntryl-go/internal/core/types"
+	"github.com/cntryl/cntryl-go/internal/domains/kv"
+	"github.com/cntryl/cntryl-go/internal/domains/lease"
+	"github.com/cntryl/cntryl-go/internal/domains/notice"
+	"github.com/cntryl/cntryl-go/internal/domains/queue"
+	"github.com/cntryl/cntryl-go/internal/domains/rpc"
+	"github.com/cntryl/cntryl-go/internal/domains/schedule"
+	"github.com/cntryl/cntryl-go/internal/domains/stream"
 )
 
-// Client implements the fitz.Client interface with connection management,
-// retry logic, and mux-based domain routing.
+// domainMux adapts the transport mux for domain clients.
 type domainMux struct {
 	send func(transport.Frame) error
 	in   <-chan transport.Frame
@@ -31,12 +30,19 @@ func (d *domainMux) Send(f transport.Frame) error { return d.send(f) }
 func (d *domainMux) In() <-chan transport.Frame   { return d.in }
 func (d *domainMux) Ctx() context.Context         { return d.ctx }
 
-// Client implements the fitz.Client interface with connection management,
-// retry logic, and mux-based domain routing.
+// FramerFactory creates a Framer from a raw net.Conn.
+type FramerFactory func(net.Conn) transport.Framer
+
+// Client implements connection management, retry logic, and mux-based domain routing.
 type Client struct {
 	addr          string
-	tokenProvider fitz.TokenProvider
+	tokenProvider types.TokenProvider
 	dialer        Dialer
+	// framerFactory allows callers to supply a transport framer for the
+	// underlying net.Conn produced by the Dialer. If nil, the client uses
+	// a sensible default (TCP framer). Prefer providing a factory to avoid
+	// transport convenience logic in the client.
+	framerFactory FramerFactory
 	mux           *transport.Mux
 	mu            sync.RWMutex
 	closed        bool
@@ -64,7 +70,7 @@ type Client struct {
 //
 // TokenProvider is called during connection to obtain JWT for authentication.
 // Pass nil for unauthenticated connections.
-func NewClient(addr string, tokenProvider fitz.TokenProvider, opts ...ClientOption) *Client {
+func NewClient(addr string, tokenProvider types.TokenProvider, opts ...ClientOption) *Client {
 	c := &Client{
 		addr:          addr,
 		tokenProvider: tokenProvider,
@@ -94,6 +100,13 @@ func WithMaxRetries(n int) ClientOption {
 // WithDialer sets a custom dialer (primarily for testing).
 func WithDialer(d Dialer) ClientOption {
 	return func(c *Client) { c.dialer = d }
+}
+
+// WithFramerFactory sets a custom framer factory used to wrap the raw
+// net.Conn returned by the Dialer. This avoids client-side convenience
+// framer construction and delegates transport selection to the caller.
+func WithFramerFactory(f FramerFactory) ClientOption {
+	return func(c *Client) { c.framerFactory = f }
 }
 
 // Connect opens a connection to the broker with exponential backoff retry.
@@ -133,9 +146,18 @@ func (c *Client) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to connect after %d attempts: %w", c.maxRetries+1, err)
 	}
 
-	// Create mux and start loops.
-	c.mux = transport.NewMux(conn)
+	// Create mux and start loops. Use framer factory supplied by caller when present;
+	// otherwise default to TCP framer (legacy behavior).
+	var fr transport.Framer
+	if c.framerFactory != nil {
+		fr = c.framerFactory(conn)
+	} else {
+		fr = transport.NewTCPFramer(conn)
+	}
+	c.mux = transport.NewMux(fr)
 	c.mux.Start()
+	// Notify domain clients that the transport is writable (initial connect).
+	c.mux.FireReconnect()
 
 	// Initialize per-domain channels and start dispatcher before creating
 	// domain clients so they can receive frames from their dedicated channels.

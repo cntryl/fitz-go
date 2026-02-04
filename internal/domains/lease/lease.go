@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cntryl/cntryl-go/internal/transport"
+	"github.com/cntryl/cntryl-go/internal/core/transport"
 )
 
 // Client provides ephemeral exclusive lease primitives.

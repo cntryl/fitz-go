@@ -8,7 +8,8 @@ import (
 	"time"
 
 	fitz "github.com/cntryl/cntryl-go"
-	"github.com/cntryl/cntryl-go/internal/client"
+	"github.com/cntryl/cntryl-go/internal/core/client"
+	"github.com/cntryl/cntryl-go/internal/core/types"
 )
 
 // TestFixture manages broker connections and test lifecycle for integration tests.
@@ -76,7 +77,7 @@ func NewTestFixture(t *testing.T, transport TransportType) *TestFixture {
 func (f *TestFixture) Connect(ctx context.Context) error {
 	f.t.Helper()
 
-	var tokenProvider fitz.TokenProvider
+	var tokenProvider types.TokenProvider
 	if f.authRequired {
 		tokenProvider = func(ctx context.Context) (string, error) {
 			// For auth-enabled mode, generate JWT using client credentials

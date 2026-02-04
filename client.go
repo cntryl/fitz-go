@@ -3,20 +3,19 @@ package fitz
 import (
 	"context"
 
-	"github.com/cntryl/cntryl-go/internal/kv"
-	"github.com/cntryl/cntryl-go/internal/lease"
-	"github.com/cntryl/cntryl-go/internal/notice"
-	"github.com/cntryl/cntryl-go/internal/queue"
-	"github.com/cntryl/cntryl-go/internal/rpc"
-	"github.com/cntryl/cntryl-go/internal/schedule"
-	"github.com/cntryl/cntryl-go/internal/stream"
+	"github.com/cntryl/cntryl-go/internal/core/types"
+	"github.com/cntryl/cntryl-go/internal/domains/kv"
+	"github.com/cntryl/cntryl-go/internal/domains/lease"
+	"github.com/cntryl/cntryl-go/internal/domains/notice"
+	"github.com/cntryl/cntryl-go/internal/domains/queue"
+	"github.com/cntryl/cntryl-go/internal/domains/rpc"
+	"github.com/cntryl/cntryl-go/internal/domains/schedule"
+	"github.com/cntryl/cntryl-go/internal/domains/stream"
 )
 
-// TokenProvider is a function that returns a JWT token for authentication.
-// It is called during connection establishment and reconnection attempts,
-// allowing for token renewal and refresh logic. Return an empty string for
-// unauthenticated connections.
-type TokenProvider func(ctx context.Context) (string, error)
+// TokenProvider is the canonical type for JWT token providers.
+// Re-exported from internal/core/types for public API use.
+type TokenProvider = types.TokenProvider
 
 // Client is the primary top-level Fitz client exposing each domain client.
 // Implementations SHOULD provide a constructor (e.g., NewClient) that accepts:

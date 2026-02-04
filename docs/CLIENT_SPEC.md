@@ -67,7 +67,6 @@ A Fitz client is a **synchronous or asynchronous transport adapter** that:
 7. Exposes a simple, language-native API
 
 **Clients are NOT responsible for:**
-
 - Broker topology or failover
 - Route validation or normalization
 - Domain logic enforcement
@@ -81,18 +80,17 @@ A Fitz client is a **synchronous or asynchronous transport adapter** that:
 
 Use these exact terms. Other terms are forbidden.
 
-|             Term | Definition                                                         | Forbidden Alternatives            |
-| ---------------: | ------------------------------------------------------------------ | --------------------------------- |
-|        **realm** | Isolation boundary for resources within a broker                   | `tenant`, `organization`          |
-|         **area** | Namespace within a realm                                           | `namespace`, `collection`         |
-|     **resource** | Named entity within an area (e.g., table, queue, stream)           | —                                 |
-|        **route** | URI-like string addressing a resource or operation                 | `endpoint`, `path`, `key`         |
-|         **verb** | Operation name (e.g., `GET`, `PUT`, `PUBLISH`)                     | `operation`, `method` (ambiguous) |
-| **route_family** | Numeric partition key for sharding (u64)                           | `shard_id`, `partition_id`        |
-|       **domain** | Service category (kv, queue, notice, stream, rpc, lease, schedule) | —                                 |
+| Term | Definition | Forbidden Alternatives |
+|---:|---|---|
+| **realm** | Isolation boundary for resources within a broker | `tenant`, `organization` |
+| **area** | Namespace within a realm | `namespace`, `collection` |
+| **resource** | Named entity within an area (e.g., table, queue, stream) | — |
+| **route** | URI-like string addressing a resource or operation | `endpoint`, `path`, `key` |
+| **verb** | Operation name (e.g., `GET`, `PUT`, `PUBLISH`) | `operation`, `method` (ambiguous) |
+| **route_family** | Numeric partition key for sharding (u64) | `shard_id`, `partition_id` |
+| **domain** | Service category (kv, queue, notice, stream, rpc, lease, schedule) | — |
 
 **Forbidden terminology in client code:**
-
 - NEVER use `tenant` — use `realm`
 - NEVER use `namespace` — use `area`
 - NEVER use `endpoint` — use `route`
@@ -112,7 +110,6 @@ Fitz supports exactly two transports. Clients MUST implement both identically; b
 - **Use case:** Browsers, long-lived connections
 
 **Constraints:**
-
 - Text frames MUST be rejected
 - Connection close frames MUST be handled gracefully
 - Ping/pong frames MAY be used for keepalive
@@ -127,7 +124,6 @@ Fitz supports exactly two transports. Clients MUST implement both identically; b
 - **Use case:** Low-latency, long-lived, high-throughput
 
 **Constraints:**
-
 - Clients MUST implement buffered reading to handle partial frames
 - Clients MUST validate `length` before allocating (prevent OOM)
 - Clients MUST close connection if length exceeds `max_frame_size`
@@ -155,36 +151,36 @@ WebSocket transport          TCP transport
 Frame payloads consist of one or more **TLV records** concatenated back-to-back.
 
 Each record is:
-
 - **Type** (u16, big-endian):
   - If `type <= 0xFE`: single byte
   - If `type > 0xFE`: escape byte `0xFF` followed by 2-byte big-endian u16
-- **Length** (u32, big-endian): byte count of value
+- **Length** (u16, big-endian): byte count of value (0..=65535)
 - **Value**: exactly `length` bytes
 
 ### Primitive Encodings
 
 All fields use **big-endian** byte order.
 
-| Type          | Encoding                        |
-| ------------- | ------------------------------- |
-| `u8`          | single byte                     |
-| `u16`         | 2 bytes, big-endian             |
-| `u32`         | 4 bytes, big-endian             |
-| `u64`         | 8 bytes, big-endian             |
-| `String`      | `[u32 BE len][UTF-8 bytes]`     |
-| `Bytes`       | `[u32 BE len][raw bytes]`       |
+| Type | Encoding |
+|---|---|
+| `u8` | single byte |
+| `u16` | 2 bytes, big-endian |
+| `u32` | 4 bytes, big-endian |
+| `u64` | 8 bytes, big-endian |
+| `String` | `[u32 BE len][UTF-8 bytes]` |
+| `Bytes` | `[u32 BE len][raw bytes]` |
 | `Optional<T>` | `[u8 present]` + T if present=1 |
-| `UUID`        | 16 raw bytes (no hyphens)       |
+| `UUID` | 16 raw bytes (no hyphens) |
 
 ### Encoding Invariants
 
 Clients MUST:
-
 1. Encode all integers in big-endian byte order
 2. Consume all bytes in request payloads; error if trailing data remains
 3. Encode responses with exact length prefixes
 4. Handle both single-byte and escape-byte MessageTypes identically
+5. **Duplicate TLV tags are NOT permitted.** If a TLV tag appears more than once in a frame the frame **MUST** be treated as malformed and the receiver **MUST** close the connection with a TLV parse error. **Rationale:** Fitz TLV disallows duplicate tags to keep decoding deterministic and to simplify client implementations and conformance testing.
+6. **A single TLV value MUST NOT exceed 65535 bytes (≈64 KiB).** Large payloads MUST be chunked across multiple TLV records or multiple frames/operations.
 
 ---
 
@@ -193,10 +189,37 @@ Clients MUST:
 ## Connection Lifecycle
 
 ### 1. Open Transport
-
 - **WebSocket:** `wss://broker:port/` (TLS recommended)
 - **TCP:** `tcp://broker:port` (TLS recommended)
 - Broker address and credentials must be configured before opening
+
+### Client State Machine
+
+Clients SHOULD implement a simple connection state machine to keep behavior predictable and testable.
+
+States:
+- DISCONNECTED → CONNECTING → AUTHENTICATED → CLOSED
+
+Transitions:
+- DISCONNECTED: initial state
+- CONNECTING: transport open; send CONNECT
+- AUTHENTICATED: CONNECT accepted (no close); ready for domain requests
+- CLOSED: transport closed or unrecoverable error
+
+ASCII diagram:
+
+```
+DISCONNECTED --(open transport)--> CONNECTING --(CONNECT & accepted)--> AUTHENTICATED
+     ^                                            |
+     |                                            v
+     +---------(close / unrecoverable)----------- CLOSED
+```
+
+Notes:
+- Clients MUST handle transport failures and implement exponential backoff on reconnect.
+- Clients MUST follow the single in-flight request rule in AUTHENTICATED state.
+
+---
 
 ### 2. Send CONNECT Record (FIRST MESSAGE)
 
@@ -208,19 +231,25 @@ Value: compact JWT string bytes (UTF-8), NO length prefix
 Length: JWT byte length
 ```
 
-**Example:**
-
+**Example (Authenticated Mode):**
 ```
 [0x01]                    (MessageType=1)
-[0x00 0x00 0x00 0x63]     (Length=99)
+[0x00 0x63]               (Length=99, u16)
 [99 bytes of JWT...]
 ```
 
-**Constraints:**
+**Example (Anonymous Mode - Empty JWT):**
+```
+[0x01]                    (MessageType=1)
+[0x00 0x00]               (Length=0, u16)
+(no JWT bytes)
+```
 
+**Constraints:**
 - CONNECT MUST be first frame sent
-- If CONNECT is missing or malformed, broker closes connection
-- JWT payload MUST be valid UTF-8
+- **Authenticated mode (`FITZ_AUTH_REQUIRED=true`):** JWT required, invalid JWT causes connection close
+- **Anonymous mode (`FITZ_AUTH_REQUIRED=false`):** JWT optional, empty or placeholder accepted
+- JWT payload MUST be valid UTF-8 (if present)
 - Clients SHOULD implement CONNECT timeout (5–10 seconds)
 
 ### 3. Await Broker Confirmation
@@ -228,13 +257,11 @@ Length: JWT byte length
 **Session Confirmation Protocol:**
 
 Broker behavior:
-
 - **Valid CONNECT:** No explicit ACK message. Broker remains silent and is ready for requests.
 - **Invalid CONNECT:** Broker closes connection within 1 second (no response frame sent)
 - **No CONNECT within 10 seconds:** Broker closes connection with graceful shutdown
 
 Clients MUST:
-
 - Wait 5–10 seconds after sending CONNECT before considering it failed
 - If no close frame within 5 seconds, assume connection is ready
 - If connection closes immediately, treat as authentication failure
@@ -243,7 +270,6 @@ Clients MUST:
 **Session State After Successful CONNECT:**
 
 On successful CONNECT, broker creates session and MUST:
-
 - Assign unique session ID (internal use only)
 - Extract JWT claims (realm, areas, scopes)
 - Establish permissions for all subsequent requests
@@ -252,7 +278,6 @@ On successful CONNECT, broker creates session and MUST:
 **Session Cleanup On Disconnect:**
 
 When client disconnects:
-
 - All active subscriptions are dropped
 - All active transactions (KV) are rolled back
 - All active stream sessions are aborted
@@ -263,7 +288,6 @@ When client disconnects:
 **State NOT Restored On Reconnect:**
 
 On reconnect with new CONNECT:
-
 - New session ID issued (previous session ID is invalid)
 - Previous subscriptions, transactions, and worker registrations are NOT recovered
 - Client MUST explicitly re-subscribe, re-begin, or re-register if needed
@@ -272,6 +296,9 @@ On reconnect with new CONNECT:
 
 After successful CONNECT, client may send domain-specific requests.
 
+Important client model constraint:
+- **Clients MUST NOT have more than one in-flight request per connection.** The Fitz protocol is synchronous (request → response). Sending a second request before receiving the response to the first request is undefined behavior and the broker MAY close the connection. Asynchronous deliveries (e.g., `NOTIFY`, RPC worker invocations) are out-of-band and do not count as request responses; clients MUST handle them separately.
+
 ### 5. Receive Responses
 
 Each request receives one response frame. Response format is domain-specific (see domain specs).
@@ -279,13 +306,11 @@ Each request receives one response frame. Response format is domain-specific (se
 ### 6. Close Connection
 
 Clients SHOULD:
-
 - Send WebSocket close frame or TCP FIN gracefully
 - Clean up resources
 - Discard pending requests on abrupt close
 
 Clients MUST:
-
 - Assume connection is closed if transport layer signals close
 - Reconnect if resubscription or state restoration is needed
 
@@ -293,17 +318,36 @@ Clients MUST:
 
 ## Authentication & Security
 
+### Authentication Modes
+
+Fitz brokers support two authentication modes controlled by server configuration:
+
+**1. Authenticated Mode** (`FITZ_AUTH_REQUIRED=true`):
+- JWT authentication is **required** for all connections
+- CONNECT frame MUST include valid JWT
+- Broker validates JWT signature and claims
+- Missing or invalid JWT causes immediate connection close
+
+**2. Anonymous Mode** (`FITZ_AUTH_REQUIRED=false`):
+- JWT authentication is **optional**
+- CONNECT frame MAY include empty JWT or placeholder value
+- Broker assigns default permissions (typically full access to all realms/areas)
+- Useful for development, testing, or trusted internal networks
+
 ### JWT (Authentication Mechanism)
 
-Clients MUST:
-
+**When authentication is required,** clients MUST:
 1. Obtain a JWT from an external authentication service
 2. Pass the compact JWT string in the CONNECT record
 3. Treat JWT as opaque (do not parse or validate server-side)
 4. Resend JWT on reconnect
 
-Clients MUST NOT:
+**When authentication is optional (anonymous mode),** clients MAY:
+- Send empty JWT (zero-length payload)
+- Send placeholder JWT (e.g., "anonymous")
+- Omit JWT field (broker accepts connection without authentication)
 
+Clients MUST NOT:
 - Generate or sign JWTs
 - Validate JWT signatures
 - Cache or reuse JWTs across sessions
@@ -312,8 +356,8 @@ Clients MUST NOT:
 ### Authorization
 
 Authorization is **always server-side**:
-
-- Broker validates JWT claims against route permissions
+- **Authenticated mode:** Broker validates JWT claims against route permissions
+- **Anonymous mode:** Broker uses default permission set (no JWT validation)
 - If client sends unauthorized request, broker returns error
 - Clients MUST NOT attempt local permission checking
 
@@ -322,7 +366,6 @@ Authorization is **always server-side**:
 **Production Deployments (REQUIRED):**
 
 Clients MUST:
-
 - Use `wss://` for WebSocket (never plain `ws://`)
 - Use TLS for TCP (never plain TCP on untrusted networks)
 - Validate server certificate chain against system CA roots
@@ -334,25 +377,25 @@ Clients MUST:
 **Development/Testing (MAY Skip with Explicit Flag):**
 
 Clients MAY accept self-signed or invalid certificates ONLY if:
-
 - Explicitly enabled via configuration flag (e.g., `insecure_skip_verify=true`)
 - User acknowledges security risk in documentation
 - Never default to insecure; require explicit opt-in
 
 Clients MUST NOT:
-
 - Skip certificate validation to "work around" deployment issues
 - Accept expired or revoked certificates without explicit flag
 - Disable hostname verification
 - Accept any certificate in production (must validate chain)
 
+
+
 ## Flow Control & Backpressure
 
 Clients SHOULD implement queueing and backoff:
-
 - Implement configurable write queue with maximum size
 - On queue full, return error to caller (do NOT silently drop)
 - Implement exponential backoff for retries
+- **Server backpressure:** Brokers MAY signal backpressure via rate-limit or backpressure error codes (or an explicit backpressure frame). Clients MUST respect such signals and apply backoff and queue-management strategies.
 
 ---
 
@@ -368,16 +411,15 @@ Routes are **opaque URI-like strings** that address resources and operations.
 
 **Components:**
 
-| Component   | Type   | Example                   | Rules                                                 |
-| ----------- | ------ | ------------------------- | ----------------------------------------------------- |
-| `scheme`    | string | `kv`, `queue`, `notice`   | Identifies domain; MUST match known domain list       |
-| `realm`     | string | `prod`, `tenant-123`      | Opaque to client; case-sensitive                      |
-| `area`      | string | `app`, `system`           | Opaque to client; case-sensitive                      |
-| `resource`  | string | `users`, `orders`         | Opaque to client; may be omitted for admin operations |
-| `operation` | string | `get`, `put`, `subscribe` | Verb; MUST match defined verb set                     |
+| Component | Type | Example | Rules |
+|---|---|---|---|
+| `scheme` | string | `kv`, `queue`, `notice` | Identifies domain; MUST match known domain list |
+| `realm` | string | `prod`, `tenant-123` | Opaque to client; case-sensitive |
+| `area` | string | `app`, `system` | Opaque to client; case-sensitive |
+| `resource` | string | `users`, `orders` | Opaque to client; may be omitted for admin operations |
+| `operation` | string | `get`, `put`, `subscribe` | Verb; MUST match defined verb set |
 
 **Route Examples:**
-
 ```
 kv://prod/app/users/get          # KV read operation
 queue://prod/app/orders/send     # Queue enqueue
@@ -393,7 +435,7 @@ A request is valid **only if**:
 3. The method permits those wildcards
 4. The route depth matches the method's plane
 
-**Violations are protocol errors.** Broker MUST reject; client MUST validate before dispatch.
+**Violations are protocol errors.** Broker MUST reject; clients **MAY** perform local route shape validation for ergonomics, but the broker is authoritative. Clients **MUST** accept broker rejection as the source of truth and MUST NOT rely on local validation as a substitute for server-side checks.
 
 ---
 
@@ -412,7 +454,6 @@ A request is valid **only if**:
 ### KV Domain
 
 **Valid Route Shapes:**
-
 - `kv://{realm}/{area}`
 - `kv://{realm}/{area}/{resource}`
 - `kv://{realm}/{area}/*`
@@ -420,18 +461,18 @@ A request is valid **only if**:
 
 **Method Acceptance:**
 
-| Method           | Accepted Route Shapes                           |
-| ---------------- | ----------------------------------------------- |
-| `LIST`           | `{realm}/{area}`, `{realm}/*/*`                 |
-| `CREATE`         | `{realm}/{area}`                                |
-| `DELETE` (admin) | `{realm}/{area}`                                |
-| `BEGIN`          | `{realm}/{area}/{resource}`                     |
-| `GET`            | `{realm}/{area}/{resource}`                     |
-| `PUT`            | `{realm}/{area}/{resource}`                     |
-| `INSERT`         | `{realm}/{area}/{resource}`                     |
-| `SCAN`           | `{realm}/{area}/{resource}`, `{realm}/{area}/*` |
-| `COMMIT`         | `{realm}/{area}/{resource}`                     |
-| `ROLLBACK`       | `{realm}/{area}/{resource}`                     |
+| Method | Accepted Route Shapes |
+|--------|--------|
+| `LIST` | `{realm}/{area}`, `{realm}/*/*` |
+| `CREATE` | `{realm}/{area}` |
+| `DELETE` (admin) | `{realm}/{area}` |
+| `BEGIN` | `{realm}/{area}/{resource}` |
+| `GET` | `{realm}/{area}/{resource}` |
+| `PUT` | `{realm}/{area}/{resource}` |
+| `INSERT` | `{realm}/{area}/{resource}` |
+| `SCAN` | `{realm}/{area}/{resource}`, `{realm}/{area}/*` |
+| `COMMIT` | `{realm}/{area}/{resource}` |
+| `ROLLBACK` | `{realm}/{area}/{resource}` |
 
 **Note:** `LIST`, `CREATE`, and `DELETE` (admin) operations are broker-internal management operations not currently exposed in the client wire protocol. Clients should focus on data operations: BEGIN, GET, PUT, INSERT, SCAN, COMMIT, ROLLBACK.
 
@@ -440,25 +481,23 @@ A request is valid **only if**:
 ### Stream Domain
 
 **Valid Route Shapes:**
-
 - `stream://{realm}/{area}/{resource}`
 - `stream://{realm}/{area}/*`
 - `stream://{realm}/*/*`
 
 **Method Acceptance:**
 
-| Method           | Accepted Route Shapes                                          |
-| ---------------- | -------------------------------------------------------------- |
-| `LIST`           | `{realm}/{area}`, `{realm}/*/*`                                |
-| `CREATE`         | `{realm}/{area}`                                               |
-| `DELETE` (admin) | `{realm}/{area}`                                               |
-| `BEGIN`          | `{realm}/{area}/{resource}`                                    |
-| `APPEND`         | `{realm}/{area}/{resource}`                                    |
-| `READ`           | `{realm}/{area}/{resource}`, `{realm}/{area}/*`, `{realm}/*/*` |
-| `SUBSCRIBE`      | `{realm}/{area}/{resource}`, `{realm}/{area}/*`, `{realm}/*/*` |
-| `UNSUBSCRIBE`    | same as `SUBSCRIBE`                                            |
-| `COMMIT`         | `{realm}/{area}/{resource}`                                    |
-
+| Method | Accepted Route Shapes |
+|--------|--------|
+| `LIST` | `{realm}/{area}`, `{realm}/*/*` |
+| `CREATE` | `{realm}/{area}` |
+| `DELETE` (admin) | `{realm}/{area}` |
+| `BEGIN` | `{realm}/{area}/{resource}` |
+| `APPEND` | `{realm}/{area}/{resource}` |
+| `READ` | `{realm}/{area}/{resource}`, `{realm}/{area}/*`, `{realm}/*/*` |
+| `SUBSCRIBE` | `{realm}/{area}/{resource}`, `{realm}/{area}/*`, `{realm}/*/*` |
+| `UNSUBSCRIBE` | same as `SUBSCRIBE` |
+| `COMMIT` | `{realm}/{area}/{resource}` |
 **Note:** `LIST`, `CREATE`, and `DELETE` (admin) operations are broker-internal management operations not currently exposed in the client wire protocol. Clients should focus on stream operations: BEGIN, APPEND, READ, SUBSCRIBE, UNSUBSCRIBE, COMMIT, ROLLBACK.
 
 | `ROLLBACK` | `{realm}/{area}/{resource}` |
@@ -468,7 +507,6 @@ A request is valid **only if**:
 ### Queue Domain
 
 **Valid Route Shapes:**
-
 - `queue://{realm}/{area}`
 - `queue://{realm}/{area}/{resource}`
 - `queue://{realm}/{area}/*`
@@ -476,32 +514,31 @@ A request is valid **only if**:
 
 **Method Acceptance:**
 
-| Method     | Accepted Route Shapes                           |
-| ---------- | ----------------------------------------------- |
-| `LIST`     | `{realm}/{area}`, `{realm}/*/*`                 |
-| `ENQUEUE`  | `{realm}/{area}/{resource}`                     |
-| `RESERVE`  | `{realm}/{area}/{resource}`, `{realm}/{area}/*` |
-| `COMPLETE` | `{realm}/{area}/{resource}`                     |
-| `EXTEND`   | `{realm}/{area}/{resource}`                     |
+| Method | Accepted Route Shapes |
+|--------|--------|
+| `LIST` | `{realm}/{area}`, `{realm}/*/*` |
+| `ENQUEUE` | `{realm}/{area}/{resource}` |
+| `RESERVE` | `{realm}/{area}/{resource}`, `{realm}/{area}/*` |
+| `COMPLETE` | `{realm}/{area}/{resource}` |
+| `EXTEND` | `{realm}/{area}/{resource}` |
 
-**Note:** `LIST`, `CREATE`, `DELETE` (admin), and `SEND`/`RECEIVE`/`RELEASE` operations are either broker-internal or legacy verbs. Clients should use: ENQUEUE, RESERVE, COMPLETE, EXTEND as documented in the wire format section.source}`|
-|`RELEASE`|`{realm}/{area}/{resource}`|
-|`EXTEND`|`{realm}/{area}/{resource}` |
+**Note:** `LIST`, `CREATE`, `DELETE` (admin), and `SEND`/`RECEIVE`/`RELEASE` operations are either broker-internal or legacy verbs. Clients should use: ENQUEUE, RESERVE, COMPLETE, EXTEND as documented in the wire format section.source}` |
+| `RELEASE` | `{realm}/{area}/{resource}` |
+| `EXTEND` | `{realm}/{area}/{resource}` |
 
 ---
 
 ### Schedule Domain
 
 **Valid Route Shapes:**
-
 - `schedule://{realm}/{area}`
 - `schedule://{realm}/{area}/{resource}`
 - `schedule://{realm}/{area}/*`
 
 **Method Acceptance:**
 
-| Method | Accepted Route Sh/{resource}`|
-|`CANCEL`|`{realm}/{area}/{resource}` |
+| Method | Accepted Route Sh/{resource}` |
+| `CANCEL` | `{realm}/{area}/{resource}` |
 
 **Note:** `DELETE` (admin) and `TRIGGER` operations are broker-internal. Clients should use: CREATE, CANCEL, LIST as documented in the wire format section. LIST is fully documented with streaming protocol.
 | `PUT` | `{realm}/{area}/{resource}` |
@@ -513,15 +550,14 @@ A request is valid **only if**:
 ### Lease Domain
 
 **Valid Route Shapes:**
-
 - `lease://{realm}/{area}/{resource}`
 
 **Method Acceptance:**
 
-| Method    | Accepted Route Shapes       |
-| --------- | --------------------------- |
+| Method | Accepted Route Shapes |
+|--------|--------|
 | `ACQUIRE` | `{realm}/{area}/{resource}` |
-| `RENEW`   | `{realm}/{area}/{resource}` |
+| `RENEW` | `{realm}/{area}/{resource}` |
 | `RELEASE` | `{realm}/{area}/{resource}` |
 
 ---
@@ -529,35 +565,33 @@ A request is valid **only if**:
 ### Notice Domain
 
 **Valid Route Shapes:**
-
 - `notice://{realm}/{area}/{resource}`
 - `notice://{realm}/{area}/*`
 - `notice://{realm}/*/*`
 
 **Method Acceptance:**
 
-| Method        | Accepted Route Shapes                                          |
-| ------------- | -------------------------------------------------------------- |
-| `SUBSCRIBE`   | `{realm}/{area}/{resource}`, `{realm}/{area}/*`, `{realm}/*/*` |
-| `UNSUBSCRIBE` | same as `SUBSCRIBE`                                            |
-| `PUBLISH`     | `{realm}/{area}/{resource}`                                    |
+| Method | Accepted Route Shapes |
+|--------|--------|
+| `SUBSCRIBE` | `{realm}/{area}/{resource}`, `{realm}/{area}/*`, `{realm}/*/*` |
+| `UNSUBSCRIBE` | same as `SUBSCRIBE` |
+| `PUBLISH` | `{realm}/{area}/{resource}` |
 
 ---
 
 ### RPC Domain
 
 **Valid Route Shapes:**
-
 - `rpc://{realm}/{area}/{resource}`
 - `rpc://{realm}/{area}/*`
 
 **Method Acceptance:**
 
-| Method        | Accepted Route Shapes                           |
-| ------------- | ----------------------------------------------- |
-| `CALL`        | `{realm}/{area}/{resource}`                     |
-| `SUBSCRIBE`   | `{realm}/{area}/{resource}`, `{realm}/{area}/*` |
-| `UNSUBSCRIBE` | same as `SUBSCRIBE`                             |
+| Method | Accepted Route Shapes |
+|--------|--------|
+| `CALL` | `{realm}/{area}/{resource}` |
+| `SUBSCRIBE` | `{realm}/{area}/{resource}`, `{realm}/{area}/*` |
+| `UNSUBSCRIBE` | same as `SUBSCRIBE` |
 
 ---
 
@@ -566,7 +600,6 @@ A request is valid **only if**:
 **If a route shape is not explicitly listed for a method, it is invalid.**
 
 This specification is the **single source of truth** for:
-
 - Broker validation
 - SDK conformance testing
 - Permission enforcement
@@ -603,45 +636,45 @@ Clients MUST:
 
 ### Verb Set (All Domains)
 
-| Domain   | Verb               | Wire Code | Plane         | Notes                   |
-| -------- | ------------------ | --------: | ------------- | ----------------------- |
-| KV       | BEGIN              |       100 | Data          | Start transaction       |
-| KV       | COMMIT             |       101 | Data          | Finalize transaction    |
-| KV       | ROLLBACK           |       102 | Data          | Abort transaction       |
-| KV       | GET                |       103 | Data          | Read key                |
-| KV       | PUT                |       104 | Data          | Write key               |
-| KV       | INSERT             |       105 | Data          | Insert (fail if exists) |
-| KV       | DELETE             |       106 | Data          | Delete key              |
-| KV       | DELETE_RANGE       |       107 | Data          | Delete key range        |
-| KV       | SCAN               |       108 | Data          | Scan keys in range      |
-| Stream   | BEGIN              |       200 | Data          | Start session           |
-| Stream   | APPEND             |       201 | Data          | Append record           |
-| Stream   | COMMIT             |       202 | Data          | Finalize session        |
-| Stream   | ROLLBACK           |       203 | Data          | Abort session           |
-| Stream   | READ               |       204 | Data          | Read range              |
-| Stream   | LAST               |       205 | Data          | Get last record         |
-| Stream   | GET_METADATA       |       206 | Data          | Get metadata            |
-| Notice   | PUBLISH            |       100 | Data          | Publish message         |
-| Notice   | SUBSCRIBE          |       101 | Data          | Subscribe to pattern    |
-| Notice   | UNSUBSCRIBE        |       102 | Data          | Unsubscribe             |
-| Notice   | UNSUBSCRIBE_ALL    |       103 | Data          | Clear all subscriptions |
-| Notice   | NOTIFY             |       104 | Server→Client | Delivery                |
-| Queue    | ENQUEUE            |       200 | Data          | Add message             |
-| Queue    | RESERVE            |       202 | Data          | Lease message(s)        |
-| Queue    | EXTEND             |       203 | Data          | Extend lease            |
-| Queue    | COMPLETE           |       204 | Data          | Mark complete           |
-| RPC      | SUBSCRIBE_WORKER   |       300 | Data          | Register worker         |
-| RPC      | UNSUBSCRIBE_WORKER |       301 | Data          | Unregister worker       |
-| RPC      | REQUEST            |       302 | Data          | Send request            |
-| RPC      | RESPONSE           |       303 | Data          | Send response           |
-| RPC      | ACK                |       304 | Data          | Acknowledge             |
-| Lease    | ACQUIRE            |       400 | Data          | Acquire lease           |
-| Lease    | RENEW              |       401 | Data          | Extend lease            |
-| Lease    | RELEASE            |       402 | Data          | Release lease           |
-| Lease    | QUERY              |       403 | Data          | Query lease status      |
-| Schedule | CREATE             |       500 | Data          | Create schedule         |
-| Schedule | CANCEL             |       501 | Data          | Cancel schedule         |
-| Schedule | LIST               |       502 | Data          | List schedules          |
+| Domain | Verb | Wire Code | Plane | Notes |
+|---|---|---:|---|---|
+| KV | BEGIN | 100 | Data | Start transaction |
+| KV | COMMIT | 101 | Data | Finalize transaction |
+| KV | ROLLBACK | 102 | Data | Abort transaction |
+| KV | GET | 103 | Data | Read key |
+| KV | PUT | 104 | Data | Write key |
+| KV | INSERT | 105 | Data | Insert (fail if exists) |
+| KV | DELETE | 106 | Data | Delete key |
+| KV | DELETE_RANGE | 107 | Data | Delete key range |
+| KV | SCAN | 108 | Data | Scan keys in range |
+| Stream | BEGIN | 200 | Data | Start session |
+| Stream | APPEND | 201 | Data | Append record |
+| Stream | COMMIT | 202 | Data | Finalize session |
+| Stream | ROLLBACK | 203 | Data | Abort session |
+| Stream | READ | 204 | Data | Read range |
+| Stream | LAST | 205 | Data | Get last record |
+| Stream | GET_METADATA | 206 | Data | Get metadata |
+| Notice | PUBLISH | 100 | Data | Publish message |
+| Notice | SUBSCRIBE | 101 | Data | Subscribe to pattern |
+| Notice | UNSUBSCRIBE | 102 | Data | Unsubscribe |
+| Notice | UNSUBSCRIBE_ALL | 103 | Data | Clear all subscriptions |
+| Notice | NOTIFY | 104 | Server→Client | Delivery |
+| Queue | ENQUEUE | 200 | Data | Add message |
+| Queue | RESERVE | 202 | Data | Lease message(s) |
+| Queue | EXTEND | 203 | Data | Extend lease |
+| Queue | COMPLETE | 204 | Data | Mark complete |
+| RPC | SUBSCRIBE_WORKER | 300 | Data | Register worker |
+| RPC | UNSUBSCRIBE_WORKER | 301 | Data | Unregister worker |
+| RPC | REQUEST | 302 | Data | Send request |
+| RPC | RESPONSE | 303 | Data | Send response |
+| RPC | ACK | 304 | Data | Acknowledge |
+| Lease | ACQUIRE | 400 | Data | Acquire lease |
+| Lease | RENEW | 401 | Data | Extend lease |
+| Lease | RELEASE | 402 | Data | Release lease |
+| Lease | QUERY | 403 | Data | Query lease status |
+| Schedule | CREATE | 500 | Data | Create schedule |
+| Schedule | CANCEL | 501 | Data | Cancel schedule |
+| Schedule | LIST | 502 | Data | List schedules |
 
 ### MessageType Overlap
 
@@ -655,8 +688,9 @@ Wire codes **overlap across domains** (e.g., KV and Notice both use 100–104). 
 
 ### Permission Model (Server-Enforced)
 
-Authorization is **always server-side**:
+Authorization behavior depends on server authentication mode:
 
+**Authenticated Mode (`FITZ_AUTH_REQUIRED=true`):**
 - Broker MUST extract claims from JWT: `realm`, `areas` (array), `scopes` (array)
 - For each request, broker MUST check:
   1. **Realm match**: Route realm ∈ JWT realm (MUST be exact match)
@@ -664,31 +698,35 @@ Authorization is **always server-side**:
   3. **Scope match**: Request verb ∈ JWT scopes (e.g., `kv:read`, `notice:subscribe`, `queue:send`)
 - If any check fails, broker returns permission error (domain-specific error code)
 
-**Permission Check Order:**
+**Anonymous Mode (`FITZ_AUTH_REQUIRED=false`):**
+- Broker assigns default permissions (typically unrestricted access)
+- No JWT validation or permission checks
+- All routes and verbs allowed
+- Used for development/testing or trusted internal networks
+
+**Permission Check Order (Authenticated Mode):**
 
 Broker MUST enforce permissions in this order:
-
 1. **Route validation:** Scheme known, depth valid, shape matches method (if fails: protocol error)
 2. **JWT validation:** Signature valid, not expired (if fails: transport error)
 3. **Permission enforcement:** Realm/area/scope match (if fails: domain error with code ERR_UNAUTHORIZED)
 4. **Domain dispatch:** Route to domain handler
 
-### Permission Error Codes
+### Permission Error Codes (Authenticated Mode Only)
 
 If permission check fails, broker returns error in domain error encoding with these standard codes:
 
-| Error Code | Meaning            | HTTP Equivalent |
-| ---------- | ------------------ | --------------- |
-| `*001`     | ERR_UNAUTHORIZED   | 403 Forbidden   |
-| `*002`     | ERR_INVALID_SCOPE  | 403 Forbidden   |
-| `*003`     | ERR_REALM_MISMATCH | 403 Forbidden   |
+| Error Code | Meaning | HTTP Equivalent |
+|---|---|---|
+| `*001` | ERR_UNAUTHORIZED | 403 Forbidden |
+| `*002` | ERR_INVALID_SCOPE | 403 Forbidden |
+| `*003` | ERR_REALM_MISMATCH | 403 Forbidden |
 
 Where `*` is domain prefix (1xxx for KV, 3xxx for Notice, etc.).
 
 **Example (KV domain):**
-
 - 1001 = ERR_UNAUTHORIZED
-- 1002 = ERR_INVALID_SCOPE
+- 1002 = ERR_INVALID_SCOPE  
 - 1003 = ERR_REALM_MISMATCH
 
 ### JWT Claims Schema
@@ -708,24 +746,47 @@ Where `*` is domain prefix (1xxx for KV, 3xxx for Notice, etc.).
 
 ### Client-Side Guidance
 
-Clients MUST NOT:
+**For Authenticated Mode:**
 
+Clients MUST:
+- Obtain JWT from external auth service
+- Treat JWT as opaque string
+- Pass JWT in CONNECT record
+- Handle ERR_UNAUTHORIZED gracefully (return to user, suggest re-authentication)
+
+Clients MUST NOT:
 - Validate JWT signatures
 - Parse or check JWT claims
 - Attempt local permission checking
 - Cache JWT results
 - Infer permissions from routes
 
-Clients MUST:
+**For Anonymous Mode:**
 
-- Obtain JWT from external auth service
-- Treat JWT as opaque string
-- Pass JWT in CONNECT record
-- Handle ERR_UNAUTHORIZED gracefully (return to user, suggest re-authentication)
+Clients MAY:
+- Pass empty JWT (zero-length)
+- Pass placeholder value (e.g., "anonymous")
+- Use configuration flag to indicate anonymous mode (e.g., `anonymous=true`)
+
+**Client Configuration Example:**
+
+```python
+# Authenticated mode
+client = FitzClient(
+    broker="wss://prod.example.com:4090",
+    jwt=get_jwt_from_auth_service(),
+    anonymous=False
+)
+
+# Anonymous mode (development/testing)
+client = FitzClient(
+    broker="ws://localhost:4090",
+    jwt="",  # Empty or omitted
+    anonymous=True
+)
+```
 
 ---
-
-Clients MUST NOT:
 
 - Validate route against JWT claims (server does this)
 - Cache permission decisions
@@ -753,15 +814,15 @@ Transactions are **explicit and domain-specific**. Clients MUST NOT provide impl
 
 Clients MUST expose explicit methods for supported domains:
 
-| Domain   | API                                       | Required |
-| -------- | ----------------------------------------- | -------- |
-| KV       | `begin()`, `commit()`, `rollback()`       | YES      |
-| Stream   | `begin()`, `commit()`, `rollback()`       | YES      |
-| Queue    | N/A (message-oriented, not transactional) | —        |
-| Notice   | N/A (fire-and-forget)                     | —        |
-| RPC      | N/A (request-scoped)                      | —        |
-| Lease    | N/A (stateless operations)                | —        |
-| Schedule | N/A (fire-and-forget)                     | —        |
+| Domain | API | Required |
+|---|---|---|
+| KV | `begin()`, `commit()`, `rollback()` | YES |
+| Stream | `begin()`, `commit()`, `rollback()` | YES |
+| Queue | N/A (message-oriented, not transactional) | — |
+| Notice | N/A (fire-and-forget) | — |
+| RPC | N/A (request-scoped) | — |
+| Lease | N/A (stateless operations) | — |
+| Schedule | N/A (fire-and-forget) | — |
 
 ### Transaction Constraints
 
@@ -809,19 +870,17 @@ Clients MUST expose:
 client.subscribe({
   family_id: 1,
   pattern: "notice://prod/app/*",
-  handler: (route, payload) => {
-    /* ... */
-  },
+  handler: (route, payload) => { /* ... */ }
 });
 
 // ✅ CORRECT - explicit unsubscribe
 client.unsubscribe({
   family_id: 1,
-  pattern: "notice://prod/app/*",
+  pattern: "notice://prod/app/*"
 });
 
 // ❌ WRONG - implicit subscriptions
-client.on("app.events", handler); // Magic pattern; unclear when subscribed
+client.on("app.events", handler);  // Magic pattern; unclear when subscribed
 ```
 
 ### Subscription Constraints
@@ -829,7 +888,7 @@ client.on("app.events", handler); // Magic pattern; unclear when subscribed
 Clients MUST:
 
 1. **Track subscriptions per connection** (session-scoped)
-2. **NOT automatically re-subscribe after reconnect** (client chooses)
+2. **NOT assume subscriptions persist across reconnect**; subscriptions are session-scoped and lost on disconnect. Clients **MUST** be able to re-subscribe after reconnect if desired.
 3. **Surface subscription errors** (invalid pattern, limit exceeded)
 4. **Handle duplicate notifications** (at-least-once delivery)
 5. **Provide backoff for subscription errors**
@@ -837,10 +896,10 @@ Clients MUST:
 ### Reconnection Behavior
 
 On disconnect:
-
 - Subscriptions are **lost server-side**
-- Client MUST re-subscribe after reconnect if desired
-- Clients SHOULD implement transparent re-subscription **with exponential backoff**
+- Clients **MUST** re-subscribe explicitly after reconnect if they need subscriptions restored
+- Clients **MAY** implement transparent auto-resubscribe helpers; such helpers SHOULD use exponential backoff and be opt-in
+- **Servers MUST** treat duplicate subscribe requests as idempotent to make client-side resubscribe helpers robust (duplicate subscriptions SHOULD NOT create duplicate deliveries)
 
 ---
 
@@ -852,16 +911,15 @@ Errors fall into two categories: **transport** and **domain**.
 
 Transport errors signal connection failure:
 
-| Error              | Cause                            | Client Action                       |
-| ------------------ | -------------------------------- | ----------------------------------- |
-| Connection refused | Broker unreachable               | Retry with backoff; raise to caller |
-| Connection reset   | Broker crashed or closed         | Reconnect; re-establish session     |
-| Frame too large    | Payload exceeds `max_frame_size` | Close connection; raise error       |
-| Invalid UTF-8      | Malformed frame                  | Close connection; raise error       |
-| TLV decode error   | Unrecoverable frame format       | Close connection; raise error       |
+| Error | Cause | Client Action |
+|---|---|---|
+| Connection refused | Broker unreachable | Retry with backoff; raise to caller |
+| Connection reset | Broker crashed or closed | Reconnect; re-establish session |
+| Frame too large | Payload exceeds `max_frame_size` | Close connection; raise error |
+| Invalid UTF-8 | Malformed frame | Close connection; raise error |
+| TLV decode error | Unrecoverable frame format | Close connection; raise error |
 
 **Clients MUST:**
-
 - Distinguish transport errors from domain errors
 - Implement exponential backoff for retries (1s → 2s → 4s → ...)
 - NOT attempt to recover from unrecoverable errors (close connection)
@@ -871,7 +929,6 @@ Transport errors signal connection failure:
 Domain errors are returned in response payloads. Format is **domain-specific** (see domain specs).
 
 **Clients MUST:**
-
 - Parse domain error responses according to domain spec
 - Surface error code and message to caller
 - NOT reinterpret or hide server error messages
@@ -892,16 +949,14 @@ raise DomainError(error_msg)
 ### Synchronous Model
 
 **Fitz uses synchronous request/response:**
-
 - Client sends one request, blocks waiting for response
 - Broker processes request, sends exactly one response
 - Client receives response, unblocks
-- **Pipelining:** NOT supported (no request IDs, no response tagging)
+- **Pipelining:** NOT supported (no request IDs, no response tagging). **Clients MUST NOT have more than one in-flight request per connection.** Sending another request before the response to the previous request is received is undefined behavior and the broker MAY close the connection.
 
 **Exception: Streaming and Fanout**
 
 For operations with multiple responses (Notice, RPC, Stream):
-
 - First response is immediate (operation accepted, subscription ID, etc.)
 - Subsequent responses (notifications, RPC calls) arrive asynchronously
 - Client MUST handle asynchronous delivery (subscribe to in-band notifications)
@@ -912,19 +967,16 @@ For operations with multiple responses (Notice, RPC, Stream):
 When a single operation generates multiple responses:
 
 **Notice SUBSCRIBE:**
-
 - Request → Response 1 (subscription ID)
 - Subsequent PUBLISHes → NOTIFY frames (asynchronous)
 - Client reads NOTIFYs from same connection
 
 **RPC REQUEST:**
-
 - Request → Response 1 (accepted, empty body)
 - Worker responses → Response 2+ (streaming, with `sequence` and `stream_end` flag)
 - Correlation ID links all responses
 
 **Stream READ:**
-
 - Request → Response 1 (record stream)
 - Multiple records may arrive in single response or multiple frames
 - Broker MAY split large responses across multiple frames
@@ -932,7 +984,6 @@ When a single operation generates multiple responses:
 ### Connection Handling
 
 For all operations:
-
 - Connection remains open after response received
 - Client MAY send next request immediately (re-enters sync wait)
 - Asynchronous frames (notifications, RPC responses) arrive while waiting for next response
@@ -950,7 +1001,6 @@ Clients MUST NOT automatically retry operations unless:
 **Idempotent Operations (Safe to Retry, No Deduplication Needed):**
 
 Read-only operations are safe to retry without deduplication:
-
 - KV: `GET`, `SCAN`
 - Stream: `READ`, `GET_METADATA`, `LAST`
 - Lease: `QUERY`
@@ -963,7 +1013,6 @@ Broker behavior: MAY return stale data if resource has changed between retries.
 **NOT Idempotent (MUST NOT Retry Automatically):**
 
 Write operations, control operations, and pub/sub are NOT idempotent:
-
 - KV: `PUT`, `INSERT`, `DELETE`, `BEGIN`, `COMMIT`, `ROLLBACK`
 - Stream: `APPEND`, `BEGIN`, `COMMIT`, `ROLLBACK`
 - Notice: `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`
@@ -977,7 +1026,6 @@ Retry behavior: Retrying these operations MAY cause duplicate execution, lost up
 **Context-Dependent (Safe to Retry WITH Deduplication):**
 
 Operations that are safe to retry only if client tracks correlation ID:
-
 - Queue: `COMPLETE` (safe to retry if message_id+token already deleted)
 - RPC: `REQUEST` (safe to retry if broker caches correlation_id)
 
@@ -1022,17 +1070,15 @@ Each domain has a specific wire format, verb set, and semantics. Implement each 
 **Purpose:** Low-latency session-scoped notifications with wildcard pattern matching.
 
 #### Message Types
-
-| Type | Name            | Direction                  |
-| ---: | --------------- | -------------------------- |
-|  100 | PUBLISH         | Client → Server            |
-|  101 | SUBSCRIBE       | Client → Server            |
-|  102 | UNSUBSCRIBE     | Client → Server            |
-|  103 | UNSUBSCRIBE_ALL | Client → Server            |
-|  104 | NOTIFY          | Server → Client (delivery) |
+| Type | Name | Direction |
+|---:|---|---|
+| 100 | PUBLISH | Client → Server |
+| 101 | SUBSCRIBE | Client → Server |
+| 102 | UNSUBSCRIBE | Client → Server |
+| 103 | UNSUBSCRIBE_ALL | Client → Server |
+| 104 | NOTIFY | Server → Client (delivery) |
 
 #### PUBLISH Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_len
@@ -1052,7 +1098,6 @@ Response (status=1 error):
 ```
 
 #### SUBSCRIBE Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_pattern_len
@@ -1073,7 +1118,6 @@ Response (status=1):
 ```
 
 #### UNSUBSCRIBE Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_pattern_len
@@ -1086,7 +1130,6 @@ Response: status byte + error (if status=1)
 ```
 
 #### UNSUBSCRIBE_ALL Request
-
 ```
 [u64 BE]  session_id
 [u64 BE]  family_id
@@ -1097,7 +1140,6 @@ Response: status byte + error (if status=1)
 ```
 
 #### NOTIFY (Server Delivery)
-
 ```
 [u32 BE]  route_len
 [bytes]   route (published route, not subscription pattern)
@@ -1106,7 +1148,6 @@ Response: status byte + error (if status=1)
 ```
 
 #### Pattern Matching
-
 - `*` matches one segment (e.g., `notice://realm/*/events` matches `notice://realm/orders/events`)
 - `**` matches zero or more segments (e.g., `notice://realm/**` matches all routes in realm)
 - Exact routes (no wildcards) also supported
@@ -1135,21 +1176,21 @@ client.notice_unsubscribe(pattern="notice://prod/app/orders/*")
 ```
 
 #### Semantics
-
 - **Delivery**: Best-effort; under backpressure, notifications may be dropped
 - **Ordering**: Delivered in publish order per subscription
 - **Fanout**: Single publish reaches all matching subscriptions
 - **Session-Scoped**: Subscriptions tied to connection; lost on disconnect
+- **Acknowledgements & Retries**: `NOTIFY` frames are never acknowledged by clients and are never retried by the broker. Clients MUST NOT send acknowledgements for `NOTIFY` frames and MUST NOT expect guaranteed replay.
+- **Toleration:** Clients **MUST** tolerate missed notifications across reconnects and transient backpressure periods.
+- **Usage Guidance:** `NOTICE` is a **best-effort, non-durable** mechanism. **Clients MUST NOT use Notices for workflows that require acknowledgement, durability, or guaranteed delivery. Use RPC or Queue for guaranteed delivery or acknowledgement-based workflows.**
 
 #### Error Codes (3xxx range)
-
 - 3001 = ERR_INVALID_ROUTE
 - 3002 = ERR_INVALID_PATTERN
 - 3003 = ERR_SUBSCRIPTION_LIMIT
 - 3004 = ERR_TRANSPORT_CLOSED
 
 #### Acceptance Tests
-
 - subscribe to pattern, receive matching publications
 - multiple subscriptions on same pattern both receive
 - publish with no subscribers returns ok
@@ -1164,19 +1205,17 @@ client.notice_unsubscribe(pattern="notice://prod/app/orders/*")
 **Purpose:** Strictly ordered append/read with watermark protection and optimistic concurrency.
 
 #### Message Types
-
-| Type | Name         |
-| ---: | ------------ |
-|  200 | BEGIN        |
-|  201 | APPEND       |
-|  202 | COMMIT       |
-|  203 | ROLLBACK     |
-|  204 | READ         |
-|  205 | LAST         |
-|  206 | GET_METADATA |
+| Type | Name |
+|---:|---|
+| 200 | BEGIN |
+| 201 | APPEND |
+| 202 | COMMIT |
+| 203 | ROLLBACK |
+| 204 | READ |
+| 205 | LAST |
+| 206 | GET_METADATA |
 
 #### BEGIN Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_len
@@ -1200,7 +1239,6 @@ Response (status=1):
 ```
 
 #### APPEND Request
-
 ```
 [u32 BE]  session_id_len
 [bytes]   session_id (UTF-8, from BEGIN response)
@@ -1214,7 +1252,6 @@ Response: status byte + optional session_id + data
 ```
 
 #### COMMIT Request
-
 ```
 [u32 BE]  session_id_len
 [bytes]   session_id
@@ -1225,7 +1262,6 @@ Response: status byte + data
 ```
 
 #### ROLLBACK Request
-
 ```
 [u32 BE]  session_id_len
 [bytes]   session_id
@@ -1234,7 +1270,6 @@ Response: status byte + data
 ```
 
 #### READ Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_len
@@ -1248,7 +1283,6 @@ Response: status byte + data
 ```
 
 #### LAST Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_len
@@ -1258,7 +1292,6 @@ Response: status byte + data
 ```
 
 #### GET_METADATA Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_len
@@ -1289,7 +1322,6 @@ records = client.stream_read(
 ```
 
 #### Semantics
-
 - **Atomicity**: Appends are atomic; partial writes never visible
 - **Ordering**: Records strictly ordered by offset within resource
 - **Watermarks**: Reads cannot advance beyond watermark (protects uncommitted data)
@@ -1298,7 +1330,6 @@ records = client.stream_read(
 - **Isolation**: Stream sessions isolated per resource
 
 #### Error Codes (2xxx)
-
 - 2001 = ERR_CONCURRENCY_CONFLICT (expected_offset mismatch)
 - 2002 = ERR_OFFSET_TOO_FAR_AHEAD
 - 2003 = ERR_INVALID_READ_BOUND
@@ -1306,7 +1337,6 @@ records = client.stream_read(
 - 2005 = ERR_RESOURCE_NOT_FOUND
 
 #### Acceptance Tests
-
 - begin/append/commit cycle
 - read returns records in offset order
 - read beyond watermark fails
@@ -1321,16 +1351,14 @@ records = client.stream_read(
 **Purpose:** FIFO-ish message queues with leasing and visibility timeouts.
 
 #### Message Types
-
-| Type | Name     |
-| ---: | -------- |
-|  200 | ENQUEUE  |
-|  202 | RESERVE  |
-|  203 | EXTEND   |
-|  204 | COMPLETE |
+| Type | Name |
+|---:|---|
+| 200 | ENQUEUE |
+| 202 | RESERVE |
+| 203 | EXTEND |
+| 204 | COMPLETE |
 
 #### ENQUEUE Request
-
 ```
 [u32 BE]  body_len
 [bytes]   body
@@ -1348,7 +1376,6 @@ Response (status=1):
 ```
 
 #### RESERVE Request
-
 ```
 [u64 BE]  lease_seconds
 [u8]      has_batch_size
@@ -1372,7 +1399,6 @@ Response (status=1):
 ```
 
 #### EXTEND Request
-
 ```
 [u64 BE]  message_id
 [u64 BE]  lease_token
@@ -1388,7 +1414,6 @@ Response (status=1):
 ```
 
 #### COMPLETE Request
-
 ```
 [u64 BE]  message_id
 [u64 BE]  lease_token
@@ -1403,7 +1428,6 @@ Response (status=1):
 ```
 
 #### Error Codes (4xxx range)
-
 - 4001 = ERR_INVALID_TOKEN
 - 4002 = ERR_LEASE_EXPIRED
 - 4003 = ERR_MESSAGE_NOT_FOUND
@@ -1437,7 +1461,6 @@ for lease in leases:
 ```
 
 #### Semantics
-
 - **At-Least-Once**: Messages delivered until completed; expired leases requeue them
 - **FIFO-ish**: Generally delivered in enqueue order; leasing can cause out-of-order
 - **Visibility Timeout**: Leased messages invisible to other consumers until expiry
@@ -1445,7 +1468,6 @@ for lease in leases:
 - **Durability**: All enqueued messages survive broker restart
 
 #### Acceptance Tests
-
 - enqueue/reserve/complete cycle
 - lease expiry returns message to ready queue
 - extend lease delays expiry
@@ -1460,17 +1482,15 @@ for lease in leases:
 **Purpose:** Low-latency request/response with reply inbox and optional streaming.
 
 #### Message Types
-
-| Type | Name               | Direction       |
-| ---: | ------------------ | --------------- |
-|  300 | SUBSCRIBE_WORKER   | Client → Server |
-|  301 | UNSUBSCRIBE_WORKER | Client → Server |
-|  302 | REQUEST            | Client → Server |
-|  303 | RESPONSE           | Server ↔ Client |
-|  304 | ACK                | Client ↔ Server |
+| Type | Name | Direction |
+|---:|---|---|
+| 300 | SUBSCRIBE_WORKER | Client → Server |
+| 301 | UNSUBSCRIBE_WORKER | Client → Server |
+| 302 | REQUEST | Client → Server |
+| 303 | RESPONSE | Server ↔ Client |
+| 304 | ACK | Client ↔ Server |
 
 #### SUBSCRIBE_WORKER Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  worker_route_len
@@ -1488,7 +1508,6 @@ Response (status=1):
 ```
 
 #### UNSUBSCRIBE_WORKER Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  worker_route_len
@@ -1498,7 +1517,6 @@ Response: status byte + data
 ```
 
 #### REQUEST Request (Client sends to server)
-
 ```
 [u64 BE]  family_id
 [u32 BE]  correlation_id_len
@@ -1517,7 +1535,6 @@ Response from broker:
 ```
 
 #### RESPONSE (From worker to caller via broker)
-
 ```
 [u32 BE]  correlation_id_len
 [bytes]   correlation_id (16 bytes)
@@ -1533,7 +1550,6 @@ Response from broker:
 ```
 
 #### ACK (Acknowledge receipt)
-
 ```
 [u32 BE]  correlation_id_len
 [bytes]   correlation_id (16 bytes)
@@ -1576,7 +1592,6 @@ for response in responses:
 ```
 
 #### Semantics
-
 - **Correlation**: UUID links request to responses (client-generated)
 - **Streaming**: Multi-frame responses have incrementing `sequence` and `stream_end` flag
 - **Backpressure**: ERR_RPC_BACKPRESSURE if outbound queue full
@@ -1584,7 +1599,6 @@ for response in responses:
 - **Exactly-Once**: Each request reaches worker once
 
 #### Error Codes (6xxx range)
-
 - 6001 = ERR_RPC_TIMEOUT
 - 6002 = ERR_WORKER_NOT_FOUND
 - 6003 = ERR_RPC_BACKPRESSURE
@@ -1592,7 +1606,6 @@ for response in responses:
 - 6005 = ERR_CORRELATION_NOT_FOUND
 
 #### Acceptance Tests
-
 - single request/response cycle
 - streaming response reassembled in order
 - request timeout returns error
@@ -1609,21 +1622,19 @@ for response in responses:
 **IMPORTANT:** All KV operations occur within transactions (Begin/Commit/Rollback).
 
 #### Message Types
-
-| Type | Name         |
-| ---: | ------------ |
-|  100 | BEGIN        |
-|  101 | COMMIT       |
-|  102 | ROLLBACK     |
-|  103 | GET          |
-|  104 | PUT          |
-|  105 | INSERT       |
-|  106 | DELETE       |
-|  107 | DELETE_RANGE |
-|  108 | SCAN         |
+| Type | Name |
+|---:|---|
+| 100 | BEGIN |
+| 101 | COMMIT |
+| 102 | ROLLBACK |
+| 103 | GET |
+| 104 | PUT |
+| 105 | INSERT |
+| 106 | DELETE |
+| 107 | DELETE_RANGE |
+| 108 | SCAN |
 
 #### BEGIN Request
-
 ```
 [u32 BE]  resource_len
 [bytes]   resource_name
@@ -1639,7 +1650,6 @@ Response (error):
 ```
 
 #### PUT Request
-
 ```
 [u64 BE]  tx_id
 [u32 BE]  resource_len
@@ -1653,7 +1663,6 @@ Response: (empty on success, error on failure)
 ```
 
 #### GET Request
-
 ```
 [u64 BE]  tx_id
 [u32 BE]  resource_len
@@ -1672,7 +1681,6 @@ Response (error):
 ```
 
 #### INSERT Request
-
 ```
 [u64 BE]  tx_id
 [u32 BE]  resource_len
@@ -1686,7 +1694,6 @@ Response: (empty on success)
 ```
 
 #### DELETE Request
-
 ```
 [u64 BE]  tx_id
 [u32 BE]  resource_len
@@ -1698,7 +1705,6 @@ Response: (empty on success)
 ```
 
 #### DELETE_RANGE Request
-
 ```
 [u64 BE]  tx_id
 [u32 BE]  resource_len
@@ -1712,7 +1718,6 @@ Response: (empty on success)
 ```
 
 #### SCAN Request
-
 ```
 [u64 BE]  tx_id
 [u32 BE]  resource_len
@@ -1738,7 +1743,6 @@ Response:
 ```
 
 #### COMMIT Request
-
 ```
 [u64 BE]  tx_id
 
@@ -1746,7 +1750,6 @@ Response: (empty on success)
 ```
 
 #### ROLLBACK Request
-
 ```
 [u64 BE]  tx_id
 
@@ -1754,14 +1757,12 @@ Response: (empty on success)
 ```
 
 #### Semantics
-
 - **Isolation**: Transactions isolated by realm + area
 - **Durability**: Sync mode guarantees WAL; buffered is best-effort
 - **Read Modes**: ReadOnly allows multi-reader; ReadWrite is exclusive per resource
 - **Persistence**: All committed data survives broker restart
 
 #### Error Codes (1xxx)
-
 - 1001 = ERR_TRANSACTION_NOT_FOUND
 - 1002 = ERR_INVALID_MODE
 - 1003 = ERR_KEY_NOT_FOUND
@@ -1774,7 +1775,6 @@ Response: (empty on success)
 - 1010 = ERR_TRANSACTION_ABORTED
 
 #### Acceptance Tests
-
 - begin/put/commit cycle
 - begin/get on non-existent key
 - ReadOnly mode rejects put
@@ -1789,16 +1789,14 @@ Response: (empty on success)
 **Purpose:** In-memory exclusive leases for distributed locking and coordination.
 
 #### Message Types
-
-| Type | Name    |
-| ---: | ------- |
-|  400 | ACQUIRE |
-|  401 | RENEW   |
-|  402 | RELEASE |
-|  403 | QUERY   |
+| Type | Name |
+|---:|---|
+| 400 | ACQUIRE |
+| 401 | RENEW |
+| 402 | RELEASE |
+| 403 | QUERY |
 
 #### ACQUIRE Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_len
@@ -1820,7 +1818,6 @@ Response (status=1):
 ```
 
 #### RENEW Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_len
@@ -1834,7 +1831,6 @@ Response: status + optional token
 ```
 
 #### RELEASE Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_len
@@ -1847,7 +1843,6 @@ Response: status + optional token
 ```
 
 #### QUERY Request
-
 ```
 [u64 BE]  family_id
 [u32 BE]  route_len
@@ -1870,7 +1865,7 @@ if token:
     try:
         # Do work as leader
         perform_leader_duties()
-
+        
         # Renew before expiry
         client.lease_renew(
             route="lease://prod/app/leader",
@@ -1890,7 +1885,6 @@ else:
 ```
 
 #### Semantics
-
 - **Mutual Exclusion**: Only one owner holds a lease at a time
 - **Fencing Token**: Prevents stale commands from releasing new holder's lease
 - **TTL-based Expiry**: Expired leases automatically released; query returns free
@@ -1898,14 +1892,12 @@ else:
 - **In-Memory**: Lost on broker restart (use for coordination, not durability)
 
 #### Error Codes (5xxx)
-
 - 4001 = ERR_LEASE_HELD
 - 4002 = ERR_INVALID_FENCE
 - 4003 = ERR_LEASE_EXPIRED
 - 4004 = ERR_LEASE_NOT_FOUND
 
 #### Acceptance Tests
-
 - acquire succeeds when free, fails when held
 - renew with valid token extends TTL
 - renew with invalid token fails
@@ -1920,15 +1912,13 @@ else:
 **Purpose:** Durable scheduling of delayed tasks and recurring jobs.
 
 #### Message Types
-
-| Type | Name   |
-| ---: | ------ |
-|  500 | CREATE |
-|  501 | CANCEL |
-|  502 | LIST   |
+| Type | Name |
+|---:|---|
+| 500 | CREATE |
+| 501 | CANCEL |
+| 502 | LIST |
 
 #### CREATE Request
-
 ```
 [u32 BE]  schedule_payload_len
 [bytes]   schedule_payload (nested TLV, see below)
@@ -1946,7 +1936,6 @@ Response (status=1):
 ```
 
 #### CANCEL Request
-
 ```
 [u32 BE]  schedule_id_len
 [bytes]   schedule_id
@@ -1955,7 +1944,6 @@ Response: status + optional schedule_id
 ```
 
 #### LIST Request
-
 ```
 (empty payload)
 
@@ -1965,7 +1953,6 @@ Response: status + optional schedule_id
 **Note:** LIST returns one schedule per response. If no schedules, respond with status=0 and `has_schedule_id=0`.
 
 #### Schedule Payload (Nested TLV)
-
 ```
 Type 1: cron (UTF-8 string)
 Type 2: target_resource (UTF-8 string)
@@ -1977,7 +1964,6 @@ Total payload = concatenated TLV records, no outer length prefix.
 #### Cron Syntax (Broker-Enforced)
 
 Brokers MUST support standard 5-field cron format:
-
 ```
 * * * * *
 | | | | |
@@ -1989,7 +1975,6 @@ Brokers MUST support standard 5-field cron format:
 ```
 
 **Supported patterns:**
-
 - `*` = every unit (e.g., `* * * * *` = every minute)
 - Numeric values = exact match (e.g., `0 9 * * 1` = 9:00 AM every Monday)
 - Ranges = `start-end` (e.g., `0 9-17 * * *` = every hour from 9 AM to 5 PM)
@@ -1998,7 +1983,6 @@ Brokers MUST support standard 5-field cron format:
 - Combined = (e.g., `0 9-17/2 * * 1-5` = every 2 hours from 9 AM-5 PM on weekdays)
 
 **Examples:**
-
 - `0 9 * * 1` = 9:00 AM every Monday
 - `*/5 * * * *` = Every 5 minutes
 - `0 */2 * * *` = Every 2 hours
@@ -2008,7 +1992,6 @@ Brokers MUST support standard 5-field cron format:
 #### Persistence & Recovery
 
 Schedules are durable (persisted to storage):
-
 - Survive broker restart
 - Execution resumes at next scheduled time
 - Missed schedules (broker down at scheduled time) are skipped
@@ -2017,7 +2000,6 @@ Schedules are durable (persisted to storage):
 #### LIST Streaming
 
 LIST returns multiple responses (one schedule per response):
-
 ```
 Response 1:
   [u8]     0 (status)
@@ -2069,7 +2051,6 @@ client.schedule_cancel(schedule_id)
 ```
 
 #### Semantics
-
 - **Durability**: Schedules persist across broker restarts
 - **Strict Timing**: Tasks execute at designated times (best-effort)
 - **Recurring**: Interval-based recurring tasks (cron-like)
@@ -2077,7 +2058,6 @@ client.schedule_cancel(schedule_id)
 - **Route Scoped**: Independent schedules per route
 
 #### Error Codes (7xxx)
-
 - 7001 = ERR_SCHEDULE_NOT_FOUND
 - 7002 = ERR_INVALID_CRON
 - 7003 = ERR_SCHEDULE_LIMIT
@@ -2085,7 +2065,6 @@ client.schedule_cancel(schedule_id)
 - 7005 = ERR_INVALID_TARGET
 
 #### Acceptance Tests
-
 - create_once schedules task and executes at delay
 - create_recurring executes at intervals
 - cancel prevents future runs
@@ -2155,13 +2134,11 @@ Stream uses 200–206, Queue uses 200–204 (overlapping by design, disambiguate
 ### MessageType Disambiguation
 
 When MessageType overlaps across domains (e.g., KV 100 = BEGIN, Notice 100 = PUBLISH):
-
 - **Disambiguation:** By route scheme (first segment of route string in request)
 - Broker MUST parse route from first TLV field to determine domain
 - Same MessageType value in different domains is independent (no collision)
 
 Example:
-
 - `kv://realm/area/resource` with MessageType 100 = KV BEGIN
 - `notice://realm/area/resource` with MessageType 100 = Notice PUBLISH
 
@@ -2171,20 +2148,19 @@ Example:
 
 Error codes are allocated by domain in 100-block ranges:
 
-| Range     | Domain   | Capacity  | Notes                               |
-| --------- | -------- | --------- | ----------------------------------- |
-| 1000–1099 | KV       | 100 codes | Transactions, isolation, durability |
-| 2000–2099 | Stream   | 100 codes | Concurrency, watermarks, ordering   |
-| 3000–3099 | Notice   | 100 codes | Routing, patterns, delivery         |
-| 4000–4099 | Queue    | 100 codes | Leasing, visibility, delivery       |
-| 5000–5099 | Lease    | 100 codes | Mutual exclusion, fencing, TTL      |
-| 6000–6099 | RPC      | 100 codes | Routing, backpressure, correlation  |
-| 7000–7099 | Schedule | 100 codes | Scheduling, persistence, execution  |
+| Range | Domain | Capacity | Notes |
+|---|---|---|---|
+| 1000–1099 | KV | 100 codes | Transactions, isolation, durability |
+| 2000–2099 | Stream | 100 codes | Concurrency, watermarks, ordering |
+| 3000–3099 | Notice | 100 codes | Routing, patterns, delivery |
+| 4000–4099 | Queue | 100 codes | Leasing, visibility, delivery |
+| 5000–5099 | Lease | 100 codes | Mutual exclusion, fencing, TTL |
+| 6000–6099 | RPC | 100 codes | Routing, backpressure, correlation |
+| 7000–7099 | Schedule | 100 codes | Scheduling, persistence, execution |
 
 **Expansion Strategy:**
 
 If domain exhausts range (>99 error codes allocated):
-
 - First expansion block: {base}100–{base}199 (e.g., 1100–1199 for KV)
 - Second expansion: {base}200–{base}299 (e.g., 1200–1299 for KV)
 - Continue as needed
@@ -2192,7 +2168,6 @@ If domain exhausts range (>99 error codes allocated):
 **Cross-Domain Error Codes:**
 
 These error codes are standardized across ALL domains:
-
 - `*001` = ERR_UNAUTHORIZED (permission denied, see Permissions section)
 - `*002` = ERR_INVALID_SCOPE (scope mismatch)
 - `*003` = ERR_REALM_MISMATCH (realm not in JWT)
@@ -2200,19 +2175,17 @@ These error codes are standardized across ALL domains:
 All other error codes are domain-specific and MUST NOT be reused across domains.
 
 ### Channel IDs (Broker-Internal Reference)
-
 Clients do NOT encode these; listed for reference:
 
-| ChannelId | Value | Purpose                |
-| --------- | ----: | ---------------------- |
-| Control   |     0 | Control/handshake      |
-| Pub       |     1 | Publishing/notice      |
-| Sub       |     2 | Subscriptions/delivery |
-| Rpc       |     3 | RPC request/response   |
-| Lease     |     4 | Lease domain           |
+| ChannelId | Value | Purpose |
+|---|---:|---|
+| Control | 0 | Control/handshake |
+| Pub | 1 | Publishing/notice |
+| Sub | 2 | Subscriptions/delivery |
+| Rpc | 3 | RPC request/response |
+| Lease | 4 | Lease domain |
 
 ### Type Encoding Rules
-
 - `type 0x00..0xFE`: single byte
 - `type 0xFF`: escape marker for types > 0xFE
   - Followed by `u16 BE` for actual type
@@ -2224,7 +2197,6 @@ Clients do NOT encode these; listed for reference:
 Client implementations MUST pass the following test suite against a reference broker:
 
 ### Transport-Level Tests
-
 1. **WebSocket connect** - Establish WebSocket, send CONNECT, verify session opens
 2. **TCP connect** - Establish TCP, send length-prefixed CONNECT, verify session opens
 3. **Frame size enforcement** - Send frame > `max_frame_size`, broker closes connection
@@ -2233,7 +2205,6 @@ Client implementations MUST pass the following test suite against a reference br
 ### Domain-Level Tests (per domain)
 
 **Notice:**
-
 - Subscribe to pattern, receive matching publications
 - Multiple subscriptions on same pattern both receive
 - Publish with no subscribers returns ok
@@ -2241,7 +2212,6 @@ Client implementations MUST pass the following test suite against a reference br
 - Wildcard patterns match correctly
 
 **Stream:**
-
 - Begin/append/commit cycle succeeds
 - Read returns records in offset order
 - Read beyond watermark fails appropriately
@@ -2249,7 +2219,6 @@ Client implementations MUST pass the following test suite against a reference br
 - Rollback discards uncommitted appends
 
 **Queue:**
-
 - Enqueue/reserve/complete cycle succeeds
 - Lease expiry returns message to ready queue
 - Extend lease delays expiry
@@ -2257,14 +2226,12 @@ Client implementations MUST pass the following test suite against a reference br
 - Batch reserve returns up to specified count
 
 **RPC:**
-
 - Single request/response cycle succeeds
 - Streaming response reassembled in order
 - Request timeout returns error
 - Multiple workers on same route handle requests
 
 **KV:**
-
 - Begin/put/commit cycle succeeds
 - Begin/get on non-existent key handled correctly
 - ReadOnly mode rejects write operations
@@ -2272,43 +2239,17 @@ Client implementations MUST pass the following test suite against a reference br
 - Scan returns lexicographically ordered pairs
 
 **Lease:**
-
 - Acquire succeeds when free, fails when held
 - Renew with valid token extends TTL
 - Release with valid token releases lease
 - Expired lease acquirable by new owner
 
 **Schedule:**
-
 - Create schedule and verify execution
 - Cancel prevents future runs
 - List returns created schedules
 
----
-
-## Acceptance Criteria
-
-Client implementations MUST pass the following test suite against a reference broker:
-
-### Transport-Level Tests
-
-1. **WebSocket connect** - Establish WebSocket, send CONNECT, verify session opens
-2. **TCP connect** - Establish TCP, send length-prefixed CONNECT, verify session opens
-3. **Frame size enforcement** - Send frame > `max_frame_size`, broker closes connection
-4. **Reconnect** - Drop connection, reconnect, re-send CONNECT, verify session re-established
-
-### Domain-Level Tests (per domain)
-
-**Notice:**
-
-- Subscribe to pattern, receive matching publications
-- Multiple subscriptions on same pattern both receive
-- Publish with no subscribers returns ok
-- Unsubscribe stops delivery
-- Wildcard patterns match correctly
-
 **Stream:**
-
 - Begin/append/commit cycle succeeds
 - Read returns records in offset order
 - Read beyond watermark fails appropriately
@@ -2316,7 +2257,6 @@ Client implementations MUST pass the following test suite against a reference br
 - Rollback discards uncommitted appends
 
 **Queue:**
-
 - Enqueue/reserve/complete cycle succeeds
 - Lease expiry returns message to ready queue
 - Extend lease delays expiry
@@ -2324,14 +2264,12 @@ Client implementations MUST pass the following test suite against a reference br
 - Batch reserve returns up to specified count
 
 **RPC:**
-
 - Single request/response cycle succeeds
 - Streaming response reassembled in order
 - Request timeout returns error
 - Multiple workers on same route handle requests
 
 **KV:**
-
 - Begin/put/commit cycle succeeds
 - Begin/get on non-existent key handled correctly
 - ReadOnly mode rejects write operations
@@ -2339,14 +2277,12 @@ Client implementations MUST pass the following test suite against a reference br
 - Scan returns lexicographically ordered pairs
 
 **Lease:**
-
 - Acquire succeeds when free, fails when held
 - Renew with valid token extends TTL
 - Release with valid token releases lease
 - Expired lease acquirable by new owner
 
 **Schedule:**
-
 - Create schedule and verify execution
 - Cancel prevents future runs
 - List returns created schedules
@@ -2356,31 +2292,26 @@ Client implementations MUST pass the following test suite against a reference br
 Client implementations MUST pass these cross-cutting tests:
 
 **Multi-Realm Isolation:**
-
 - Create two clients with different JWT realms
 - One client publishes to realm A, other subscribes in realm B
 - Verify no cross-realm delivery (subscriber receives nothing)
 
 **Permission Enforcement:**
-
 - Client with `kv:read` scope sends PUT request
 - Broker returns ERR_UNAUTHORIZED (1001 domain error)
 - Verify client surfaces error correctly to caller
 
 **Reconnect State:**
-
 - Client subscribes to pattern, closes connection
 - Reconnects with same JWT, old subscription is lost
 - Verify client must re-subscribe explicitly (no auto-recovery)
 
 **Fanout Scale:**
-
 - Single PUBLISH to 1000 SUBSCRIBE clients
 - All clients receive NOTIFY within 100ms (broker-dependent)
 - Verify no message loss
 
 **Concurrent Request Handling (Pipelining Rejection):**
-
 - Client sends REQUEST 1 without waiting for response
 - Client sends REQUEST 2 while REQUEST 1 pending
 - Broker behavior is implementation-defined (MAY close connection, MAY serialize)
@@ -2397,13 +2328,11 @@ These items are **not standardized** and may require broker-specific implementat
 #### Session IDs and State Tracking
 
 **When broker tracks session state:**
-
 - Notice subscriptions: Broker maintains per-session subscription list
 - Stream sessions: Broker maintains per-session stream offset and metadata
 - RPC workers: Broker maintains per-session worker registration
 
 **Session ID lifetime:**
-
 - Issued on CONNECT, unique per connection
 - Lost on disconnect (previous session ID becomes invalid)
 - NOT returned to client in standard response (internal only, except where specified per domain)
@@ -2411,9 +2340,12 @@ These items are **not standardized** and may require broker-specific implementat
 #### Resource Disambiguation (KV/Queue)
 
 Some domains derive resource from context rather than explicit payload:
+- **KV transactions:** The resource is established at `BEGIN` and subsequent KV operations omit a route; resource identity is implicit in the transaction context (this keeps transaction operations compact and bound to the transaction's resource).
+- **Queue operations:** Queue requests usually include route or are derived from the producer/consumer context; the queue name is typically explicit in the operation payload.
 
-- **KV transactions:** First TLV field after BEGIN is resource name (implicit in transaction context)
-- **Queue operations:** Route scheme disambiguates (vs. Stream or RPC)
+Why this matters:
+- Domains that derive resource from context (KV transactions) are **session-scoped**: breaking the connection mid-transaction loses context and triggers rollback.
+- Domains that require explicit routes (Notice, RPC) do so to enable fanout and correct addressing across many subscribers or workers.
 
 Clients MUST be aware that breaking connection mid-transaction loses context (transaction auto-rollback).
 
@@ -2426,7 +2358,6 @@ Clients MUST be aware that breaking connection mid-transaction loses context (tr
 #### Version Negotiation (Future)
 
 No version negotiation in current protocol. If new verbs are added:
-
 1. New verb codes use next available in range (e.g., 109 for KV)
 2. Old clients reject unknown verbs with ERR_UNKNOWN_VERB (domain error)
 3. Clients MUST gracefully handle unknown verbs (close connection or error)
@@ -2452,3 +2383,4 @@ Clients SHOULD consult broker documentation for domain-specific behavior.
 - Domain specifications: See [Domains](#domains) section
 - Codec implementations: See Fitz `src/protocol/` directory
 - Integration tests: See Fitz `tests/` directory
+

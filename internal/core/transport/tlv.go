@@ -6,6 +6,15 @@ import (
 	"fmt"
 )
 
+// TLV layer invariants:
+// - Tags are unique per frame. A duplicate tag in a frame is treated as a protocol error.
+// - Each TLV value length is encoded as a 2-byte big-endian uint16, which limits a single
+//   TLV value to 65535 bytes (64 KiB).
+// - Unknown tags are accepted and preserved (forward-compatibility).
+
+// MaxTLVValueLen is the maximum allowed length for a single TLV value (2-byte length field).
+const MaxTLVValueLen uint16 = 65535
+
 // TLV tag constants (canonical from CLIENT_SPEC.md).
 const (
 	TagToken          uint8 = 0x10
@@ -109,25 +118,28 @@ func (e *TLVEncoder) Encode() []byte {
 	}
 
 	result := make([]byte, 0, totalSize)
+	var lenBuf [2]byte
 	for _, entry := range e.entries {
 		result = append(result, entry.Tag)
-		lenBuf := make([]byte, 2)
-		binary.BigEndian.PutUint16(lenBuf, uint16(len(entry.Value)))
-		result = append(result, lenBuf...)
+		binary.BigEndian.PutUint16(lenBuf[:], uint16(len(entry.Value)))
+		result = append(result, lenBuf[:]...)
 		result = append(result, entry.Value...)
 	}
 	return result
 }
 
 // TLVDecoder decodes a byte slice into TLV entries.
+// It preserves multiple values for the same tag in order of appearance.
+// Convenience getters (GetBytes/GetString/GetUint32/etc.) return the last
+// value seen for a tag to preserve backward-compatible semantics.
 type TLVDecoder struct {
-	entries map[uint8][]byte
+	entries map[uint8][][]byte
 }
 
 // NewTLVDecoder creates a decoder from raw TLV bytes.
 func NewTLVDecoder(data []byte) (*TLVDecoder, error) {
 	dec := &TLVDecoder{
-		entries: make(map[uint8][]byte),
+		entries: make(map[uint8][][]byte),
 	}
 	if err := dec.parse(data); err != nil {
 		return nil, err
@@ -152,25 +164,46 @@ func (d *TLVDecoder) parse(data []byte) error {
 		value := make([]byte, length)
 		copy(value, data[offset:offset+int(length)])
 		offset += int(length)
-		d.entries[tag] = value
+		// Preserve multiple values for the same tag. Append in order of appearance.
+		d.entries[tag] = append(d.entries[tag], value)
 	}
 	return nil
 }
 
-// GetBytes retrieves the raw byte value for a tag, or nil if not present.
+// GetBytes retrieves the raw byte value for a tag (last value seen), or nil if not present.
 func (d *TLVDecoder) GetBytes(tag uint8) []byte {
-	return d.entries[tag]
+	vals := d.entries[tag]
+	if len(vals) == 0 {
+		return nil
+	}
+	// Return the last value to preserve prior "last one wins" semantics.
+	last := vals[len(vals)-1]
+	return append([]byte(nil), last...)
 }
 
-// GetString retrieves the string value for a tag, or empty string if not present.
+// GetAll returns a copy of all values present for a tag in order of appearance.
+func (d *TLVDecoder) GetAll(tag uint8) [][]byte {
+	vals := d.entries[tag]
+	out := make([][]byte, len(vals))
+	for i := range vals {
+		out[i] = append([]byte(nil), vals[i]...)
+	}
+	return out
+}
+
+// GetString retrieves the string value for a tag (last value), or empty string if not present.
 func (d *TLVDecoder) GetString(tag uint8) string {
-	return string(d.entries[tag])
+	b := d.GetBytes(tag)
+	if b == nil {
+		return ""
+	}
+	return string(b)
 }
 
-// GetUint32 retrieves a u32 BE value for a tag, or 0 if not present or invalid.
+// GetUint32 retrieves a u32 BE value for a tag (last value), or 0 if not present or invalid.
 func (d *TLVDecoder) GetUint32(tag uint8) (uint32, error) {
-	value, ok := d.entries[tag]
-	if !ok {
+	value := d.GetBytes(tag)
+	if value == nil {
 		return 0, nil
 	}
 	if len(value) != 4 {
@@ -179,10 +212,10 @@ func (d *TLVDecoder) GetUint32(tag uint8) (uint32, error) {
 	return binary.BigEndian.Uint32(value), nil
 }
 
-// GetUint64 retrieves a u64 BE value for a tag, or 0 if not present or invalid.
+// GetUint64 retrieves a u64 BE value for a tag (last value), or 0 if not present or invalid.
 func (d *TLVDecoder) GetUint64(tag uint8) (uint64, error) {
-	value, ok := d.entries[tag]
-	if !ok {
+	value := d.GetBytes(tag)
+	if value == nil {
 		return 0, nil
 	}
 	if len(value) != 8 {
@@ -198,10 +231,15 @@ func (d *TLVDecoder) Has(tag uint8) bool {
 }
 
 // All returns a copy of all decoded entries (useful for debugging).
+// For tags with multiple values, the last value is used in the returned map.
 func (d *TLVDecoder) All() map[uint8][]byte {
 	result := make(map[uint8][]byte)
-	for k, v := range d.entries {
-		result[k] = append([]byte(nil), v...)
+	for k, vals := range d.entries {
+		if len(vals) == 0 {
+			continue
+		}
+		last := vals[len(vals)-1]
+		result[k] = append([]byte(nil), last...)
 	}
 	return result
 }

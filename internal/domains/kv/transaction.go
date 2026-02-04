@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cntryl/cntryl-go/internal/iter"
-	"github.com/cntryl/cntryl-go/internal/transport"
+	"github.com/cntryl/cntryl-go/internal/core/iter"
+	"github.com/cntryl/cntryl-go/internal/core/transport"
 )
 
 // KVPair is a simple key/value pair returned by Scan operations.
@@ -458,6 +458,8 @@ func (t *transaction) Commit(ctx context.Context) error {
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddUint64(transport.TagID, t.txID)
+	// Include operation tag for commit so receivers can easily identify it.
+	enc.AddUint8(transport.TagOp, transport.KVOpCommit)
 
 	// Use KV-specific COMMIT frame type to match broker expectations.
 	frame := transport.Frame{
@@ -502,7 +504,6 @@ func (t *transaction) Commit(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
 }
 
 // Rollback abandons the transaction. For immediate-send design, mutations already sent

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cntryl/cntryl-go/internal/transport"
+	"github.com/cntryl/cntryl-go/internal/core/transport"
 )
 
 // Client is the API for the Queue domain.
