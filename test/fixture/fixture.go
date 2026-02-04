@@ -99,23 +99,39 @@ func (f *TestFixture) SetBrokerAddr(addr string) {
 }
 
 // StartBrokerIfNeeded returns a broker address to use for tests. Behavior:
-//   - If the environment variable FITZ_BROKER_ADDR is set, it returns that address
-//     (and a no-op stop function).
+//   - If transport-specific env vars are set, prefer them:
+//   - FITZ_BROKER_ADDR_TCP  - used for TCP tests
+//   - FITZ_BROKER_ADDR_WS   - used for WebSocket tests
+//   - Otherwise if the generic FITZ_BROKER_ADDR is set, it is returned for all transports.
 //   - Otherwise it starts an in-process simulator broker for the requested transport
 //     and returns its address and stop function.
 //
 // If FITZ_REQUIRE_REAL_BROKER is set to "true", this function will fail with an
-// error when FITZ_BROKER_ADDR is not provided. Use this to run tests strictly
-// against your real broker (e.g., when validating broker implementation).
+// error when no suitable FITZ_BROKER_ADDR* is provided. Use this to run tests
+// strictly against a real broker (e.g., for validation).
 func StartBrokerIfNeeded(transport TransportType) (addr string, stop func(), err error) {
-	// If a broker address is explicit in env, prefer that
+	// Transport-specific overrides
+	switch transport {
+	case TransportTCP:
+		if b := os.Getenv("FITZ_BROKER_ADDR_TCP"); b != "" {
+			return b, func() {}, nil
+		}
+	case TransportWebSocket:
+		if b := os.Getenv("FITZ_BROKER_ADDR_WS"); b != "" {
+			return b, func() {}, nil
+		}
+	}
+
+	// Generic fallback
 	if b := os.Getenv("FITZ_BROKER_ADDR"); b != "" {
 		return b, func() {}, nil
 	}
+
 	// If tests require a real broker, fail fast instead of starting a simulator
 	if os.Getenv("FITZ_REQUIRE_REAL_BROKER") == "true" || os.Getenv("FITZ_REQUIRE_REAL_BROKER") == "TRUE" {
-		return "", nil, fmt.Errorf("FITZ_REQUIRE_REAL_BROKER set but FITZ_BROKER_ADDR not provided")
+		return "", nil, fmt.Errorf("FITZ_REQUIRE_REAL_BROKER set but no FITZ_BROKER_ADDR or transport-specific FITZ_BROKER_ADDR_* provided")
 	}
+
 	return StartSimBroker(string(transport))
 }
 

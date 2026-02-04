@@ -191,22 +191,24 @@ func (m *Mux) encodeFrame(f Frame) error {
 		header := []byte{f.Type, f.Flags, chBuf[0], chBuf[1], chBuf[2], chBuf[3]}
 
 		if f.Type == FrameTypeConnOpen {
-			// For CONNECT, wrap provided token bytes in TagToken TLV when present.
-			if len(f.Body) == 0 {
-				// Empty body -> send header only.
-				_, err := m.rw.Write(header)
-				return err
-			}
+			// For CONNECT, always wrap token bytes in TagToken TLV (even when empty).
 			e := NewTLVEncoder()
 			e.AddBytes(TagToken, f.Body)
 			payload := append(header, e.Encode()...)
 			_, err := m.rw.Write(payload)
+			if err != nil {
+				fmt.Printf("[mux] ws CONNECT write failed: %v\n", err)
+			}
 			return err
 		}
 
 		// Default: write header + body.
 		payload := append(header, f.Body...)
+		fmt.Printf("[mux] ws write: len=%d payload=%x\n", len(payload), payload)
 		_, err := m.rw.Write(payload)
+		if err != nil {
+			fmt.Printf("[mux] ws write failed: %v\n", err)
+		}
 		return err
 	}
 

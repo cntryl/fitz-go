@@ -161,6 +161,10 @@ func (c *Client) Connect(ctx context.Context) error {
 		_ = c.mux.Close()
 		return fmt.Errorf("CONNECT handshake failed: %w", err)
 	}
+	// Give broker a short grace period to finish session setup (no explicit ACK in spec).
+	// This prevents some brokers from closing the connection when a client sends
+	// domain frames immediately after CONNECT.
+	time.Sleep(50 * time.Millisecond)
 
 	// Initialize domain clients after successful connection.
 	c.initializeDomainClients()

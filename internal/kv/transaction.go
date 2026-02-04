@@ -456,12 +456,12 @@ func (t *transaction) Commit(ctx context.Context) error {
 
 	// Send COMMIT signal to broker to finalize the transaction.
 	enc := transport.NewTLVEncoder()
-	enc.AddUint8(transport.TagOp, transport.KVOpCommit)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddUint64(transport.TagID, t.txID)
 
+	// Use KV-specific COMMIT frame type to match broker expectations.
 	frame := transport.Frame{
-		Type:    transport.FrameTypeReq,
+		Type:    KVCommit,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -487,6 +487,7 @@ func (t *transaction) Commit(ctx context.Context) error {
 			if respFrame.Channel != ChannelKV {
 				continue
 			}
+			fmt.Printf("[kv.commit] received frame type=%d body=%x\n", respFrame.Type, respFrame.Body)
 			dec, err := transport.NewTLVDecoder(respFrame.Body)
 			if err != nil {
 				continue
@@ -518,14 +519,13 @@ func (t *transaction) Rollback(ctx context.Context) error {
 		return fmt.Errorf("transaction already rolled back")
 	}
 
-	// Send ROLLBACK signal to broker.
+	// Send ROLLBACK signal to broker using KV-specific frame type.
 	enc := transport.NewTLVEncoder()
-	enc.AddUint8(transport.TagOp, transport.KVOpRollback)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    transport.FrameTypeReq,
+		Type:    KVRollback,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
