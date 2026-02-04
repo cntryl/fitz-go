@@ -84,6 +84,19 @@ This document defines testable acceptance criteria for each Fitz domain. Client 
 - Server closes connection immediately
 - Connection terminates with "unauthenticated: connect required"
 
+### AC-CONN-006: Re-subscribe on reconnect
+
+**MUST** re-subscribe to previously active subscriptions after reconnect
+
+**Given:** Client had active subscriptions or registrations (for example: Notice subscriptions, RPC worker registrations, Stream/subscriber registrations) and was authenticated before a disconnect
+**When:** Connection is lost and the client reconnects and successfully re-authenticates
+**Then:**
+
+- Client automatically re-sends `Subscribe` (or equivalent) frames for previously active subscriptions
+- Server responds with `SubscribeOk` (or equivalent) for each re-subscription
+- Client resumes receiving new notifications, RPC requests, or stream deliveries for those subscriptions
+- Client handles duplicate deliveries or idempotent subscribe responses gracefully (no resource leaks or duplicate registration side-effects)
+
 ---
 
 ## KV Domain
@@ -1075,6 +1088,7 @@ Use this checklist to verify client implementation completeness:
 - [ ] AC-CONN-003: Auth rejection handling
 - [ ] AC-CONN-004: Anonymous mode
 - [ ] AC-CONN-005: Pre-auth frame rejection
+- [ ] AC-CONN-006: Resubscribe on reconnect
 
 ### KV Domain (11 criteria)
 
