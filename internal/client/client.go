@@ -14,6 +14,7 @@ import (
 	"github.com/cntryl/cntryl-go/internal/notice"
 	"github.com/cntryl/cntryl-go/internal/queue"
 	"github.com/cntryl/cntryl-go/internal/rpc"
+	"github.com/cntryl/cntryl-go/internal/schedule"
 	"github.com/cntryl/cntryl-go/internal/stream"
 	"github.com/cntryl/cntryl-go/internal/transport"
 )
@@ -30,12 +31,13 @@ type Client struct {
 	retryBackoff  time.Duration
 	maxRetries    int
 	domainClients struct {
-		notice notice.Client
-		stream stream.Client
-		queue  queue.Client
-		rpc    rpc.Client
-		kv     kv.Client
-		lease  lease.Client
+		notice   notice.Client
+		stream   stream.Client
+		queue    queue.Client
+		rpc      rpc.Client
+		kv       kv.Client
+		lease    lease.Client
+		schedule schedule.Client
 	}
 }
 
@@ -166,6 +168,13 @@ func (c *Client) Queue() queue.Client {
 	return c.domainClients.queue
 }
 
+// Schedule returns the schedule domain client.
+func (c *Client) Schedule() schedule.Client {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.domainClients.schedule
+}
+
 // RPC returns the RPC domain client.
 func (c *Client) RPC() rpc.Client {
 	c.mu.RLock()
@@ -199,6 +208,10 @@ func (c *Client) initializeDomainClients() {
 	c.domainClients.rpc = rpc.NewClient(c.mux)
 	// Stream client
 	c.domainClients.stream = stream.NewClient(c.mux)
+	// Queue client
+	c.domainClients.queue = queue.NewClient(c.mux)
+	// Schedule client
+	c.domainClients.schedule = schedule.NewClient(c.mux)
 }
 
 // sendConnect sends the CONNECT frame with JWT token per CLIENT_SPEC.md.

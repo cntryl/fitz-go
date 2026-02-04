@@ -8,6 +8,7 @@ import (
 	"github.com/cntryl/cntryl-go/internal/notice"
 	"github.com/cntryl/cntryl-go/internal/queue"
 	"github.com/cntryl/cntryl-go/internal/rpc"
+	"github.com/cntryl/cntryl-go/internal/schedule"
 	"github.com/cntryl/cntryl-go/internal/stream"
 )
 
@@ -45,4 +46,5 @@ type Client interface {
 	RPC() rpc.Client
 	KV() kv.Client
 	Lease() lease.Client
+	Schedule() schedule.Client
 }
