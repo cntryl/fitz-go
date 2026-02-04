@@ -39,11 +39,9 @@ const (
 	KVScan        uint8 = 108
 )
 
-// Frame type constants (per Fitz protocol).
+// Frame type constants (per Fitz protocol). Use transport package shared Frame types.
 const (
-	FrameTypeReq  uint8 = 10 // Request (RPC-like)
-	FrameTypeResp uint8 = 11 // Response (RPC-like)
-	FrameTypeAck  uint8 = 2  // Acknowledgment
-	FrameTypeErr  uint8 = 3  // Error
-	FrameTypeDAT  uint8 = 12 // Data
+	FrameTypeAck uint8 = 2  // Acknowledgment
+	FrameTypeErr uint8 = 3  // Error
+	FrameTypeDAT uint8 = 12 // Data
 )

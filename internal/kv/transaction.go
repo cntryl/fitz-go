@@ -82,7 +82,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 
 	// Send request frame on the KV channel.
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -158,7 +158,7 @@ func (t *transaction) Scan(ctx context.Context, startKey []byte, endKey []byte, 
 	// Add operation tag and send request frame.
 	enc.AddUint8(transport.TagOp, transport.KVOpScan)
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -301,7 +301,7 @@ func (t *transaction) Put(ctx context.Context, key []byte, value []byte) error {
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -338,7 +338,7 @@ func (t *transaction) Insert(ctx context.Context, key []byte, value []byte) erro
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -374,7 +374,7 @@ func (t *transaction) Delete(ctx context.Context, key []byte) error {
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -411,7 +411,7 @@ func (t *transaction) DeleteRange(ctx context.Context, startKey []byte, endKey [
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -450,7 +450,7 @@ func (t *transaction) Commit(ctx context.Context) error {
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -514,7 +514,7 @@ func (t *transaction) Rollback(ctx context.Context) error {
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    FrameTypeReq,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),

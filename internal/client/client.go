@@ -193,6 +193,12 @@ func (c *Client) initializeDomainClients() {
 	c.domainClients.kv = kv.NewClient(c.mux)
 	// Initialize lease client; other domains initialized as implemented.
 	c.domainClients.lease = lease.NewClient(c.mux)
+	// Notice domain client
+	c.domainClients.notice = notice.NewClient(c.mux)
+	// RPC client
+	c.domainClients.rpc = rpc.NewClient(c.mux)
+	// Stream client
+	c.domainClients.stream = stream.NewClient(c.mux)
 }
 
 // sendConnect sends the CONNECT frame with JWT token per CLIENT_SPEC.md.

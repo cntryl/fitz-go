@@ -117,6 +117,8 @@ const (
 	FrameTypeAck       uint8 = 2
 	FrameTypeErr       uint8 = 3
 	FrameTypeHeartbeat uint8 = 0xFE
+	// FrameTypeReq is the standard request frame type used by domain operations.
+	FrameTypeReq uint8 = 10
 	// FrameTypeResp is the standard response frame type used by data domains.
 	FrameTypeResp uint8 = 11
 )
