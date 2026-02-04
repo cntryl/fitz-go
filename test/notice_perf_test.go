@@ -16,7 +16,7 @@ import (
 // not a full microbenchmark. Runs 100 iterations and reports avg/p95 in logs.
 func TestNoticePerf(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		addr, stop, err := fixture.StartSimBroker(string(transport))
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
 		require.NoError(t, err)
 		defer stop()
 

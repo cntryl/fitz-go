@@ -14,10 +14,10 @@ import (
 // verifies the basic pub/sub lifecycle: SUBSCRIBE â†’ PUBLISH â†’ NOTIFY.
 func TestShouldReceiveNotificationGivenActiveSubscriptionWhenPublishMatches(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange: start simulator broker and configure fixture
-		addr, stop, err := fixture.StartSimBroker(string(transport))
+		// Arrange: prefer external broker via FITZ_BROKER_ADDR, otherwise start simulator
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
 		if err != nil {
-			t.Fatalf("failed to start sim broker: %v", err)
+			t.Fatalf("failed to obtain broker: %v", err)
 		}
 		defer stop()
 
@@ -58,9 +58,9 @@ func TestShouldReceiveNotificationGivenActiveSubscriptionWhenPublishMatches(t *t
 // verifies a single PUBLISH reaches all matching subscriptions.
 func TestShouldFanoutToAllSubscribersGivenMultipleSubscriptionsWhenPublish(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		addr, stop, err := fixture.StartSimBroker(string(transport))
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
 		if err != nil {
-			t.Fatalf("failed to start sim broker: %v", err)
+			t.Fatalf("failed to obtain broker: %v", err)
 		}
 		defer stop()
 
@@ -104,9 +104,9 @@ func TestShouldFanoutToAllSubscribersGivenMultipleSubscriptionsWhenPublish(t *te
 // pattern matching with * (single segment).
 func TestShouldMatchWildcardGivenStarPatternWhenSubscribe(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		addr, stop, err := fixture.StartSimBroker(string(transport))
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
 		if err != nil {
-			t.Fatalf("failed to start sim broker: %v", err)
+			t.Fatalf("failed to obtain broker: %v", err)
 		}
 		defer stop()
 
@@ -151,9 +151,9 @@ func TestShouldMatchWildcardGivenStarPatternWhenSubscribe(t *testing.T) {
 // multi-segment wildcard matching with ** (zero or more segments).
 func TestShouldMatchMultiSegmentGivenDoubleStarPatternWhenSubscribe(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		addr, stop, err := fixture.StartSimBroker(string(transport))
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
 		if err != nil {
-			t.Fatalf("failed to start sim broker: %v", err)
+			t.Fatalf("failed to obtain broker: %v", err)
 		}
 		defer stop()
 
@@ -189,9 +189,9 @@ func TestShouldMatchMultiSegmentGivenDoubleStarPatternWhenSubscribe(t *testing.T
 // UNSUBSCRIBE stops notification delivery.
 func TestShouldStopReceivingGivenUnsubscribeWhenUnsubscribeCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		addr, stop, err := fixture.StartSimBroker(string(transport))
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
 		if err != nil {
-			t.Fatalf("failed to start sim broker: %v", err)
+			t.Fatalf("failed to obtain broker: %v", err)
 		}
 		defer stop()
 
@@ -233,9 +233,9 @@ func TestShouldStopReceivingGivenUnsubscribeWhenUnsubscribeCalled(t *testing.T) 
 // verifies UNSUBSCRIBE_ALL removes all subscriptions.
 func TestShouldClearAllSubscriptionsGivenActiveSubscriptionsWhenUnsubscribeAllCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		addr, stop, err := fixture.StartSimBroker(string(transport))
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
 		if err != nil {
-			t.Fatalf("failed to start sim broker: %v", err)
+			t.Fatalf("failed to obtain broker: %v", err)
 		}
 		defer stop()
 
@@ -277,9 +277,9 @@ func TestShouldClearAllSubscriptionsGivenActiveSubscriptionsWhenUnsubscribeAllCa
 // success even when no subscribers exist.
 func TestShouldSucceedGivenNoSubscribersWhenPublish(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		addr, stop, err := fixture.StartSimBroker(string(transport))
+		addr, stop, err := fixture.StartBrokerIfNeeded(transport)
 		if err != nil {
-			t.Fatalf("failed to start sim broker: %v", err)
+			t.Fatalf("failed to obtain broker: %v", err)
 		}
 		defer stop()
 
