@@ -93,6 +93,11 @@ func (f *TestFixture) Connect(ctx context.Context) error {
 	return f.client.Connect(ctx)
 }
 
+// SetBrokerAddr overrides the fixture broker address (useful for simulators).
+func (f *TestFixture) SetBrokerAddr(addr string) {
+	f.brokerAddr = addr
+}
+
 // Client returns the connected Fitz client.
 func (f *TestFixture) Client() fitz.Client {
 	if f.client == nil {
