@@ -11,7 +11,7 @@ import (
 )
 
 // Channel and wire codes for Notice domain (per CLIENT_SPEC.md semantics).
-// Channels: Pub (publish) and Sub (subscribe) are reserved 1/2 in the protocol.
+// Channels are broker-internal, but kept here for compatibility with the mux.
 const (
 	ChannelPub uint32 = 1
 	ChannelSub uint32 = 2
@@ -19,10 +19,11 @@ const (
 
 // Wire operation codes for Notice domain. Values are low-byte uint8 equivalents.
 const (
-	NoticeSubscribe      uint8 = 200 % 256
-	NoticeUnsubscribe    uint8 = 201 % 256
-	NoticePublish        uint8 = 202 % 256
-	NoticeUnsubscribeAll uint8 = 203 % 256
+	NoticePublish        uint8 = 100
+	NoticeSubscribe      uint8 = 101
+	NoticeUnsubscribe    uint8 = 102
+	NoticeUnsubscribeAll uint8 = 103
+	NoticeNotify         uint8 = 104
 )
 
 type Client interface {
@@ -58,13 +59,13 @@ type client struct {
 	mu         sync.Mutex
 	subs       map[string][]*subscription
 	ackMu      sync.Mutex
-	ackWaiters map[string][]chan struct{}
+	ackWaiters map[string][]chan error
 	once       sync.Once
 }
 
 // NewClient creates a new Notice domain client backed by the transport mux.
 func NewClient(mux muxProvider) Client {
-	c := &client{mux: mux, subs: make(map[string][]*subscription), ackWaiters: make(map[string][]chan struct{})}
+	c := &client{mux: mux, subs: make(map[string][]*subscription), ackWaiters: make(map[string][]chan error)}
 	// On reconnect, re-emit all active subscriptions (best-effort).
 	// NOTE: After a reconnect the client may miss notices published while the
 	// transport was disconnected. Fitz notices are best-effort, not durable.
@@ -129,67 +130,29 @@ func (c *client) startRecv() {
 	c.once.Do(func() {
 		go func() {
 			for f := range c.mux.In() {
-				if f.Channel != ChannelSub {
-					continue
-				}
-				if f.Type != transport.FrameTypeResp {
-					continue
-				}
-				dec, err := transport.NewTLVDecoder(f.Body)
-				if err != nil {
-					continue
-				}
-				// Check for operation ack (Unsubscribe / UnsubscribeAll)
-				op := dec.GetBytes(transport.TagOp)
-				if len(op) > 0 {
-					switch op[0] {
-					case 1:
-						// Unsubscribe ack for a route
-						r := dec.GetString(transport.TagRoute)
-						c.ackMu.Lock()
-						if waiters, ok := c.ackWaiters[r]; ok {
-							for _, w := range waiters {
-								close(w)
-							}
-							delete(c.ackWaiters, r)
+				if f.Type == NoticeNotify {
+					route, body, ok := decodeNotify(f.Body)
+					if !ok {
+						continue
+					}
+					msg := NoticeMsg{Route: route, Metadata: nil, Body: body}
+					c.mu.Lock()
+					var targets []*subscription
+					for pat, subs := range c.subs {
+						if noticeMatchRoute(pat, route) {
+							targets = append(targets, subs...)
 						}
-						c.ackMu.Unlock()
-					case 2:
-						// UnsubscribeAll ack: notify all waiters
-						c.ackMu.Lock()
-						for r, waiters := range c.ackWaiters {
-							for _, w := range waiters {
-								close(w)
-							}
-							delete(c.ackWaiters, r)
-						}
-						c.ackMu.Unlock()
+					}
+					c.mu.Unlock()
+					for _, s := range targets {
+						s.deliver(msg)
 					}
 					continue
 				}
-				r := dec.GetString(transport.TagRoute)
-				b := dec.GetBytes(transport.TagBody)
-				md := make(NoticeMetadata)
-				// Minimal metadata decoding: support single TagKey/TagValue pair.
-				if dec.Has(transport.TagKey) && dec.Has(transport.TagValue) {
-					k := dec.GetString(transport.TagKey)
-					v := dec.GetString(transport.TagValue)
-					md[k] = v
-				}
-				msg := NoticeMsg{Route: r, Metadata: md, Body: append([]byte(nil), b...)}
-				c.mu.Lock()
-				var targets []*subscription
-				for pat, subs := range c.subs {
-					if noticeMatchRoute(pat, r) {
-						targets = append(targets, subs...)
-					}
-				}
-				c.mu.Unlock()
-				// deliver without holding client lock. Use subscription.deliver which
-				// selects on the subscription's done channel and the inbox so that
-				// Unsubscribe can cancel blocked deliveries.
-				for _, s := range targets {
-					s.deliver(msg)
+				if isNoticeResponseType(f.Type) {
+					routeKey, err := decodeNoticeResponseKey(f.Type, f.Body)
+					c.notifyWaiters(routeKey, err)
+					continue
 				}
 			}
 		}()
@@ -198,11 +161,13 @@ func (c *client) startRecv() {
 
 // noticeMatchRoute duplicates the simulator matching logic (single '*' and multi '**').
 func noticeMatchRoute(pattern, route string) bool {
-	if pattern == route {
+	pat := stripNoticeScheme(pattern)
+	rt := stripNoticeScheme(route)
+	if pat == rt {
 		return true
 	}
-	pSegs := strings.Split(pattern, "/")
-	rSegs := strings.Split(route, "/")
+	pSegs := strings.Split(pat, "/")
+	rSegs := strings.Split(rt, "/")
 	pi, ri := 0, 0
 	for pi < len(pSegs) && ri < len(rSegs) {
 		if pSegs[pi] == "**" {
@@ -246,6 +211,9 @@ func noticeMatchRoute(pattern, route string) bool {
 type ctxKeyNoticeBuf struct{}
 
 func (c *client) Subscribe(ctx context.Context, route string, handler NoticeHandler) (Subscription, error) {
+	if err := validateNoticeRoute(route, true); err != nil {
+		return nil, err
+	}
 	// create subscription
 	buf := 1 // per-subscription inbox buffer; TODO: expose as option
 	if v := ctx.Value(ctxKeyNoticeBuf{}); v != nil {
@@ -322,71 +290,32 @@ func (s *subscription) deliver(msg NoticeMsg) {
 
 // sendSubscribe sends a subscribe request for a route.
 func (c *client) sendSubscribe(ctx context.Context, route string) error {
-	enc := transport.NewTLVEncoder()
-	enc.AddString(transport.TagRoute, route)
+	body := encodeSubscribe(route)
 	frame := transport.Frame{
 		Type:    NoticeSubscribe,
 		Flags:   0,
 		Channel: ChannelSub,
-		Body:    enc.Encode(),
+		Body:    body,
 	}
 	if err := c.mux.Send(frame); err != nil {
 		return fmt.Errorf("send subscribe: %w", err)
 	}
-	return nil
+	return c.waitForAck(ctx, NoticeSubscribe)
 }
 
 // sendUnsubscribe sends an unsubscribe request and waits (bounded) for an ack.
 func (c *client) sendUnsubscribe(ctx context.Context, route string) error {
-	enc := transport.NewTLVEncoder()
-	enc.AddString(transport.TagRoute, route)
+	body := encodeUnsubscribe(route)
 	frame := transport.Frame{
 		Type:    NoticeUnsubscribe,
 		Flags:   0,
 		Channel: ChannelSub,
-		Body:    enc.Encode(),
+		Body:    body,
 	}
-	// register ack waiter
-	ack := make(chan struct{})
-	c.ackMu.Lock()
-	c.ackWaiters[route] = append(c.ackWaiters[route], ack)
-	c.ackMu.Unlock()
 	if err := c.mux.Send(frame); err != nil {
-		// cleanup waiter
-		c.ackMu.Lock()
-		ws := c.ackWaiters[route]
-		for i, w := range ws {
-			if w == ack {
-				c.ackWaiters[route] = append(ws[:i], ws[i+1:]...)
-				break
-			}
-		}
-		if len(c.ackWaiters[route]) == 0 {
-			delete(c.ackWaiters, route)
-		}
-		c.ackMu.Unlock()
 		return fmt.Errorf("send unsubscribe: %w", err)
 	}
-	// wait for ack (bounded)
-	select {
-	case <-ack:
-		// got ack
-	case <-time.After(500 * time.Millisecond):
-		// timeout waiting for ack; cleanup our waiter to prevent leaks
-		c.ackMu.Lock()
-		ws := c.ackWaiters[route]
-		for i, w := range ws {
-			if w == ack {
-				c.ackWaiters[route] = append(ws[:i], ws[i+1:]...)
-				break
-			}
-		}
-		if len(c.ackWaiters[route]) == 0 {
-			delete(c.ackWaiters, route)
-		}
-		c.ackMu.Unlock()
-	}
-	return nil
+	return c.waitForAck(ctx, NoticeUnsubscribe)
 }
 
 // resubscribeAll re-sends Subscribe frames for all active routes. Best-effort.
@@ -405,17 +334,221 @@ func (c *client) resubscribeAll(ctx context.Context) {
 
 // Publish sends a notification to the given route with body bytes.
 func (c *client) Publish(ctx context.Context, route string, body []byte) error {
-	enc := transport.NewTLVEncoder()
-	enc.AddString(transport.TagRoute, route)
-	enc.AddBytes(transport.TagBody, body)
+	if err := validateNoticeRoute(route, false); err != nil {
+		return err
+	}
+	payload := encodePublish(route, body)
 	frame := transport.Frame{
 		Type:    NoticePublish,
 		Flags:   0,
 		Channel: ChannelPub,
-		Body:    enc.Encode(),
+		Body:    payload,
 	}
 	if err := c.mux.Send(frame); err != nil {
 		return fmt.Errorf("send publish: %w", err)
+	}
+	return c.waitForAck(ctx, NoticePublish)
+}
+
+func (c *client) waitForAck(ctx context.Context, op uint8) error {
+	key := noticeWaitKey(op)
+	ch := make(chan error, 1)
+	c.ackMu.Lock()
+	c.ackWaiters[key] = append(c.ackWaiters[key], ch)
+	c.ackMu.Unlock()
+
+	select {
+	case err := <-ch:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+		c.removeWaiter(key, ch)
+		return nil
+	}
+}
+
+func (c *client) notifyWaiters(key string, err error) {
+	if key == "" {
+		return
+	}
+	c.ackMu.Lock()
+	waiters := c.ackWaiters[key]
+	delete(c.ackWaiters, key)
+	c.ackMu.Unlock()
+	for _, w := range waiters {
+		w <- err
+		close(w)
+	}
+}
+
+func (c *client) removeWaiter(key string, ch chan error) {
+	c.ackMu.Lock()
+	ws := c.ackWaiters[key]
+	for i, w := range ws {
+		if w == ch {
+			ws = append(ws[:i], ws[i+1:]...)
+			break
+		}
+	}
+	if len(ws) == 0 {
+		delete(c.ackWaiters, key)
+	} else {
+		c.ackWaiters[key] = ws
+	}
+	c.ackMu.Unlock()
+}
+
+func noticeWaitKey(op uint8) string {
+	return fmt.Sprintf("%d", op)
+}
+
+func isNoticeResponseType(t uint8) bool {
+	return t == NoticePublish || t == NoticeSubscribe || t == NoticeUnsubscribe || t == NoticeUnsubscribeAll
+}
+
+func decodeNoticeResponseKey(op uint8, body []byte) (string, error) {
+	status, errMsg, ok := decodeStatus(body)
+	if !ok {
+		return "", nil
+	}
+	if status != 0 {
+		return "", fmt.Errorf("notice error: %s", errMsg)
+	}
+	return noticeWaitKey(op), nil
+}
+
+func decodeStatus(body []byte) (uint8, string, bool) {
+	if len(body) < 1 {
+		return 0, "", false
+	}
+	status := body[0]
+	if status == 0 {
+		return 0, "", true
+	}
+	if len(body) < 5 {
+		return status, "", true
+	}
+	msgLen := uint32(body[1])<<24 | uint32(body[2])<<16 | uint32(body[3])<<8 | uint32(body[4])
+	if int(5+msgLen) > len(body) {
+		return status, "", true
+	}
+	return status, string(body[5 : 5+msgLen]), true
+}
+
+func encodePublish(route string, body []byte) []byte {
+	routeBytes := []byte(route)
+	buf := make([]byte, 0, 8+4+len(routeBytes)+4+len(body))
+	buf = appendU64(buf, 0)
+	buf = appendU32(buf, uint32(len(routeBytes)))
+	buf = append(buf, routeBytes...)
+	buf = appendU32(buf, uint32(len(body)))
+	buf = append(buf, body...)
+	return buf
+}
+
+func encodeSubscribe(route string) []byte {
+	pat := []byte(route)
+	buf := make([]byte, 0, 8+4+len(pat)+8+4)
+	buf = appendU64(buf, 0)
+	buf = appendU32(buf, uint32(len(pat)))
+	buf = append(buf, pat...)
+	buf = appendU64(buf, 0)
+	buf = appendU32(buf, 0)
+	return buf
+}
+
+func encodeUnsubscribe(route string) []byte {
+	return encodeSubscribe(route)
+}
+
+func decodeNotify(body []byte) (string, []byte, bool) {
+	_, route, ok := decodeFirstRoute(body)
+	if !ok {
+		return "", nil, false
+	}
+	payload, ok := decodePayload(body)
+	if !ok {
+		return "", nil, false
+	}
+	return route, payload, true
+}
+
+func decodeFirstRoute(body []byte) (int, string, bool) {
+	if len(body) < 12 {
+		return 0, "", false
+	}
+	idx := 0
+	idx += 8 // family_id
+	routeLen := readU32(body[idx:])
+	idx += 4
+	if int(idx+int(routeLen)) > len(body) {
+		return 0, "", false
+	}
+	route := string(body[idx : idx+int(routeLen)])
+	idx += int(routeLen)
+	return idx, route, true
+}
+
+func decodePayload(body []byte) ([]byte, bool) {
+	idx, _, ok := decodeFirstRoute(body)
+	if !ok || idx+4 > len(body) {
+		return nil, false
+	}
+	plen := readU32(body[idx:])
+	idx += 4
+	if int(idx+int(plen)) > len(body) {
+		return nil, false
+	}
+	payload := append([]byte(nil), body[idx:idx+int(plen)]...)
+	return payload, true
+}
+
+func appendU64(buf []byte, v uint64) []byte {
+	return append(buf,
+		byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32),
+		byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+}
+
+func appendU32(buf []byte, v uint32) []byte {
+	return append(buf, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+}
+
+func readU32(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
+
+func stripNoticeScheme(route string) string {
+	const prefix = "notice://"
+	if strings.HasPrefix(route, prefix) {
+		return strings.TrimPrefix(route, prefix)
+	}
+	return route
+}
+
+func validateNoticeRoute(route string, allowWildcards bool) error {
+	if !strings.HasPrefix(route, "notice://") {
+		return fmt.Errorf("notice route must start with notice://")
+	}
+	path := stripNoticeScheme(route)
+	segs := strings.Split(path, "/")
+	if len(segs) != 3 {
+		if allowWildcards && len(segs) == 2 && segs[1] == "**" {
+			return nil
+		}
+		return fmt.Errorf("notice route must have realm/area/resource")
+	}
+	if segs[0] == "" || segs[1] == "" || segs[2] == "" {
+		return fmt.Errorf("notice route segments must be non-empty")
+	}
+	if !allowWildcards {
+		if strings.Contains(segs[1], "*") || strings.Contains(segs[2], "*") {
+			return fmt.Errorf("notice publish route cannot contain wildcards")
+		}
+		return nil
+	}
+	if segs[0] == "*" || segs[0] == "**" {
+		return fmt.Errorf("notice realm cannot be wildcard")
 	}
 	return nil
 }
