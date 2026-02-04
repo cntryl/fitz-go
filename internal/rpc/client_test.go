@@ -30,10 +30,6 @@ func (m *mockMux) Ctx() context.Context { return context.Background() }
 
 func TestRequestSendsFrameAndReturnsResponse(t *testing.T) {
 	m := newMockMux()
-	c := NewClient((*transport.Mux)(nil))
-	// Inject our mock by casting (we don't rely on typed mux fields in client)
-	c = &client{mux: (*transport.Mux)(nil)}
-	// Replace methods by directly using mock when testing behavior: call implementation logic directly.
 
 	// Instead of monkey patching, directly craft frame and assert encoding via mock.Send simulation.
 	// Build request

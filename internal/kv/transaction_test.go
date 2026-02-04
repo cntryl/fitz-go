@@ -30,7 +30,7 @@ func (m *MockMux) In() <-chan transport.Frame {
 				id, _ := dec.GetUint64(transport.TagID)
 				enc := transport.NewTLVEncoder()
 				enc.AddUint64(transport.TagID, id)
-				ch <- transport.Frame{Type: FrameTypeResp, Flags: 0, Channel: ChannelKV, Body: enc.Encode()}
+				ch <- transport.Frame{Type: transport.FrameTypeResp, Flags: 0, Channel: ChannelKV, Body: enc.Encode()}
 				close(ch)
 				return ch
 			}
@@ -70,7 +70,7 @@ func TestShouldSendPutRequestGivenReadWriteTxWhenPutCalled(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.NotNil(t, mockMux.lastFrameSent)
-	assert.Equal(t, FrameTypeReq, mockMux.lastFrameSent.Type)
+	assert.Equal(t, transport.FrameTypeReq, mockMux.lastFrameSent.Type)
 	assert.Equal(t, ChannelKV, mockMux.lastFrameSent.Channel)
 	// Verify TLV contains the expected operation tag
 	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
@@ -120,7 +120,7 @@ func TestShouldSendDeleteRequestGivenReadWriteTxWhenDeleteCalled(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.NotNil(t, mockMux.lastFrameSent)
-	assert.Equal(t, FrameTypeReq, mockMux.lastFrameSent.Type)
+	assert.Equal(t, transport.FrameTypeReq, mockMux.lastFrameSent.Type)
 	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
 	assert.NoError(t, err)
 	assert.Equal(t, []byte{transport.KVOpDelete}, dec.GetBytes(transport.TagOp))
@@ -201,7 +201,7 @@ func TestShouldSendGetRequestGivenReadTxWhenGetCalled(t *testing.T) {
 
 	// Assert
 	assert.NotNil(t, mockMux.lastFrameSent)
-	assert.Equal(t, FrameTypeReq, mockMux.lastFrameSent.Type)
+	assert.Equal(t, transport.FrameTypeReq, mockMux.lastFrameSent.Type)
 	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
 	assert.NoError(t, err)
 	assert.Equal(t, []byte{transport.KVOpGet}, dec.GetBytes(transport.TagOp))
@@ -226,7 +226,7 @@ func TestShouldSendScanRequestGivenReadTxWhenScanCalled(t *testing.T) {
 
 	// Assert
 	assert.NotNil(t, mockMux.lastFrameSent)
-	assert.Equal(t, FrameTypeReq, mockMux.lastFrameSent.Type)
+	assert.Equal(t, transport.FrameTypeReq, mockMux.lastFrameSent.Type)
 	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
 	assert.NoError(t, err)
 	assert.Equal(t, []byte{transport.KVOpScan}, dec.GetBytes(transport.TagOp))

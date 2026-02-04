@@ -24,7 +24,6 @@ func (m *mockMux) Ctx() context.Context         { return context.Background() }
 
 func TestAppendSendsFrameAndReceivesSeq(t *testing.T) {
 	m := newMockMux()
-	c := NewClient((*transport.Mux)(nil))
 	// We'll not inject mux into client (type mismatch), instead test the frame encoding by simulating
 	// what the client should send and then simulate a response.
 
