@@ -20,7 +20,24 @@ func (m *MockMux) Send(f transport.Frame) error {
 }
 
 func (m *MockMux) In() <-chan transport.Frame {
-	return make(<-chan transport.Frame)
+	ch := make(chan transport.Frame, 1)
+	// If a Commit was sent, respond with a Commit ack containing the same ID.
+	if m.lastFrameSent != nil {
+		dec, err := transport.NewTLVDecoder(m.lastFrameSent.Body)
+		if err == nil {
+			op := dec.GetBytes(transport.TagOp)
+			if len(op) > 0 && op[0] == transport.KVOpCommit {
+				id, _ := dec.GetUint64(transport.TagID)
+				enc := transport.NewTLVEncoder()
+				enc.AddUint64(transport.TagID, id)
+				ch <- transport.Frame{Type: FrameTypeResp, Flags: 0, Channel: ChannelKV, Body: enc.Encode()}
+				close(ch)
+				return ch
+			}
+		}
+	}
+	close(ch)
+	return ch
 }
 
 func (m *MockMux) Close() error {
