@@ -43,15 +43,11 @@ func TestShouldConnectViaWebSocketGivenValidAddressWhenWebSocketTransportUsed(t 
 	err := f.Connect(ctx)
 
 	// Assert
-	if err != nil {
-		t.Fatalf("WebSocket connection failed: %v (expected successful connection per AC-CONN-001)", err)
-	}
+	require.NoError(t, err, "WebSocket connection failed: expected successful connection per AC-CONN-001")
 
 	// Verify client is accessible and not nil.
 	client := f.Client()
-	if client == nil {
-		t.Fatal("expected non-nil client after successful connection")
-	}
+	require.NotNil(t, client, "expected non-nil client after successful connection")
 }
 
 // TestShouldProduceIdenticalBehaviorGivenSameOperationWhenDifferentTransports
@@ -65,17 +61,13 @@ func TestShouldProduceIdenticalBehaviorGivenSameOperationWhenDifferentTransports
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act - verify connection succeeds with empty JWT (anonymous mode)
 		client := f.Client()
 
 		// Assert
-		if client == nil {
-			t.Fatal("expected non-nil client in anonymous mode (AC-CONN-004)")
-		}
+		require.NotNil(t, client, "expected non-nil client in anonymous mode (AC-CONN-004)")
 
 		// TODO: Add domain operation tests once domain clients are implemented.
 		// Per CLIENT_SPEC.md: "A client receiving the same payload over both transports MUST produce identical behavior."
@@ -92,9 +84,7 @@ func TestShouldReconnectGivenConnectionLostWhenReconnectAttempted(t *testing.T) 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("initial connection failed: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Reconnection logic not yet implemented")
@@ -111,9 +101,7 @@ func TestShouldDropSessionStateGivenDisconnectWhenReconnect(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Session state lifecycle not yet implemented")
@@ -130,9 +118,7 @@ func TestShouldHandleFrameSizeLimitGivenLargePayloadWhenFrameExceedsMax(t *testi
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Frame size enforcement not yet implemented")

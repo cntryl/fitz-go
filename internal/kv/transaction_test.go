@@ -55,6 +55,10 @@ func TestShouldSendPutRequestGivenReadWriteTxWhenPutCalled(t *testing.T) {
 	assert.NotNil(t, mockMux.lastFrameSent)
 	assert.Equal(t, FrameTypeReq, mockMux.lastFrameSent.Type)
 	assert.Equal(t, ChannelKV, mockMux.lastFrameSent.Channel)
+	// Verify TLV contains the expected operation tag
+	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{transport.KVOpPut}, dec.GetBytes(transport.TagOp))
 }
 
 // TestShouldReturnErrorGivenReadOnlyTxWhenPutCalled tests Put on read-only transaction.
@@ -100,6 +104,9 @@ func TestShouldSendDeleteRequestGivenReadWriteTxWhenDeleteCalled(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, mockMux.lastFrameSent)
 	assert.Equal(t, FrameTypeReq, mockMux.lastFrameSent.Type)
+	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{transport.KVOpDelete}, dec.GetBytes(transport.TagOp))
 }
 
 // TestShouldSendInsertRequestGivenReadWriteTxWhenInsertCalled tests Insert sends immediately.
@@ -124,6 +131,9 @@ func TestShouldSendInsertRequestGivenReadWriteTxWhenInsertCalled(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.NotNil(t, mockMux.lastFrameSent)
+	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{transport.KVOpInsert}, dec.GetBytes(transport.TagOp))
 }
 
 // TestShouldSendDeleteRangeRequestGivenReadWriteTxWhenDeleteRangeCalled tests DeleteRange sends immediately.
@@ -149,6 +159,60 @@ func TestShouldSendDeleteRangeRequestGivenReadWriteTxWhenDeleteRangeCalled(t *te
 	assert.NoError(t, err)
 	assert.Equal(t, 0, count)
 	assert.NotNil(t, mockMux.lastFrameSent)
+	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{transport.KVOpDeleteRange}, dec.GetBytes(transport.TagOp))
+}
+
+// TestShouldSendGetRequestGivenReadTxWhenGetCalled tests Get sends request frame with op tag.
+func TestShouldSendGetRequestGivenReadTxWhenGetCalled(t *testing.T) {
+	// Arrange
+	mockMux := &MockMux{}
+	route := NewRoute("testRealm", "testArea", "testResource")
+	tx := &transaction{
+		route:    route,
+		mux:      mockMux,
+		readOnly: true,
+		txID:     1,
+	}
+
+	ctx := context.Background()
+	key := []byte("key1")
+
+	// Act
+	_, _, _ = tx.Get(ctx, key)
+
+	// Assert
+	assert.NotNil(t, mockMux.lastFrameSent)
+	assert.Equal(t, FrameTypeReq, mockMux.lastFrameSent.Type)
+	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{transport.KVOpGet}, dec.GetBytes(transport.TagOp))
+}
+
+// TestShouldSendScanRequestGivenReadTxWhenScanCalled tests Scan sends request frame with op tag.
+func TestShouldSendScanRequestGivenReadTxWhenScanCalled(t *testing.T) {
+	// Arrange
+	mockMux := &MockMux{}
+	route := NewRoute("testRealm", "testArea", "testResource")
+	tx := &transaction{
+		route:    route,
+		mux:      mockMux,
+		readOnly: true,
+		txID:     1,
+	}
+
+	ctx := context.Background()
+
+	// Act
+	_, _ = tx.Scan(ctx, []byte("a"), []byte("z"), 10)
+
+	// Assert
+	assert.NotNil(t, mockMux.lastFrameSent)
+	assert.Equal(t, FrameTypeReq, mockMux.lastFrameSent.Type)
+	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{transport.KVOpScan}, dec.GetBytes(transport.TagOp))
 }
 
 // TestShouldReturnNoopGivenReadOnlyTxWhenCommitCalled tests Commit on read-only transaction.
@@ -193,6 +257,9 @@ func TestShouldSendCommitRequestGivenReadWriteTxWhenCommitCalled(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, mockMux.lastFrameSent)
 	assert.True(t, tx.committed.Load())
+	dec, err := transport.NewTLVDecoder(mockMux.lastFrameSent.Body)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{transport.KVOpCommit}, dec.GetBytes(transport.TagOp))
 }
 
 // TestShouldReturnErrorGivenEmptyKeyWhenPutCalled tests Put with empty key.

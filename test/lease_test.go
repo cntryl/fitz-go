@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldAcquireLeaseGivenAvailableLeaseWhenAcquireCalled verifies
@@ -18,9 +19,7 @@ func TestShouldAcquireLeaseGivenAvailableLeaseWhenAcquireCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Lease ACQUIRE operation not yet implemented")
@@ -37,9 +36,7 @@ func TestShouldRejectAcquireGivenHeldLeaseWhenAcquireCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Lease mutual exclusion not yet implemented")
@@ -56,9 +53,7 @@ func TestShouldExtendTTLGivenValidTokenWhenRenewCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Lease RENEW operation not yet implemented")
@@ -75,9 +70,7 @@ func TestShouldRejectRenewGivenInvalidTokenWhenTokenMismatch(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Lease fencing token validation not yet implemented")
@@ -94,9 +87,7 @@ func TestShouldReleaseLeaseGivenValidTokenWhenReleaseCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Lease RELEASE operation not yet implemented")
@@ -132,9 +123,7 @@ func TestShouldExpireLeaseGivenTTLElapsedWhenNoRenew(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Lease TTL expiry not yet implemented")
@@ -151,9 +140,7 @@ func TestShouldQueryLeaseStatusGivenExistingLeaseWhenQueryCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Lease QUERY operation not yet implemented")

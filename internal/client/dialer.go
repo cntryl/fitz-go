@@ -3,14 +3,11 @@ package client
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"strings"
-	"sync"
-	"time"
 
-	"github.com/gorilla/websocket"
+	"crypto/tls"
 )
 
 // Dialer creates network connections for different transport protocols.
@@ -57,135 +54,35 @@ func (d *DefaultDialer) dialTCP(ctx context.Context, addr string) (net.Conn, err
 }
 
 // dialWebSocket establishes a WebSocket connection and returns a net.Conn adapter.
-// Uses gorilla/websocket for reliable WebSocket support. Returns a wrapper that
-// implements net.Conn by translating WebSocket binary messages to Read/Write calls.
+// Minimal in-repo implementation (handshake + RFC6455 binary frames). Returns a
+// wrapper implementing net.Conn by translating WebSocket binary messages to Read/Write.
 func (d *DefaultDialer) dialWebSocket(ctx context.Context, addr string) (net.Conn, error) {
-	// Use gorilla websocket.DefaultDialer for standard WebSocket connection.
-	dialer := websocket.DefaultDialer
-
-	// Dial the WebSocket connection.
-	conn, _, err := dialer.DialContext(ctx, addr, nil)
+	u, err := url.Parse(addr)
 	if err != nil {
-		return nil, fmt.Errorf("websocket dial failed: %w", err)
+		return nil, fmt.Errorf("invalid websocket address: %w", err)
 	}
 
-	// Wrap the WebSocket connection to implement net.Conn.
-	return &wsConnAdapter{conn: conn}, nil
-}
-
-// wsConnAdapter adapts a WebSocket connection to implement net.Conn.
-// Per CLIENT_SPEC.md, WebSocket transport uses binary frames where "each binary frame = one complete TLV frame payload".
-type wsConnAdapter struct {
-	conn     *websocket.Conn
-	readBuf  []byte
-	readMu   sync.Mutex
-	writeMu  sync.Mutex
-	closeErr error
-}
-
-// Read implements net.Conn.Read by reading a WebSocket binary message.
-func (w *wsConnAdapter) Read(p []byte) (n int, err error) {
-	w.readMu.Lock()
-	defer w.readMu.Unlock()
-
-	// If we have buffered data from a previous message, return that first.
-	if len(w.readBuf) > 0 {
-		n = copy(p, w.readBuf)
-		w.readBuf = w.readBuf[n:]
-		return n, nil
-	}
-
-	// Read a new WebSocket message.
-	messageType, data, err := w.conn.ReadMessage()
-	if err != nil {
-		return 0, err
-	}
-
-	if messageType != websocket.BinaryMessage {
-		return 0, fmt.Errorf("expected binary message, got type %d", messageType)
-	}
-
-	// Copy what we can into p, buffer the rest.
-	n = copy(p, data)
-	if n < len(data) {
-		w.readBuf = data[n:]
-	}
-
-	return n, nil
-}
-
-// ReadMessage returns the next WebSocket binary message as a single byte slice.
-// This is used by transport.Mux to read whole binary frames (WebSocket path).
-func (w *wsConnAdapter) ReadMessage() ([]byte, error) {
-	for {
-		messageType, data, err := w.conn.ReadMessage()
+	var c net.Conn
+	if u.Scheme == "wss" {
+		dialer := &tls.Dialer{}
+		t, err := dialer.DialContext(ctx, "tcp", u.Host)
 		if err != nil {
 			return nil, err
 		}
-		if messageType != websocket.BinaryMessage {
-			// Ignore non-binary frames and continue reading.
-			continue
+		c = t
+	} else {
+		var dialer net.Dialer
+		t, err := dialer.DialContext(ctx, "tcp", u.Host)
+		if err != nil {
+			return nil, err
 		}
-		return data, nil
-	}
-}
-
-// Write implements net.Conn.Write by sending a WebSocket binary message.
-// Per CLIENT_SPEC.md: "Each binary frame = one complete TLV frame payload".
-func (w *wsConnAdapter) Write(p []byte) (n int, err error) {
-	w.writeMu.Lock()
-	defer w.writeMu.Unlock()
-
-	if err := w.conn.WriteMessage(websocket.BinaryMessage, p); err != nil {
-		return 0, err
+		c = t
 	}
 
-	return len(p), nil
-}
-
-// Close closes the WebSocket connection.
-func (w *wsConnAdapter) Close() error {
-	w.writeMu.Lock()
-	defer w.writeMu.Unlock()
-
-	// Send close message.
-	err := w.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-	if err != nil {
-		w.closeErr = err
+	if err := doClientHandshake(c, u.Host, u.RequestURI()); err != nil {
+		c.Close()
+		return nil, err
 	}
 
-	// Close underlying connection.
-	return w.conn.Close()
+	return &wsConnAdapter{conn: c}, nil
 }
-
-// LocalAddr returns the local network address.
-func (w *wsConnAdapter) LocalAddr() net.Addr {
-	return w.conn.LocalAddr()
-}
-
-// RemoteAddr returns the remote network address.
-func (w *wsConnAdapter) RemoteAddr() net.Addr {
-	return w.conn.RemoteAddr()
-}
-
-// SetDeadline sets the read and write deadlines.
-func (w *wsConnAdapter) SetDeadline(t time.Time) error {
-	if err := w.conn.SetReadDeadline(t); err != nil {
-		return err
-	}
-	return w.conn.SetWriteDeadline(t)
-}
-
-// SetReadDeadline sets the deadline for future Read calls.
-func (w *wsConnAdapter) SetReadDeadline(t time.Time) error {
-	return w.conn.SetReadDeadline(t)
-}
-
-// SetWriteDeadline sets the deadline for future Write calls.
-func (w *wsConnAdapter) SetWriteDeadline(t time.Time) error {
-	return w.conn.SetWriteDeadline(t)
-}
-
-var _ net.Conn = (*wsConnAdapter)(nil)
-var _ io.Reader = (*wsConnAdapter)(nil)
-var _ io.Writer = (*wsConnAdapter)(nil)

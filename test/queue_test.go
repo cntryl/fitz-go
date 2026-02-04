@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldEnqueueAndReserveMessageGivenValidQueueWhenBasicWorkflow verifies
@@ -18,9 +19,7 @@ func TestShouldEnqueueAndReserveMessageGivenValidQueueWhenBasicWorkflow(t *testi
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Queue ENQUEUE/RESERVE/COMPLETE not yet implemented")
@@ -37,9 +36,7 @@ func TestShouldReturnMessageToQueueGivenExpiredLeaseWhenLeaseExpires(t *testing.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Queue lease expiry not yet implemented")
@@ -56,9 +53,7 @@ func TestShouldExtendLeaseGivenValidTokenWhenExtendCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Queue EXTEND operation not yet implemented")
@@ -75,9 +70,7 @@ func TestShouldRejectCompleteGivenInvalidTokenWhenTokenMismatch(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Queue COMPLETE token validation not yet implemented")
@@ -94,9 +87,7 @@ func TestShouldReserveBatchGivenMultipleMessagesWhenBatchSizeSpecified(t *testin
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Queue batch RESERVE not yet implemented")
@@ -113,9 +104,7 @@ func TestShouldDelayVisibilityGivenDelaySecondsWhenEnqueueWithDelay(t *testing.T
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Queue delayed ENQUEUE not yet implemented")
@@ -132,9 +121,7 @@ func TestShouldDistributeMessagesGivenMultipleConsumersWhenConcurrentReserve(t *
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Queue concurrent consumers not yet implemented")

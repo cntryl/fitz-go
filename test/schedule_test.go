@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldCreateScheduleGivenValidCronExpressionWhenCreateCalled verifies
@@ -18,9 +19,7 @@ func TestShouldCreateScheduleGivenValidCronExpressionWhenCreateCalled(t *testing
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Schedule CREATE operation not yet implemented")
@@ -37,9 +36,7 @@ func TestShouldRejectCreateGivenInvalidCronSyntaxWhenCreateCalled(t *testing.T) 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Schedule cron validation not yet implemented")
@@ -56,9 +53,7 @@ func TestShouldExecuteTaskGivenScheduledTimeWhenTimeElapses(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Schedule execution not yet implemented")
@@ -75,9 +70,7 @@ func TestShouldCancelScheduleGivenExistingScheduleWhenCancelCalled(t *testing.T)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Schedule CANCEL operation not yet implemented")
@@ -94,9 +87,7 @@ func TestShouldListSchedulesGivenMultipleSchedulesWhenListCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Schedule LIST operation not yet implemented")
@@ -113,9 +104,7 @@ func TestShouldPersistScheduleGivenBrokerRestartWhenScheduleCreated(t *testing.T
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Schedule persistence not yet implemented")
@@ -132,9 +121,7 @@ func TestShouldExecuteRecurringGivenCronIntervalWhenMultiplePeriods(t *testing.T
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Schedule recurring execution not yet implemented")

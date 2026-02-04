@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled
@@ -18,9 +19,7 @@ func TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled(t *tes
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("RPC SUBSCRIBE_WORKER/REQUEST/RESPONSE not yet implemented")
@@ -37,9 +36,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("RPC streaming responses not yet implemented")
@@ -56,9 +53,7 @@ func TestShouldReturnTimeoutGivenNoWorkerResponseWhenRequestTimeout(t *testing.T
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("RPC request timeout not yet implemented")
@@ -75,9 +70,7 @@ func TestShouldLoadBalanceGivenMultipleWorkersWhenConcurrentRequests(t *testing.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("RPC load balancing not yet implemented")
@@ -94,9 +87,7 @@ func TestShouldCorrelateResponseGivenCorrectCorrelationIDWhenMultipleRequests(t 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("RPC correlation not yet implemented")
@@ -113,9 +104,7 @@ func TestShouldUnregisterWorkerGivenActiveRegistrationWhenUnsubscribeWorkerCalle
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("RPC UNSUBSCRIBE_WORKER not yet implemented")
@@ -132,9 +121,7 @@ func TestShouldReturnBackpressureErrorGivenFullQueueWhenRequestSent(t *testing.T
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("RPC backpressure not yet implemented")

@@ -75,13 +75,14 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 
 	// Build the request TLV payload.
 	enc := transport.NewTLVEncoder()
+	enc.AddUint8(transport.TagOp, transport.KVOpGet)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagKey, key)
 	enc.AddUint64(transport.TagID, requestID)
 
 	// Send request frame on the KV channel.
 	frame := transport.Frame{
-		Type:    KVGet,
+		Type:    FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -154,9 +155,10 @@ func (t *transaction) Scan(ctx context.Context, startKey []byte, endKey []byte, 
 	enc.AddUint32(transport.TagLimit, limit)
 	enc.AddUint64(transport.TagID, requestID)
 
-	// Send request frame.
+	// Add operation tag and send request frame.
+	enc.AddUint8(transport.TagOp, transport.KVOpScan)
 	frame := transport.Frame{
-		Type:    KVScan,
+		Type:    FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -292,18 +294,17 @@ func (t *transaction) Put(ctx context.Context, key []byte, value []byte) error {
 
 	// Build and send PUT request immediately.
 	enc := transport.NewTLVEncoder()
+	enc.AddUint8(transport.TagOp, transport.KVOpPut)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagKey, key)
 	enc.AddBytes(transport.TagBody, value)
 	enc.AddUint64(transport.TagID, t.txID)
 
-	payload := enc.Encode()
-	// Debug log removed - payload available if troubleshooting
 	frame := transport.Frame{
-		Type:    KVPut,
+		Type:    FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
-		Body:    payload,
+		Body:    enc.Encode(),
 	}
 	return t.mux.Send(frame)
 }
@@ -330,13 +331,14 @@ func (t *transaction) Insert(ctx context.Context, key []byte, value []byte) erro
 
 	// Build and send INSERT request immediately.
 	enc := transport.NewTLVEncoder()
+	enc.AddUint8(transport.TagOp, transport.KVOpInsert)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagKey, key)
 	enc.AddBytes(transport.TagBody, value)
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    KVInsert,
+		Type:    FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -366,12 +368,13 @@ func (t *transaction) Delete(ctx context.Context, key []byte) error {
 
 	// Build and send DELETE request immediately.
 	enc := transport.NewTLVEncoder()
+	enc.AddUint8(transport.TagOp, transport.KVOpDelete)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagKey, key)
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    KVDelete,
+		Type:    FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -401,13 +404,14 @@ func (t *transaction) DeleteRange(ctx context.Context, startKey []byte, endKey [
 
 	// Build and send DELETE_RANGE request immediately.
 	enc := transport.NewTLVEncoder()
+	enc.AddUint8(transport.TagOp, transport.KVOpDeleteRange)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagStartKey, startKey)
 	enc.AddBytes(transport.TagEndKey, endKey)
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    KVDeleteRange,
+		Type:    FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -441,11 +445,12 @@ func (t *transaction) Commit(ctx context.Context) error {
 
 	// Send COMMIT signal to broker to finalize the transaction.
 	enc := transport.NewTLVEncoder()
+	enc.AddUint8(transport.TagOp, transport.KVOpCommit)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    KVCommit,
+		Type:    FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),
@@ -504,11 +509,12 @@ func (t *transaction) Rollback(ctx context.Context) error {
 
 	// Send ROLLBACK signal to broker.
 	enc := transport.NewTLVEncoder()
+	enc.AddUint8(transport.TagOp, transport.KVOpRollback)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    KVRollback,
+		Type:    FrameTypeReq,
 		Flags:   0,
 		Channel: ChannelKV,
 		Body:    enc.Encode(),

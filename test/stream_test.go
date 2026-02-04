@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldAppendRecordsGivenValidSessionWhenAppendCalled verifies the
@@ -18,9 +19,7 @@ func TestShouldAppendRecordsGivenValidSessionWhenAppendCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Stream BEGIN/APPEND/COMMIT not yet implemented")
@@ -37,9 +36,7 @@ func TestShouldReadRecordsInOrderGivenOffsetRangeWhenReadCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Stream READ operation not yet implemented")
@@ -56,9 +53,7 @@ func TestShouldRejectAppendGivenMismatchedOffsetWhenOptimisticConcurrency(t *tes
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Stream optimistic concurrency not yet implemented")
@@ -75,9 +70,7 @@ func TestShouldRollbackUncommittedAppendsGivenActiveSessionWhenRollbackCalled(t 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Stream ROLLBACK operation not yet implemented")
@@ -94,9 +87,7 @@ func TestShouldReturnLastRecordGivenExistingStreamWhenLastCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Stream LAST operation not yet implemented")
@@ -113,9 +104,7 @@ func TestShouldReceiveNotificationsGivenActiveSubscriptionWhenRecordsAppended(t 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Stream SUBSCRIBE operation not yet implemented")

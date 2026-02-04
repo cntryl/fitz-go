@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldReceiveNotificationGivenActiveSubscriptionWhenPublishMatches
@@ -18,9 +19,7 @@ func TestShouldReceiveNotificationGivenActiveSubscriptionWhenPublishMatches(t *t
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Notice SUBSCRIBE/PUBLISH not yet implemented")
@@ -37,9 +36,7 @@ func TestShouldFanoutToAllSubscribersGivenMultipleSubscriptionsWhenPublish(t *te
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Notice fanout not yet implemented")
@@ -56,9 +53,7 @@ func TestShouldMatchWildcardGivenStarPatternWhenSubscribe(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Notice wildcard matching not yet implemented")
@@ -75,9 +70,7 @@ func TestShouldMatchMultiSegmentGivenDoubleStarPatternWhenSubscribe(t *testing.T
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Notice ** wildcard not yet implemented")
@@ -94,9 +87,7 @@ func TestShouldStopReceivingGivenUnsubscribeWhenUnsubscribeCalled(t *testing.T) 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Notice UNSUBSCRIBE not yet implemented")
@@ -113,9 +104,7 @@ func TestShouldClearAllSubscriptionsGivenActiveSubscriptionsWhenUnsubscribeAllCa
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Notice UNSUBSCRIBE_ALL not yet implemented")
@@ -132,9 +121,7 @@ func TestShouldSucceedGivenNoSubscribersWhenPublish(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Notice PUBLISH without subscribers not yet implemented")
@@ -151,9 +138,7 @@ func TestShouldDropSubscriptionsGivenDisconnectWhenReconnect(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("Notice subscription lifecycle not yet implemented")

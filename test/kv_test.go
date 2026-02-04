@@ -21,9 +21,7 @@ func TestShouldOpenAndCommitTransactionGivenValidRouteWhenBeginCalled(t *testing
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		realm := f.UniqueRealm()
 		area := f.UniqueArea()
@@ -63,9 +61,7 @@ func TestShouldReadValueGivenExistingKeyWhenGetCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("KV GET operation not yet implemented")
@@ -82,9 +78,7 @@ func TestShouldReturnNotFoundGivenNonExistentKeyWhenGetCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("KV GET operation not yet implemented")
@@ -101,9 +95,7 @@ func TestShouldWriteValueGivenValidKeyWhenPutCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("KV PUT operation not yet implemented")
@@ -120,9 +112,7 @@ func TestShouldInsertNewKeyGivenNonExistentKeyWhenInsertCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("KV INSERT operation not yet implemented")
@@ -139,9 +129,7 @@ func TestShouldFailGivenExistingKeyWhenInsertCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("KV INSERT operation not yet implemented")
@@ -158,9 +146,7 @@ func TestShouldDeleteKeyGivenExistingKeyWhenDeleteCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("KV DELETE operation not yet implemented")
@@ -177,9 +163,7 @@ func TestShouldScanKeysInOrderGivenRangeWhenScanCalled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("KV SCAN operation not yet implemented")
@@ -196,9 +180,7 @@ func TestShouldRollbackChangesGivenActiveTransactionWhenRollbackCalled(t *testin
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("KV ROLLBACK operation not yet implemented")
@@ -215,9 +197,7 @@ func TestShouldIsolateTransactionsGivenConcurrentAccessWhenMultipleTransactions(
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := f.Connect(ctx); err != nil {
-			t.Fatalf("failed to connect: %v", err)
-		}
+		require.NoError(t, f.Connect(ctx))
 
 		// Act & Assert
 		t.Fatal("KV transaction isolation not yet implemented")

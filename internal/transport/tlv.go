@@ -9,6 +9,7 @@ import (
 // TLV tag constants (canonical from CLIENT_SPEC.md).
 const (
 	TagToken          uint8 = 0x10
+	TagOp             uint8 = 0x11 // operation tag used by request frames
 	TagRoute          uint8 = 0x20
 	TagID             uint8 = 0x21
 	TagBody           uint8 = 0x22
@@ -89,6 +90,12 @@ func (e *TLVEncoder) AddUint32(tag uint8, value uint32) *TLVEncoder {
 func (e *TLVEncoder) AddUint64(tag uint8, value uint64) *TLVEncoder {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, value)
+	return e.AddTag(tag, b)
+}
+
+// AddUint8 adds a single byte value with the given tag.
+func (e *TLVEncoder) AddUint8(tag uint8, value uint8) *TLVEncoder {
+	b := []byte{value}
 	return e.AddTag(tag, b)
 }
 
