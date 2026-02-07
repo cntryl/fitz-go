@@ -3,7 +3,6 @@ package notice
 import (
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // Wire operation codes for Notice domain. Values are low-byte uint8 equivalents.
@@ -21,19 +20,6 @@ var (
 	ErrNoticeTimeout      = errors.New("notice operation timed out")
 	ErrNoticeSendFailed   = errors.New("notice send failed")
 )
-
-// mapNoticeError maps a broker error string to a domain-specific Go error.
-func mapNoticeError(msg string) error {
-	l := strings.ToLower(msg)
-	switch {
-	case strings.Contains(l, "route") || strings.Contains(l, "invalid"):
-		return ErrNoticeRouteInvalid
-	case strings.Contains(l, "timeout"):
-		return ErrNoticeTimeout
-	default:
-		return errors.New(msg)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Wire encoding / decoding helpers (custom binary format, not TLV)

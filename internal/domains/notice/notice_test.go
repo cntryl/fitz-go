@@ -150,11 +150,9 @@ func TestShouldResubscribeGivenActiveSubscriptionsWhenReconnectOccurs(t *testing
 	m.triggerReconnect()
 
 	// Assert — reconnect should result in resubscribe frames sent
-	select {
-	case <-time.After(100 * time.Millisecond):
-		if len(m.sent) == 0 {
-			t.Fatalf("no resubscribe frames observed")
-		}
+	time.Sleep(100 * time.Millisecond)
+	if len(m.sent) == 0 {
+		t.Fatalf("no resubscribe frames observed")
 	}
 }
 
