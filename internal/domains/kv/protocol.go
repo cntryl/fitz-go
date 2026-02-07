@@ -2,27 +2,10 @@ package kv
 
 import (
 	"errors"
-
-	"github.com/cntryl/cntryl-go/internal/core/transport"
+	"strings"
 )
 
-// KV protocol constants and error codes.
-
-// Local alias to centralized channel constant for backward compatibility.
-const ChannelKV = transport.ChannelKV
-
-// Standard error codes returned by the broker in KV operations.
-var (
-	ErrNotFound            = errors.New("key not found")
-	ErrKeyExists           = errors.New("key already exists")
-	ErrConcurrencyConflict = errors.New("concurrency conflict")
-	ErrInvalidRange        = errors.New("invalid key range")
-	ErrKeyTooLarge         = errors.New("key too large")
-	ErrValueTooLarge       = errors.New("value too large")
-	ErrTransactionAborted  = errors.New("transaction aborted")
-)
-
-// Transport-agnostic wire codes for KV ops (per CLIENT_SPEC.md: 100+)
+// Wire opcodes for KV domain (per CLIENT_SPEC.md: 100+).
 const (
 	KVBegin       uint8 = 100
 	KVCommit      uint8 = 101
@@ -35,9 +18,36 @@ const (
 	KVScan        uint8 = 108
 )
 
-// Frame type constants (per Fitz protocol). Use transport package shared Frame types.
-const (
-	FrameTypeAck uint8 = 2  // Acknowledgment
-	FrameTypeErr uint8 = 3  // Error
-	FrameTypeDAT uint8 = 12 // Data
+// Domain-specific errors.
+var (
+	ErrNotFound            = errors.New("key not found")
+	ErrKeyExists           = errors.New("key already exists")
+	ErrConcurrencyConflict = errors.New("concurrency conflict")
+	ErrInvalidRange        = errors.New("invalid key range")
+	ErrKeyTooLarge         = errors.New("key too large")
+	ErrValueTooLarge       = errors.New("value too large")
+	ErrTransactionAborted  = errors.New("transaction aborted")
 )
+
+// mapKVError maps a broker error message to a domain-specific Go error.
+func mapKVError(msg string) error {
+	l := strings.ToLower(msg)
+	switch {
+	case strings.Contains(l, "not found"):
+		return ErrNotFound
+	case strings.Contains(l, "exists") || strings.Contains(l, "already"):
+		return ErrKeyExists
+	case strings.Contains(l, "conflict") || strings.Contains(l, "concurrency"):
+		return ErrConcurrencyConflict
+	case strings.Contains(l, "range"):
+		return ErrInvalidRange
+	case strings.Contains(l, "key too large"):
+		return ErrKeyTooLarge
+	case strings.Contains(l, "value too large"):
+		return ErrValueTooLarge
+	case strings.Contains(l, "abort"):
+		return ErrTransactionAborted
+	default:
+		return errors.New(msg)
+	}
+}

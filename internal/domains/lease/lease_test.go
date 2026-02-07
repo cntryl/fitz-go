@@ -35,6 +35,8 @@ func (m *mockMux) Send(f transport.Frame) error {
 }
 
 func (m *mockMux) In() <-chan transport.Frame { return m.in }
+func (m *mockMux) Ctx() context.Context       { return context.Background() }
+func (m *mockMux) OnReconnect(cb func())      {}
 
 // respFrame builds a FrameTypeResp on ChannelLease with given TLV body.
 func respFrame(body []byte) transport.Frame {
@@ -126,7 +128,7 @@ func TestShouldReturnSendErrorGivenMuxFailureWhenAcquireCalled(t *testing.T) {
 
 	// Assert
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "send failed")
+	assert.Contains(t, err.Error(), "send:")
 }
 
 func TestShouldReturnContextErrorGivenCancelledContextWhenAcquireCalled(t *testing.T) {
@@ -267,7 +269,7 @@ func TestShouldReturnSendErrorGivenMuxFailureWhenRenewCalled(t *testing.T) {
 
 	// Assert
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "send failed")
+	assert.Contains(t, err.Error(), "send:")
 }
 
 func TestShouldEncodeTokenAndTTLGivenValidInputWhenRenewCalled(t *testing.T) {
@@ -363,7 +365,7 @@ func TestShouldReturnSendErrorGivenMuxFailureWhenReleaseCalled(t *testing.T) {
 
 	// Assert
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "send failed")
+	assert.Contains(t, err.Error(), "send:")
 }
 
 func TestShouldEncodeRouteAndTokenGivenValidInputWhenReleaseCalled(t *testing.T) {
@@ -451,7 +453,7 @@ func TestShouldReturnSendErrorGivenMuxFailureWhenQueryCalled(t *testing.T) {
 
 	// Assert
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "send failed")
+	assert.Contains(t, err.Error(), "send:")
 }
 
 func TestShouldEncodeOnlyRouteGivenValidInputWhenQueryCalled(t *testing.T) {
@@ -561,7 +563,7 @@ func TestShouldReturnGenericErrorGivenUnknownMessageWhenMapCalled(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------------
-// decodeTLVError Tests
+// DecodeTLVError Tests (testing via transport.DecodeTLVError)
 // ---------------------------------------------------------------------------
 
 func TestShouldUseDefaultMessageGivenEmptyBodyWhenDecodeTLVErrorCalled(t *testing.T) {
@@ -569,7 +571,7 @@ func TestShouldUseDefaultMessageGivenEmptyBodyWhenDecodeTLVErrorCalled(t *testin
 	f := transport.Frame{Type: transport.FrameTypeErr, Channel: transport.ChannelLease, Body: nil}
 
 	// Act
-	err := decodeTLVError(f, "default error message")
+	err := transport.DecodeTLVError(f, "default error message", mapLeaseError)
 
 	// Assert
 	assert.Error(t, err)
@@ -581,7 +583,7 @@ func TestShouldUseDefaultGivenCorruptBodyWhenDecodeTLVErrorCalled(t *testing.T) 
 	f := transport.Frame{Type: transport.FrameTypeErr, Channel: transport.ChannelLease, Body: []byte{0xFF}}
 
 	// Act
-	err := decodeTLVError(f, "fallback message")
+	err := transport.DecodeTLVError(f, "fallback message", mapLeaseError)
 
 	// Assert
 	assert.Error(t, err)
@@ -595,7 +597,7 @@ func TestShouldMapErrorFromTLVGivenKnownErrorWhenDecodeTLVErrorCalled(t *testing
 	f := transport.Frame{Type: transport.FrameTypeErr, Channel: transport.ChannelLease, Body: enc.Encode()}
 
 	// Act
-	err := decodeTLVError(f, "should not use default")
+	err := transport.DecodeTLVError(f, "should not use default", mapLeaseError)
 
 	// Assert
 	assert.ErrorIs(t, err, ErrLeaseExpired)

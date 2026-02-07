@@ -5,13 +5,19 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cntryl/cntryl-go/internal/core/iter"
 	"github.com/cntryl/cntryl-go/internal/core/transport"
 )
 
 // Client is the API for the Stream domain.
 type Client interface {
+	Begin(ctx context.Context, route string) (uint64, error)
 	Append(ctx context.Context, route string, body []byte, expectedOffset *uint64) (uint64, error)
-	ReadResource(ctx context.Context, route string, from uint64, limit uint32) ([]StreamRecord, error)
+	Commit(ctx context.Context, route string) error
+	Rollback(ctx context.Context, route string) error
+	ReadResource(ctx context.Context, route string, from uint64, limit uint32, opts ...ReadOption) (iter.Iterator[StreamRecord], error)
+	Last(ctx context.Context, route string) (*StreamRecord, error)
+	GetMetadata(ctx context.Context, route string) (map[string]string, error)
 }
 
 // StreamRecord is a minimal record returned by stream reads.
@@ -20,21 +26,35 @@ type StreamRecord struct {
 	Body   []byte
 }
 
-// client is a concrete implementation of stream.Client backed by the transport mux.
-// muxProvider is a minimal mux abstraction used by domain clients.
-type muxProvider interface {
-	Send(transport.Frame) error
-	In() <-chan transport.Frame
-	Ctx() context.Context
-	OnReconnect(func())
+// ReadOption configures behaviour of ReadResource iterator.
+type ReadOption func(*readOptions)
+
+type readOptions struct {
+	bufferSize      int
+	perFrameTimeout time.Duration
+}
+
+// WithBufferSize sets the internal channel buffer for the read iterator.
+func WithBufferSize(n int) ReadOption {
+	return func(o *readOptions) {
+		if n > 0 {
+			o.bufferSize = n
+		}
+	}
+}
+
+// WithPerFrameTimeout sets a timeout between consecutive frames. If no frame
+// arrives within this duration, the iterator stops with ErrStreamReadError.
+func WithPerFrameTimeout(d time.Duration) ReadOption {
+	return func(o *readOptions) { o.perFrameTimeout = d }
 }
 
 type client struct {
-	mux muxProvider
+	mux transport.MuxProvider
 }
 
 // NewClient creates a new Stream domain client backed by the transport mux.
-func NewClient(mux muxProvider) Client {
+func NewClient(mux transport.MuxProvider) Client {
 	return &client{mux: mux}
 }
 
@@ -46,87 +66,184 @@ func (c *client) Append(ctx context.Context, route string, body []byte, expected
 	if expectedOffset != nil {
 		enc.AddUint64(transport.TagExpectedOffset, *expectedOffset)
 	}
-	frame := transport.Frame{
-		Type:    StreamAppend,
-		Flags:   0,
-		Channel: transport.ChannelStream,
-		Body:    enc.Encode(),
-	}
+	frame := transport.Frame{Type: StreamAppend, Channel: transport.ChannelStream, Body: enc.Encode()}
+
+	// Append uses a custom response loop because the response may arrive as a
+	// data frame (not FrameTypeResp) carrying TagSeq.
 	if err := c.mux.Send(frame); err != nil {
 		return 0, fmt.Errorf("send append: %w", err)
 	}
-
-	// Wait for response with assigned offset.
 	ackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	for {
-		select {
-		case <-ackCtx.Done():
-			return 0, ackCtx.Err()
-		case f, ok := <-c.mux.In():
-			if !ok {
-				return 0, fmt.Errorf("mux closed")
-			}
-			if f.Channel != transport.ChannelStream {
-				continue
-			}
-			dec, err := transport.NewTLVDecoder(f.Body)
-			if err != nil {
-				continue
-			}
-			if dec.Has(transport.TagErr) {
-				return 0, fmt.Errorf("broker error: %s", dec.GetString(transport.TagErr))
-			}
-			seq, _ := dec.GetUint64(transport.TagSeq)
-			if seq != 0 {
-				return seq, nil
-			}
+		f, err := transport.RecvFrame(ackCtx, c.mux.In(), transport.ChannelStream)
+		if err != nil {
+			return 0, err
+		}
+		dec, derr := transport.NewTLVDecoder(f.Body)
+		if derr != nil {
+			continue
+		}
+		if dec.Has(transport.TagErr) {
+			return 0, mapStreamError(dec.GetString(transport.TagErr))
+		}
+		seq, _ := dec.GetUint64(transport.TagSeq)
+		if seq != 0 {
+			return seq, nil
 		}
 	}
 }
 
-// ReadResource reads records from a stream starting at `from` up to `limit` items.
-func (c *client) ReadResource(ctx context.Context, route string, from uint64, limit uint32) ([]StreamRecord, error) {
+// ReadResource returns an iterator that streams records from the broker.
+func (c *client) ReadResource(ctx context.Context, route string, from uint64, limit uint32, opts ...ReadOption) (iter.Iterator[StreamRecord], error) {
+	ro := readOptions{bufferSize: 8}
+	for _, o := range opts {
+		o(&ro)
+	}
+	if ro.bufferSize <= 0 {
+		ro.bufferSize = 8
+	}
+
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddUint64(transport.TagSeq, from)
 	enc.AddUint32(transport.TagLimit, limit)
-	frame := transport.Frame{
-		Type:    StreamRead,
-		Flags:   0,
-		Channel: transport.ChannelStream,
-		Body:    enc.Encode(),
-	}
+	frame := transport.Frame{Type: StreamRead, Channel: transport.ChannelStream, Body: enc.Encode()}
 	if err := c.mux.Send(frame); err != nil {
 		return nil, fmt.Errorf("send read: %w", err)
 	}
 
-	// Collect records until stream end or context done.
-	var results []StreamRecord
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case f, ok := <-c.mux.In():
-			if !ok {
-				return nil, fmt.Errorf("mux closed")
+	records := make(chan StreamRecord, ro.bufferSize)
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(ctx)
+
+	go func() {
+		defer close(records)
+		count := uint32(0)
+		for {
+			var to <-chan time.Time
+			if ro.perFrameTimeout > 0 {
+				to = time.After(ro.perFrameTimeout)
 			}
-			if f.Channel != transport.ChannelStream {
-				continue
+			select {
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			case <-to:
+				errCh <- ErrStreamReadError
+				return
+			case f, ok := <-c.mux.In():
+				if !ok {
+					errCh <- fmt.Errorf("mux closed")
+					return
+				}
+				if f.Channel != transport.ChannelStream {
+					continue
+				}
+				dec, derr := transport.NewTLVDecoder(f.Body)
+				if derr != nil {
+					continue
+				}
+				if dec.Has(transport.TagErr) {
+					errCh <- mapStreamError(dec.GetString(transport.TagErr))
+					return
+				}
+				if dec.Has(transport.TagStreamEnd) {
+					errCh <- nil
+					return
+				}
+				seq, _ := dec.GetUint64(transport.TagSeq)
+				body := dec.GetBytes(transport.TagBody)
+				select {
+				case <-ctx.Done():
+					errCh <- ctx.Err()
+					return
+				case records <- StreamRecord{Offset: seq, Body: body}:
+					count++
+					if limit != 0 && count >= limit {
+						errCh <- nil
+						return
+					}
+				}
 			}
-			dec, err := transport.NewTLVDecoder(f.Body)
-			if err != nil {
-				continue
-			}
-			if dec.Has(transport.TagErr) {
-				return nil, fmt.Errorf("broker error: %s", dec.GetString(transport.TagErr))
-			}
-			if dec.Has(transport.TagStreamEnd) {
-				return results, nil
-			}
-			seq, _ := dec.GetUint64(transport.TagSeq)
-			body := dec.GetBytes(transport.TagBody)
-			results = append(results, StreamRecord{Offset: seq, Body: body})
 		}
+	}()
+
+	return iter.NewChannelIterator(records, errCh, cancel), nil
+}
+
+// Begin requests a new stream session and returns the starting offset.
+func (c *client) Begin(ctx context.Context, route string) (uint64, error) {
+	enc := transport.NewTLVEncoder()
+	enc.AddString(transport.TagRoute, route)
+	frame := transport.Frame{Type: StreamBegin, Channel: transport.ChannelStream, Body: enc.Encode()}
+
+	resp, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
+	if err != nil {
+		return 0, err
 	}
+	dec, derr := transport.NewTLVDecoder(resp.Body)
+	if derr != nil {
+		return 0, fmt.Errorf("invalid TLV in response: %w", derr)
+	}
+	seq, _ := dec.GetUint64(transport.TagSeq)
+	return seq, nil
+}
+
+// Commit finalizes the session for a stream resource.
+func (c *client) Commit(ctx context.Context, route string) error {
+	enc := transport.NewTLVEncoder()
+	enc.AddString(transport.TagRoute, route)
+	frame := transport.Frame{Type: StreamCommit, Channel: transport.ChannelStream, Body: enc.Encode()}
+	_, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
+	return err
+}
+
+// Rollback aborts an active session.
+func (c *client) Rollback(ctx context.Context, route string) error {
+	enc := transport.NewTLVEncoder()
+	enc.AddString(transport.TagRoute, route)
+	frame := transport.Frame{Type: StreamRollback, Channel: transport.ChannelStream, Body: enc.Encode()}
+	_, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
+	return err
+}
+
+// Last returns the last record in the stream (if any).
+func (c *client) Last(ctx context.Context, route string) (*StreamRecord, error) {
+	enc := transport.NewTLVEncoder()
+	enc.AddString(transport.TagRoute, route)
+	frame := transport.Frame{Type: StreamLast, Channel: transport.ChannelStream, Body: enc.Encode()}
+
+	resp, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
+	if err != nil {
+		return nil, err
+	}
+	dec, derr := transport.NewTLVDecoder(resp.Body)
+	if derr != nil {
+		return nil, fmt.Errorf("invalid TLV in response: %w", derr)
+	}
+	seq, _ := dec.GetUint64(transport.TagSeq)
+	body := dec.GetBytes(transport.TagBody)
+	return &StreamRecord{Offset: seq, Body: body}, nil
+}
+
+// GetMetadata requests stream metadata and returns it as key/value pairs.
+func (c *client) GetMetadata(ctx context.Context, route string) (map[string]string, error) {
+	enc := transport.NewTLVEncoder()
+	enc.AddString(transport.TagRoute, route)
+	frame := transport.Frame{Type: StreamGetMetadata, Channel: transport.ChannelStream, Body: enc.Encode()}
+
+	resp, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
+	if err != nil {
+		return nil, err
+	}
+	dec, derr := transport.NewTLVDecoder(resp.Body)
+	if derr != nil {
+		return nil, fmt.Errorf("invalid TLV in response: %w", derr)
+	}
+	meta := make(map[string]string)
+	if dec.Has(transport.TagBody) {
+		meta["body"] = string(dec.GetBytes(transport.TagBody))
+	}
+	return meta, nil
 }

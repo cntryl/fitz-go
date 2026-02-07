@@ -18,14 +18,6 @@ type KVPair struct {
 	Value []byte
 }
 
-// muxProvider is a minimal interface for the transport mux operations used by transactions.
-// This allows for easier testing with mock implementations.
-type muxProvider interface {
-	Send(f transport.Frame) error
-	In() <-chan transport.Frame
-	Ctx() context.Context
-}
-
 // ReadTx exposes read-only operations within a transaction.
 //
 // Scan returns a streaming `iter.Iterator[KVPair]` for results in the range
@@ -49,7 +41,7 @@ type Tx interface {
 // transaction is a concrete implementation of both ReadTx and Tx using the transport mux.
 type transaction struct {
 	route      Route
-	mux        muxProvider
+	mux        transport.MuxProvider
 	readOnly   bool
 	mu         sync.RWMutex
 	txID       uint64
@@ -111,21 +103,10 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 				return nil, false, fmt.Errorf("decode response: %w", err)
 			}
 
-			// Debug: log received TLV entries and ID
-			fmt.Printf("[kv.tx] resp body hex=%x\n", respFrame.Body)
-			for k, v := range dec.All() {
-				fmt.Printf("[kv.tx] TLV tag=%02x len=%d\n", k, len(v))
-			}
-			if dec.Has(transport.TagID) {
-				if id, err := dec.GetUint64(transport.TagID); err == nil {
-					fmt.Printf("[kv.tx] received resp id=%d for request=%d\n", id, requestID)
-				}
-			}
-
 			// Check for error response.
 			if dec.Has(transport.TagErr) {
 				errMsg := dec.GetString(transport.TagErr)
-				return nil, false, fmt.Errorf("broker error: %s", errMsg)
+				return nil, false, mapKVError(errMsg)
 			}
 
 			// Check if response has the matching ID.
@@ -190,7 +171,7 @@ func (t *transaction) Scan(ctx context.Context, startKey []byte, endKey []byte, 
 // scanIterator implements iter.Iterator[KVPair] for Scan results.
 type scanIterator struct {
 	ctx     context.Context
-	mux     muxProvider
+	mux     transport.MuxProvider
 	txID    uint64
 	current KVPair
 	done    bool
@@ -221,7 +202,7 @@ func (si *scanIterator) Next() bool {
 				return false
 			}
 
-			if respFrame.Channel != ChannelKV {
+			if respFrame.Channel != transport.ChannelKV {
 				continue
 			}
 
@@ -235,7 +216,7 @@ func (si *scanIterator) Next() bool {
 			// Check for error.
 			if dec.Has(transport.TagErr) {
 				errMsg := dec.GetString(transport.TagErr)
-				si.err = fmt.Errorf("broker error: %s", errMsg)
+				si.err = mapKVError(errMsg)
 				si.done = true
 				return false
 			}
@@ -314,7 +295,7 @@ func (t *transaction) Put(ctx context.Context, key []byte, value []byte) error {
 	frame := transport.Frame{
 		Type:    transport.FrameTypeReq,
 		Flags:   0,
-		Channel: ChannelKV,
+		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
 	}
 	return t.mux.Send(frame)
@@ -387,7 +368,7 @@ func (t *transaction) Delete(ctx context.Context, key []byte) error {
 	frame := transport.Frame{
 		Type:    transport.FrameTypeReq,
 		Flags:   0,
-		Channel: ChannelKV,
+		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
 	}
 	return t.mux.Send(frame)
@@ -424,7 +405,7 @@ func (t *transaction) DeleteRange(ctx context.Context, startKey []byte, endKey [
 	frame := transport.Frame{
 		Type:    transport.FrameTypeReq,
 		Flags:   0,
-		Channel: ChannelKV,
+		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
 	}
 	if err := t.mux.Send(frame); err != nil {
@@ -486,16 +467,15 @@ func (t *transaction) Commit(ctx context.Context) error {
 			if !ok {
 				return fmt.Errorf("mux closed while waiting for commit ack")
 			}
-			if respFrame.Channel != ChannelKV {
+			if respFrame.Channel != transport.ChannelKV {
 				continue
 			}
-			fmt.Printf("[kv.commit] received frame type=%d body=%x\n", respFrame.Type, respFrame.Body)
 			dec, err := transport.NewTLVDecoder(respFrame.Body)
 			if err != nil {
 				continue
 			}
 			if dec.Has(transport.TagErr) {
-				return fmt.Errorf("broker error during commit: %s", dec.GetString(transport.TagErr))
+				return mapKVError(dec.GetString(transport.TagErr))
 			}
 			if id, _ := dec.GetUint64(transport.TagID); id == t.txID {
 				// Commit acknowledged
@@ -528,7 +508,7 @@ func (t *transaction) Rollback(ctx context.Context) error {
 	frame := transport.Frame{
 		Type:    KVRollback,
 		Flags:   0,
-		Channel: ChannelKV,
+		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
 	}
 

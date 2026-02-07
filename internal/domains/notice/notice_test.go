@@ -11,7 +11,8 @@ import (
 
 // mockMux is a minimal mux provider that allows pushing inbound frames.
 type mockMux struct {
-	in chan transport.Frame
+	in  chan transport.Frame
+	ctx context.Context
 	// capture outbound frames for inspection if needed
 	sent []transport.Frame
 	cbs  []func()
@@ -20,7 +21,7 @@ type mockMux struct {
 }
 
 func newMockMux() *mockMux {
-	return &mockMux{in: make(chan transport.Frame, 16), autoAck: true}
+	return &mockMux{in: make(chan transport.Frame, 16), ctx: context.Background(), autoAck: true}
 }
 
 func (m *mockMux) Send(f transport.Frame) error {
@@ -33,6 +34,8 @@ func (m *mockMux) Send(f transport.Frame) error {
 }
 
 func (m *mockMux) In() <-chan transport.Frame { return m.in }
+
+func (m *mockMux) Ctx() context.Context { return m.ctx }
 
 func (m *mockMux) OnReconnect(cb func()) { m.cbs = append(m.cbs, cb) }
 
@@ -74,7 +77,7 @@ func TestUnsubscribeStopsFurtherHandlers(t *testing.T) {
 	assert.NoError(t, err)
 
 	body := encodeNotifyBody("notice://realm/area/resource", []byte("one"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: ChannelSub, Body: body}
+	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body}
 
 	select {
 	case v := <-recv:
@@ -86,7 +89,7 @@ func TestUnsubscribeStopsFurtherHandlers(t *testing.T) {
 	// unsubscribe and send another message; handler must not be invoked
 	s.Unsubscribe()
 	body2 := encodeNotifyBody("notice://realm/area/resource", []byte("two"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: ChannelSub, Body: body2}
+	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body2}
 
 	select {
 	case <-recv:
@@ -171,7 +174,7 @@ func TestUnsubscribeCancelsBlockedDeliverers(t *testing.T) {
 
 	// send first message (fills buffer and starts handler)
 	body := encodeNotifyBody("notice://realm/area/resource", []byte("one"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: ChannelSub, Body: body}
+	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body}
 
 	// wait for handler to start
 	select {
@@ -182,7 +185,7 @@ func TestUnsubscribeCancelsBlockedDeliverers(t *testing.T) {
 
 	// send second message which will block in deliver (buffer is 1)
 	body2 := encodeNotifyBody("notice://realm/area/resource", []byte("two"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: ChannelSub, Body: body2}
+	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body2}
 
 	// unsubscribe in goroutine and ensure it doesn't deadlock on blocked deliverer.
 	done := make(chan struct{})

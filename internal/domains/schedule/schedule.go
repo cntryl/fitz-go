@@ -21,69 +21,75 @@ type ScheduleEntry struct {
 	CronExpr string
 }
 
-// client is a concrete implementation of schedule.Client backed by the transport mux.
-type muxProvider interface {
-	Send(transport.Frame) error
-	In() <-chan transport.Frame
-	Ctx() context.Context
-	OnReconnect(func())
-}
-
 type client struct {
-	mux muxProvider
+	mux transport.MuxProvider
 }
 
 // NewClient creates a new Schedule domain client backed by the transport mux.
-func NewClient(mux muxProvider) Client {
+func NewClient(mux transport.MuxProvider) Client {
 	return &client{mux: mux}
 }
 
-// Create schedules a job using cron expression and payload; returns schedule ID on success.
+// Create schedules a job; returns the schedule ID assigned by the broker.
 func (c *client) Create(ctx context.Context, route string, cronExpr string, payload []byte) (string, error) {
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
-	enc.AddString(transport.TagBody, cronExpr)
-	enc.AddBytes(transport.TagBody, payload)
-	frame := transport.Frame{
-		Type:    600 % 256,
-		Flags:   0,
-		Channel: transport.ChannelSchedule,
-		Body:    enc.Encode(),
+	enc.AddString(transport.TagCron, cronExpr)
+	if len(payload) > 0 {
+		enc.AddBytes(transport.TagBody, payload)
 	}
-	if err := c.mux.Send(frame); err != nil {
-		return "", fmt.Errorf("send create: %w", err)
+	frame := transport.Frame{Type: ScheduleCreate, Channel: transport.ChannelSchedule, Body: enc.Encode()}
+
+	resp, err := transport.SendRecv(ctx, c.mux, frame, mapScheduleError)
+	if err != nil {
+		return "", err
 	}
-	return "", nil
+	dec, derr := transport.NewTLVDecoder(resp.Body)
+	if derr != nil {
+		return "", fmt.Errorf("invalid TLV in response: %w", derr)
+	}
+	id, _ := dec.GetUint64(transport.TagID)
+	return fmt.Sprintf("%d", id), nil
 }
 
 // Cancel cancels a scheduled job by id.
 func (c *client) Cancel(ctx context.Context, id string) error {
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagToken, id)
-	frame := transport.Frame{
-		Type:    601 % 256,
-		Flags:   0,
-		Channel: transport.ChannelSchedule,
-		Body:    enc.Encode(),
-	}
-	if err := c.mux.Send(frame); err != nil {
-		return fmt.Errorf("send cancel: %w", err)
-	}
-	return nil
+	frame := transport.Frame{Type: ScheduleCancel, Channel: transport.ChannelSchedule, Body: enc.Encode()}
+
+	_, err := transport.SendRecv(ctx, c.mux, frame, mapScheduleError)
+	return err
 }
 
 // List returns schedule entries for a route.
 func (c *client) List(ctx context.Context, route string) ([]ScheduleEntry, error) {
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{
-		Type:    602 % 256,
-		Flags:   0,
-		Channel: transport.ChannelSchedule,
-		Body:    enc.Encode(),
+	frame := transport.Frame{Type: ScheduleList, Channel: transport.ChannelSchedule, Body: enc.Encode()}
+
+	resp, err := transport.SendRecv(ctx, c.mux, frame, mapScheduleError)
+	if err != nil {
+		return nil, err
 	}
-	if err := c.mux.Send(frame); err != nil {
-		return nil, fmt.Errorf("send list: %w", err)
+	dec, derr := transport.NewTLVDecoder(resp.Body)
+	if derr != nil {
+		return nil, fmt.Errorf("invalid TLV in response: %w", derr)
 	}
-	return nil, nil
+	// Entries are encoded as repeated TagID/TagRoute/TagBody triples.
+	ids := dec.GetAll(transport.TagID)
+	routes := dec.GetAll(transport.TagRoute)
+	crons := dec.GetAll(transport.TagBody)
+	entries := make([]ScheduleEntry, 0, len(ids))
+	for i := range ids {
+		e := ScheduleEntry{ID: string(ids[i])}
+		if i < len(routes) {
+			e.Route = string(routes[i])
+		}
+		if i < len(crons) {
+			e.CronExpr = string(crons[i])
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
 }

@@ -2,7 +2,9 @@ package queue
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"strconv"
 
 	"github.com/cntryl/cntryl-go/internal/core/transport"
 )
@@ -10,31 +12,24 @@ import (
 // Client is the API for the Queue domain.
 type Client interface {
 	Enqueue(ctx context.Context, route string, body []byte) (string, error)
-	Reserve(ctx context.Context, route string, leaseSecs uint32, batchSize uint32) ([]LeaseMessage, error)
+	Reserve(ctx context.Context, route string, leaseSecs uint32, batchSize uint32) ([]QueueItem, error)
+	Extend(ctx context.Context, route string, id string, token uint64, leaseSecs uint32) error
 	Complete(ctx context.Context, route string, id string, token uint64) error
 }
 
-// LeaseMessage is a reserved message returned from Reserve.
-type LeaseMessage struct {
+// QueueItem is a reserved message returned from Reserve.
+type QueueItem struct {
 	ID    string
 	Body  []byte
 	Token uint64
 }
 
-// client is a concrete implementation of queue.Client backed by the transport mux.
-type muxProvider interface {
-	Send(transport.Frame) error
-	In() <-chan transport.Frame
-	Ctx() context.Context
-	OnReconnect(func())
-}
-
 type client struct {
-	mux muxProvider
+	mux transport.MuxProvider
 }
 
 // NewClient creates a new Queue domain client backed by the transport mux.
-func NewClient(mux muxProvider) Client {
+func NewClient(mux transport.MuxProvider) Client {
 	return &client{mux: mux}
 }
 
@@ -43,51 +38,95 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (string
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagBody, body)
-	frame := transport.Frame{
-		Type:    QueueEnqueue,
-		Flags:   0,
-		Channel: transport.ChannelQueue,
-		Body:    enc.Encode(),
+	frame := transport.Frame{Type: QueueEnqueue, Channel: transport.ChannelQueue, Body: enc.Encode()}
+
+	resp, err := transport.SendRecv(ctx, c.mux, frame, mapQueueError)
+	if err != nil {
+		return "", err
 	}
-	if err := c.mux.Send(frame); err != nil {
-		return "", fmt.Errorf("send enqueue: %w", err)
+
+	dec, derr := transport.NewTLVDecoder(resp.Body)
+	if derr != nil {
+		return "", fmt.Errorf("invalid TLV in response: %w", derr)
 	}
-	// No ack handling in basic unit test; return a synthetic ID placeholder.
-	return "", nil
+	id, _ := dec.GetUint64(transport.TagID)
+	if id == 0 {
+		return "", nil
+	}
+	return fmt.Sprintf("%d", id), nil
 }
 
 // Reserve requests messages from the queue with lease semantics.
-func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint32, batchSize uint32) ([]LeaseMessage, error) {
+func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint32, batchSize uint32) ([]QueueItem, error) {
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddUint32(transport.TagTTL, leaseSecs)
-	enc.AddUint32(transport.TagBatchSize, batchSize)
-	frame := transport.Frame{
-		Type:    QueueReserve,
-		Flags:   0,
-		Channel: transport.ChannelQueue,
-		Body:    enc.Encode(),
+	if batchSize > 0 {
+		enc.AddUint32(transport.TagBatchSize, batchSize)
 	}
-	if err := c.mux.Send(frame); err != nil {
-		return nil, fmt.Errorf("send reserve: %w", err)
+	frame := transport.Frame{Type: QueueReserve, Channel: transport.ChannelQueue, Body: enc.Encode()}
+
+	resp, err := transport.SendRecv(ctx, c.mux, frame, mapQueueError)
+	if err != nil {
+		return nil, err
 	}
-	return nil, nil
+
+	dec, derr := transport.NewTLVDecoder(resp.Body)
+	if derr != nil {
+		return nil, fmt.Errorf("invalid TLV in response: %w", derr)
+	}
+	ids := dec.GetAll(transport.TagID)
+	leases := dec.GetAll(transport.TagLease)
+	bodies := dec.GetAll(transport.TagBody)
+	count := len(ids)
+	items := make([]QueueItem, 0, count)
+	for i := 0; i < count; i++ {
+		var id uint64
+		if len(ids[i]) == 8 {
+			id = binary.BigEndian.Uint64(ids[i])
+		}
+		var lease uint64
+		if i < len(leases) && len(leases[i]) == 8 {
+			lease = binary.BigEndian.Uint64(leases[i])
+		}
+		var body []byte
+		if i < len(bodies) {
+			body = bodies[i]
+		}
+		items = append(items, QueueItem{ID: fmt.Sprintf("%d", id), Body: body, Token: lease})
+	}
+	return items, nil
+}
+
+// Extend extends the lease for a reserved message.
+func (c *client) Extend(ctx context.Context, route string, id string, token uint64, leaseSecs uint32) error {
+	enc := transport.NewTLVEncoder()
+	enc.AddString(transport.TagRoute, route)
+	if id != "" {
+		if v, err := strconv.ParseUint(id, 10, 64); err == nil {
+			enc.AddUint64(transport.TagID, v)
+		}
+	}
+	enc.AddUint64(transport.TagLease, token)
+	enc.AddUint32(transport.TagTTL, leaseSecs)
+	frame := transport.Frame{Type: QueueExtend, Channel: transport.ChannelQueue, Body: enc.Encode()}
+
+	_, err := transport.SendRecv(ctx, c.mux, frame, mapQueueError)
+	return err
 }
 
 // Complete acknowledges completion of a reserved message.
 func (c *client) Complete(ctx context.Context, route string, id string, token uint64) error {
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
-	enc.AddString(transport.TagToken, id)
-	enc.AddUint64(transport.TagID, token)
-	frame := transport.Frame{
-		Type:    QueueComplete,
-		Flags:   0,
-		Channel: transport.ChannelQueue,
-		Body:    enc.Encode(),
+	if id != "" {
+		if v, err := strconv.ParseUint(id, 10, 64); err == nil {
+			enc.AddUint64(transport.TagID, v)
+		}
 	}
-	if err := c.mux.Send(frame); err != nil {
-		return fmt.Errorf("send complete: %w", err)
-	}
-	return nil
+	enc.AddUint64(transport.TagLease, token)
+	frame := transport.Frame{Type: QueueComplete, Channel: transport.ChannelQueue, Body: enc.Encode()}
+
+	_, err := transport.SendRecv(ctx, c.mux, frame, mapQueueError)
+	return err
 }

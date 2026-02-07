@@ -37,6 +37,7 @@ const (
 	TagReplyRoute     uint8 = 0x2E
 	TagSeq            uint8 = 0x30
 	TagStreamEnd      uint8 = 0x31
+	TagCron           uint8 = 0x32
 )
 
 // KV operation type constants (mapped in KV domain).
