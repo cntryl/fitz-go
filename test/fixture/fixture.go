@@ -165,6 +165,23 @@ func (f *TestFixture) AddCleanup(fn func()) {
 	f.cleanupFuncs = append(f.cleanupFuncs, fn)
 }
 
+// ConnectOrSkip connects to the broker using StartBrokerIfNeeded and skips
+// the test when no broker is available.
+func (f *TestFixture) ConnectOrSkip(ctx context.Context) {
+	f.t.Helper()
+
+	addr, stop, err := StartBrokerIfNeeded(f.transport)
+	if err != nil {
+		f.t.Skipf("broker not available: %v", err)
+	}
+	f.SetBrokerAddr(addr)
+	f.AddCleanup(func() { stop() })
+
+	if err := f.Connect(ctx); err != nil {
+		f.t.Skipf("broker not available: %v", err)
+	}
+}
+
 // UniqueRealm generates a unique realm name for test isolation.
 func (f *TestFixture) UniqueRealm() string {
 	return fmt.Sprintf("test-%d", time.Now().UnixNano())
@@ -178,4 +195,9 @@ func (f *TestFixture) UniqueArea() string {
 // UniqueResource generates a unique resource name for test isolation.
 func (f *TestFixture) UniqueResource() string {
 	return fmt.Sprintf("resource-%d", time.Now().UnixNano())
+}
+
+// UniqueRoute generates a unique route string for the given domain scheme.
+func (f *TestFixture) UniqueRoute(scheme string) string {
+	return fmt.Sprintf("%s://%s/%s/%s", scheme, f.UniqueRealm(), f.UniqueArea(), f.UniqueResource())
 }

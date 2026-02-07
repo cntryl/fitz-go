@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -12,19 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// connectOrSkip connects to the broker and skips the test if unavailable.
-func connectOrSkipLease(t *testing.T, f *fixture.TestFixture, ctx context.Context) {
-	t.Helper()
-	if err := f.Connect(ctx); err != nil {
-		t.Skipf("broker not available: %v", err)
-	}
-}
-
-// uniqueLeaseRoute returns a unique lease route to avoid collisions between tests.
-func uniqueLeaseRoute(t *testing.T) string {
-	t.Helper()
-	return fmt.Sprintf("lease://test/integration/res-%d", time.Now().UnixNano())
-}
+// --- Acceptance criteria from CLIENT_SPEC.md (Lease domain) ---
+// - acquire succeeds when free, fails when held
+// - renew with valid token extends TTL
+// - renew with invalid token fails
+// - release with valid token releases
+// - release with invalid token fails
+// - expired lease acquirable by new owner
 
 // TestShouldAcquireLeaseGivenAvailableLeaseWhenAcquireCalled verifies
 // ACQUIRE operation succeeds when lease is free.
@@ -32,12 +25,11 @@ func TestShouldAcquireLeaseGivenAvailableLeaseWhenAcquireCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		connectOrSkipLease(t, f, ctx)
-		route := uniqueLeaseRoute(t)
+		f.ConnectOrSkip(ctx)
+		route := f.UniqueRoute("lease")
 
 		// Act
 		token, expiresAt, held, err := f.Client().Lease().Acquire(ctx, route, 30)
@@ -57,29 +49,28 @@ func TestShouldRejectAcquireGivenHeldLeaseWhenAcquireCalled(t *testing.T) {
 		// Arrange — two independent clients to simulate different owners.
 		f1 := fixture.NewTestFixture(t, transport)
 		f2 := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		connectOrSkipLease(t, f1, ctx)
-		connectOrSkipLease(t, f2, ctx)
+		f1.ConnectOrSkip(ctx)
+		f2.ConnectOrSkip(ctx)
 
-		route := uniqueLeaseRoute(t)
+		route := f1.UniqueRoute("lease")
 
-		// First client acquires successfully.
+		// First client acquires.
 		token, _, held, err := f1.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
 		require.True(t, held)
 		require.NotEmpty(t, token)
 
-		// Act — second client attempts to acquire the same lease.
+		// Act — second client attempts the same lease.
 		_, _, held2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
 
 		// Assert — should either error with ErrLeaseHeld or return held=false.
 		if err2 != nil {
 			assert.ErrorIs(t, err2, lease.ErrLeaseHeld)
 		} else {
-			assert.False(t, held2, "second acquire should not be granted while lease is held")
+			assert.False(t, held2, "second acquire should not be granted")
 		}
 	})
 }
@@ -90,12 +81,11 @@ func TestShouldExtendTTLGivenValidTokenWhenRenewCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		connectOrSkipLease(t, f, ctx)
-		route := uniqueLeaseRoute(t)
+		f.ConnectOrSkip(ctx)
+		route := f.UniqueRoute("lease")
 
 		token, _, held, err := f.Client().Lease().Acquire(ctx, route, 10)
 		require.NoError(t, err)
@@ -116,12 +106,11 @@ func TestShouldRejectRenewGivenInvalidTokenWhenTokenMismatch(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		connectOrSkipLease(t, f, ctx)
-		route := uniqueLeaseRoute(t)
+		f.ConnectOrSkip(ctx)
+		route := f.UniqueRoute("lease")
 
 		_, _, held, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
@@ -141,12 +130,11 @@ func TestShouldReleaseLeaseGivenValidTokenWhenReleaseCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		connectOrSkipLease(t, f, ctx)
-		route := uniqueLeaseRoute(t)
+		f.ConnectOrSkip(ctx)
+		route := f.UniqueRoute("lease")
 
 		token, _, held, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
@@ -172,18 +160,17 @@ func TestShouldRejectReleaseGivenInvalidTokenWhenTokenMismatch(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		connectOrSkipLease(t, f, ctx)
-		route := uniqueLeaseRoute(t)
+		f.ConnectOrSkip(ctx)
+		route := f.UniqueRoute("lease")
 
 		_, _, held, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
 		require.True(t, held)
 
-		// Act — release with a fabricated (wrong) token.
+		// Act — release with wrong token.
 		err = f.Client().Lease().Release(ctx, route, []byte("wrong-token"))
 
 		// Assert
@@ -197,14 +184,12 @@ func TestShouldExpireLeaseGivenTTLElapsedWhenNoRenew(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		connectOrSkipLease(t, f, ctx)
-		route := uniqueLeaseRoute(t)
+		f.ConnectOrSkip(ctx)
+		route := f.UniqueRoute("lease")
 
-		// Acquire with very short TTL.
 		token, _, held, err := f.Client().Lease().Acquire(ctx, route, 2)
 		require.NoError(t, err)
 		require.True(t, held)
@@ -229,14 +214,12 @@ func TestShouldQueryLeaseStatusGivenExistingLeaseWhenQueryCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		connectOrSkipLease(t, f, ctx)
-		route := uniqueLeaseRoute(t)
+		f.ConnectOrSkip(ctx)
+		route := f.UniqueRoute("lease")
 
-		// Acquire a lease so there is active state to query.
 		_, _, held, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
 		require.True(t, held)

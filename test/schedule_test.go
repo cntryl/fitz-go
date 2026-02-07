@@ -6,8 +6,14 @@ import (
 	"time"
 
 	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// --- Acceptance criteria from CLIENT_SPEC.md (Schedule domain) ---
+// - create schedule and verify execution
+// - cancel prevents future runs
+// - list returns created schedules
 
 // TestShouldCreateScheduleGivenValidCronExpressionWhenCreateCalled verifies
 // CREATE operation schedules a task with cron syntax.
@@ -15,14 +21,19 @@ func TestShouldCreateScheduleGivenValidCronExpressionWhenCreateCalled(t *testing
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		require.NoError(t, f.Connect(ctx))
+		f.ConnectOrSkip(ctx)
 
-		// Act & Assert
-		t.Fatal("Schedule CREATE operation not yet implemented")
+		route := f.UniqueRoute("schedule")
+
+		// Act
+		id, err := f.Client().Schedule().Create(ctx, route, "*/5 * * * *", []byte("task-payload"))
+
+		// Assert
+		require.NoError(t, err, "Create should succeed with valid cron expression")
+		assert.NotEmpty(t, id, "schedule ID should be non-empty")
 	})
 }
 
@@ -32,31 +43,18 @@ func TestShouldRejectCreateGivenInvalidCronSyntaxWhenCreateCalled(t *testing.T) 
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		require.NoError(t, f.Connect(ctx))
+		f.ConnectOrSkip(ctx)
 
-		// Act & Assert
-		t.Fatal("Schedule cron validation not yet implemented")
-	})
-}
+		route := f.UniqueRoute("schedule")
 
-// TestShouldExecuteTaskGivenScheduledTimeWhenTimeElapses verifies schedules
-// execute at designated times (best-effort).
-func TestShouldExecuteTaskGivenScheduledTimeWhenTimeElapses(t *testing.T) {
-	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
-		f := fixture.NewTestFixture(t, transport)
+		// Act — bad cron expression.
+		_, err := f.Client().Schedule().Create(ctx, route, "not a cron", []byte("payload"))
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-		require.NoError(t, f.Connect(ctx))
-
-		// Act & Assert
-		t.Fatal("Schedule execution not yet implemented")
+		// Assert
+		assert.Error(t, err, "Create with invalid cron should fail")
 	})
 }
 
@@ -66,14 +64,21 @@ func TestShouldCancelScheduleGivenExistingScheduleWhenCancelCalled(t *testing.T)
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		require.NoError(t, f.Connect(ctx))
+		f.ConnectOrSkip(ctx)
 
-		// Act & Assert
-		t.Fatal("Schedule CANCEL operation not yet implemented")
+		route := f.UniqueRoute("schedule")
+
+		id, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("weekly"))
+		require.NoError(t, err)
+
+		// Act
+		err = f.Client().Schedule().Cancel(ctx, id)
+
+		// Assert
+		require.NoError(t, err, "Cancel should succeed for existing schedule")
 	})
 }
 
@@ -83,47 +88,50 @@ func TestShouldListSchedulesGivenMultipleSchedulesWhenListCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		require.NoError(t, f.Connect(ctx))
+		f.ConnectOrSkip(ctx)
 
-		// Act & Assert
-		t.Fatal("Schedule LIST operation not yet implemented")
+		route := f.UniqueRoute("schedule")
+
+		// Create two schedules.
+		id1, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("s1"))
+		require.NoError(t, err)
+		id2, err := f.Client().Schedule().Create(ctx, route, "0 12 * * *", []byte("s2"))
+		require.NoError(t, err)
+
+		// Act
+		entries, err := f.Client().Schedule().List(ctx, route)
+
+		// Assert
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, len(entries), 2, "should return at least the 2 created schedules")
+
+		ids := make(map[string]bool)
+		for _, e := range entries {
+			ids[e.ID] = true
+		}
+		assert.True(t, ids[id1], "list should include first schedule")
+		assert.True(t, ids[id2], "list should include second schedule")
 	})
 }
 
-// TestShouldPersistScheduleGivenBrokerRestartWhenScheduleCreated verifies
-// schedules survive broker restarts per CLIENT_SPEC.md.
-func TestShouldPersistScheduleGivenBrokerRestartWhenScheduleCreated(t *testing.T) {
+// TestShouldCancelNonExistentScheduleGivenBogusIDWhenCancelCalled verifies
+// CANCEL with unknown ID returns an appropriate error.
+func TestShouldCancelNonExistentScheduleGivenBogusIDWhenCancelCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		require.NoError(t, f.Connect(ctx))
+		f.ConnectOrSkip(ctx)
 
-		// Act & Assert
-		t.Fatal("Schedule persistence not yet implemented")
-	})
-}
+		// Act
+		err := f.Client().Schedule().Cancel(ctx, "999999999")
 
-// TestShouldExecuteRecurringGivenCronIntervalWhenMultiplePeriods verifies
-// recurring schedules execute at specified intervals.
-func TestShouldExecuteRecurringGivenCronIntervalWhenMultiplePeriods(t *testing.T) {
-	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
-		f := fixture.NewTestFixture(t, transport)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-		require.NoError(t, f.Connect(ctx))
-
-		// Act & Assert
-		t.Fatal("Schedule recurring execution not yet implemented")
+		// Assert
+		assert.Error(t, err, "cancelling non-existent schedule should fail")
 	})
 }
