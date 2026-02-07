@@ -94,9 +94,9 @@ func TestShouldCorrelateResponseGivenCorrectCorrelationIDWhenMultipleRequests(t 
 	})
 }
 
-// TestShouldUnregisterWorkerGivenActiveRegistrationWhenUnsubscribeWorkerCalled
-// verifies UNSUBSCRIBE_WORKER stops receiving requests.
-func TestShouldUnregisterWorkerGivenActiveRegistrationWhenUnsubscribeWorkerCalled(t *testing.T) {
+// TestShouldUnregisterWorkerGivenActiveSubscriptionWhenUnsubscribeCalled
+// verifies Subscription.Unsubscribe() stops receiving requests.
+func TestShouldUnregisterWorkerGivenActiveSubscriptionWhenUnsubscribeCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)

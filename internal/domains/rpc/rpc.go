@@ -8,18 +8,40 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cntryl/cntryl-go/internal/core/iter"
 	"github.com/cntryl/cntryl-go/internal/core/transport"
 )
 
 // Client is the API for the RPC domain.
 type Client interface {
-	Call(ctx context.Context, route string, body []byte, timeout time.Duration) ([]byte, error)
-	SubscribeWorker(ctx context.Context, route string, handler RPCHandler) (Subscription, error)
-	UnsubscribeWorker(ctx context.Context, route string) error
+	// Call sends a request and returns a streaming iterator of Response frames.
+	// The iterator yields responses until the worker signals stream_end or an
+	// error occurs. Callers MUST call Close() on the returned iterator.
+	Call(ctx context.Context, route string, body []byte, timeout time.Duration) (iter.Iterator[Response], error)
+	// Subscribe registers a streaming worker handler for the given route.
+	Subscribe(ctx context.Context, route string, handler RPCHandler) (Subscription, error)
 }
 
-// RPCHandler processes inbound requests; return body and optional error.
-type RPCHandler func(context.Context, InboundRequest) (response []byte, err error)
+// Response is a single frame in a (possibly streaming) RPC response.
+type Response struct {
+	Sequence uint64
+	Body     []byte
+}
+
+// ResponseWriter allows a handler to stream multiple response frames back to
+// the caller. Send may be called zero or more times. When the handler returns,
+// the framework automatically sends a final frame with stream_end=1.
+type ResponseWriter interface {
+	// Send emits a response frame with stream_end=0. The sequence number is
+	// managed automatically (incrementing from 0).
+	Send(body []byte) error
+}
+
+// RPCHandler processes inbound requests. The handler receives a ResponseWriter
+// to stream results back. When the handler returns a nil error the framework
+// sends a final empty frame with stream_end=1. If the handler returns an error
+// the framework sends an error frame instead.
+type RPCHandler func(ctx context.Context, req InboundRequest, w ResponseWriter) error
 
 // Subscription allows unsubscribing a worker.
 type Subscription interface {
@@ -73,13 +95,64 @@ func (s *subscription) Unsubscribe() {
 				break
 			}
 		}
-		if len(chs) == 0 {
+		noneLeft := len(chs) == 0
+		if noneLeft {
 			delete(s.c.handlers, s.route)
+		} else {
+			s.c.handlers[s.route] = chs
 		}
 		s.c.handlersMu.Unlock()
 		s.wg.Wait()
+
+		// Notify broker only when the last handler for this route is removed.
+		if noneLeft {
+			enc := transport.NewTLVEncoder()
+			enc.AddString(transport.TagRoute, s.route)
+			_ = s.c.mux.Send(transport.Frame{Type: RPCUnsubscribeWorker, Channel: transport.ChannelRPC, Body: enc.Encode()})
+		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// ResponseWriter implementation
+// ---------------------------------------------------------------------------
+
+type responseWriter struct {
+	id  uint64
+	seq uint64
+	mux transport.MuxProvider
+}
+
+func (w *responseWriter) Send(body []byte) error {
+	enc := transport.NewTLVEncoder()
+	enc.AddUint64(transport.TagID, w.id)
+	enc.AddUint64(transport.TagSeq, w.seq)
+	enc.AddBytes(transport.TagBody, body)
+	enc.AddUint8(transport.TagStreamEnd, 0)
+	w.seq++
+	return w.mux.Send(transport.Frame{Type: RPCResponse, Channel: transport.ChannelRPC, Body: enc.Encode()})
+}
+
+// sendEnd sends the final stream_end=1 frame (empty body).
+func (w *responseWriter) sendEnd() error {
+	enc := transport.NewTLVEncoder()
+	enc.AddUint64(transport.TagID, w.id)
+	enc.AddUint64(transport.TagSeq, w.seq)
+	enc.AddUint8(transport.TagStreamEnd, 1)
+	return w.mux.Send(transport.Frame{Type: RPCResponse, Channel: transport.ChannelRPC, Body: enc.Encode()})
+}
+
+// sendError sends an error frame.
+func (w *responseWriter) sendError(herr error) error {
+	enc := transport.NewTLVEncoder()
+	enc.AddUint64(transport.TagID, w.id)
+	enc.AddString(transport.TagErr, herr.Error())
+	return w.mux.Send(transport.Frame{Type: transport.FrameTypeErr, Channel: transport.ChannelRPC, Body: enc.Encode()})
+}
+
+// ---------------------------------------------------------------------------
+// Receive loop
+// ---------------------------------------------------------------------------
 
 // startRecv dispatches inbound RPC frames to workers or pending Call correlations.
 func (c *client) startRecv() {
@@ -91,10 +164,17 @@ func (c *client) startRecv() {
 			switch f.Type {
 			case RPCRequest:
 				c.dispatchRequest(f)
-			case transport.FrameTypeResp, transport.FrameTypeErr:
+			case RPCResponse, transport.FrameTypeResp, transport.FrameTypeErr:
 				c.deliverPending(f)
 			}
 		}
+		// mux channel closed — close all pending waiters.
+		c.pendingMu.Lock()
+		for id, ch := range c.pending {
+			close(ch)
+			delete(c.pending, id)
+		}
+		c.pendingMu.Unlock()
 	}()
 }
 
@@ -122,15 +202,12 @@ func (c *client) dispatchRequest(f transport.Frame) {
 				return
 			default:
 			}
-			respBody, herr := s.handler(context.Background(), req)
-			enc := transport.NewTLVEncoder()
-			enc.AddUint64(transport.TagID, id)
-			if herr == nil {
-				enc.AddBytes(transport.TagBody, respBody)
-				_ = c.mux.Send(transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelRPC, Body: enc.Encode()})
+			w := &responseWriter{id: id, mux: c.mux}
+			herr := s.handler(context.Background(), req, w)
+			if herr != nil {
+				_ = w.sendError(herr)
 			} else {
-				enc.AddString(transport.TagErr, herr.Error())
-				_ = c.mux.Send(transport.Frame{Type: transport.FrameTypeErr, Channel: transport.ChannelRPC, Body: enc.Encode()})
+				_ = w.sendEnd()
 			}
 		}(sub)
 	}
@@ -147,9 +224,6 @@ func (c *client) deliverPending(f transport.Frame) {
 	}
 	c.pendingMu.Lock()
 	ch, found := c.pending[id]
-	if found {
-		delete(c.pending, id)
-	}
 	c.pendingMu.Unlock()
 	if found {
 		select {
@@ -159,8 +233,21 @@ func (c *client) deliverPending(f transport.Frame) {
 	}
 }
 
-// Call sends a request and waits for a correlated response.
-func (c *client) Call(ctx context.Context, route string, body []byte, timeout time.Duration) ([]byte, error) {
+// removePending removes and closes the pending channel for a correlation ID.
+func (c *client) removePending(id uint64) {
+	c.pendingMu.Lock()
+	delete(c.pending, id)
+	c.pendingMu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// Call (caller side — returns streaming iterator)
+// ---------------------------------------------------------------------------
+
+// Call sends a request and returns a streaming iterator that yields Response
+// frames until the worker signals stream_end=1 or an error occurs.
+// The caller MUST call Close() on the returned iterator.
+func (c *client) Call(ctx context.Context, route string, body []byte, timeout time.Duration) (iter.Iterator[Response], error) {
 	reqID := atomic.AddUint64(&c.nextReqID, 1)
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
@@ -168,44 +255,84 @@ func (c *client) Call(ctx context.Context, route string, body []byte, timeout ti
 	enc.AddBytes(transport.TagBody, body)
 	frame := transport.Frame{Type: RPCRequest, Channel: transport.ChannelRPC, Body: enc.Encode()}
 
-	ch := make(chan transport.Frame, 1)
+	ch := make(chan transport.Frame, 8)
 	c.pendingMu.Lock()
 	c.pending[reqID] = ch
 	c.pendingMu.Unlock()
 
 	if err := c.mux.Send(frame); err != nil {
-		c.pendingMu.Lock()
-		delete(c.pending, reqID)
-		c.pendingMu.Unlock()
+		c.removePending(reqID)
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	select {
-	case <-waitCtx.Done():
-		c.pendingMu.Lock()
-		delete(c.pending, reqID)
-		c.pendingMu.Unlock()
-		return nil, ErrRPCTimeout
-	case f := <-ch:
-		if f.Type == transport.FrameTypeResp {
-			dec, err := transport.NewTLVDecoder(f.Body)
-			if err != nil {
-				return nil, err
+	items := make(chan Response, 8)
+	errCh := make(chan error, 1)
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+
+	go func() {
+		defer close(items)
+		defer c.removePending(reqID)
+		for {
+			select {
+			case <-callCtx.Done():
+				errCh <- ErrRPCTimeout
+				return
+			case f, ok := <-ch:
+				if !ok {
+					errCh <- errors.New("connection closed")
+					return
+				}
+				if f.Type == transport.FrameTypeErr {
+					dec, _ := transport.NewTLVDecoder(f.Body)
+					errCh <- errors.New(dec.GetString(transport.TagErr))
+					return
+				}
+				dec, derr := transport.NewTLVDecoder(f.Body)
+				if derr != nil {
+					errCh <- derr
+					return
+				}
+				// Check stream_end flag.
+				streamEnd := false
+				if dec.Has(transport.TagStreamEnd) {
+					b := dec.GetBytes(transport.TagStreamEnd)
+					streamEnd = len(b) > 0 && b[0] == 1
+				}
+				seq, _ := dec.GetUint64(transport.TagSeq)
+				respBody := dec.GetBytes(transport.TagBody)
+
+				// If this is a final frame with no body, signal completion.
+				if streamEnd && len(respBody) == 0 {
+					errCh <- nil
+					return
+				}
+				// Deliver the response to the iterator.
+				select {
+				case items <- Response{Sequence: seq, Body: respBody}:
+				case <-callCtx.Done():
+					errCh <- ErrRPCTimeout
+					return
+				}
+				if streamEnd {
+					errCh <- nil
+					return
+				}
 			}
-			return dec.GetBytes(transport.TagBody), nil
 		}
-		if f.Type == transport.FrameTypeErr {
-			dec, _ := transport.NewTLVDecoder(f.Body)
-			return nil, errors.New(dec.GetString(transport.TagErr))
-		}
-		return nil, errors.New("unexpected frame type")
-	}
+	}()
+
+	// Wrap cancel so the iterator's Close cancels the timeout context.
+	wrappedCancel := func() { cancel() }
+	return iter.NewChannelIterator(items, errCh, wrappedCancel), nil
 }
 
-// SubscribeWorker registers a worker handler and notifies the broker.
-func (c *client) SubscribeWorker(ctx context.Context, route string, handler RPCHandler) (Subscription, error) {
+// ---------------------------------------------------------------------------
+// Subscribe / Resubscribe
+// ---------------------------------------------------------------------------
+
+// Subscribe registers a streaming worker handler for the given route and
+// notifies the broker.
+func (c *client) Subscribe(ctx context.Context, route string, handler RPCHandler) (Subscription, error) {
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: RPCSubscribeWorker, Channel: transport.ChannelRPC, Body: enc.Encode()}
@@ -217,20 +344,6 @@ func (c *client) SubscribeWorker(ctx context.Context, route string, handler RPCH
 	c.handlers[route] = append(c.handlers[route], s)
 	c.handlersMu.Unlock()
 	return s, nil
-}
-
-// UnsubscribeWorker removes all workers for a route and notifies the broker.
-func (c *client) UnsubscribeWorker(ctx context.Context, route string) error {
-	enc := transport.NewTLVEncoder()
-	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{Type: RPCUnsubscribeWorker, Channel: transport.ChannelRPC, Body: enc.Encode()}
-	if err := c.mux.Send(frame); err != nil {
-		return fmt.Errorf("send unsubscribe_worker: %w", err)
-	}
-	c.handlersMu.Lock()
-	delete(c.handlers, route)
-	c.handlersMu.Unlock()
-	return nil
 }
 
 func (c *client) resubscribeAll(ctx context.Context) {
