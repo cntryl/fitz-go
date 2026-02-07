@@ -27,8 +27,25 @@ func newMockMux() *mockMux {
 func (m *mockMux) Send(f transport.Frame) error {
 	m.sent = append(m.sent, f)
 	// auto-ack notice requests so Subscribe/Unsubscribe/Publish can proceed
-	if m.autoAck && (f.Type == NoticeSubscribe || f.Type == NoticeUnsubscribe || f.Type == NoticeUnsubscribeAll || f.Type == NoticePublish) {
-		m.in <- transport.Frame{Type: f.Type, Channel: f.Channel, Body: []byte{0}}
+	if m.autoAck && f.Type == transport.FrameTypeReq {
+		// Extract opcode from TLV body to check if it's a notice operation
+		dec, err := transport.NewTLVDecoder(f.Body)
+		if err != nil {
+			return err
+		}
+		opCode, err := dec.GetOp()
+		if err != nil {
+			return err
+		}
+		if opCode == NoticeSubscribe || opCode == NoticeUnsubscribe || opCode == NoticeUnsubscribeAll || opCode == NoticePublish {
+			// Create success response: TLV with opcode + binary status byte
+			// Response format: TLV[TagOp] + status(0=success)
+			encResp := transport.NewTLVEncoder()
+			encResp.AddOp(opCode)
+			// Add status as raw bytes: 0x00 = success
+			encResp.AddBytes(0x40, []byte{0})
+			m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: f.Channel, Body: encResp.Encode()}
+		}
 	}
 	return nil
 }
@@ -58,7 +75,10 @@ func TestShouldDeliverMessageToHandlerGivenSubscribedWhenNoticeArrives(t *testin
 
 	// Act
 	body := encodeNotifyBody("notice://realm/area/resource", []byte("hello"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body}
+	enc := transport.NewTLVEncoder()
+	enc.AddOp(NoticeNotify)
+	enc.AddBytes(transport.TagBody, body)
+	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc.Encode()}
 
 	// Assert
 	select {
@@ -81,7 +101,10 @@ func TestShouldStopDeliveryGivenUnsubscribedWhenNoticeArrives(t *testing.T) {
 	assert.NoError(t, err)
 
 	body := encodeNotifyBody("notice://realm/area/resource", []byte("one"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body}
+	enc := transport.NewTLVEncoder()
+	enc.AddOp(NoticeNotify)
+	enc.AddBytes(transport.TagBody, body)
+	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc.Encode()}
 
 	select {
 	case v := <-recv:
@@ -93,7 +116,10 @@ func TestShouldStopDeliveryGivenUnsubscribedWhenNoticeArrives(t *testing.T) {
 	// Act — unsubscribe and send another message
 	s.Unsubscribe()
 	body2 := encodeNotifyBody("notice://realm/area/resource", []byte("two"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body2}
+	enc2 := transport.NewTLVEncoder()
+	enc2.AddOp(NoticeNotify)
+	enc2.AddBytes(transport.TagBody, body2)
+	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc2.Encode()}
 
 	// Assert — handler must not be invoked
 	select {
@@ -119,7 +145,10 @@ func TestShouldWaitForHandlerGivenInFlightWhenUnsubscribeCalled(t *testing.T) {
 	assert.NoError(t, err)
 
 	body := encodeNotifyBody("notice://realm/area/resource", []byte("busy"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body}
+	enc := transport.NewTLVEncoder()
+	enc.AddOp(NoticeNotify)
+	enc.AddBytes(transport.TagBody, body)
+	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc.Encode()}
 
 	// wait for handler to start
 	select {
@@ -179,7 +208,10 @@ func TestShouldNotDeadlockGivenBlockedDelivererWhenUnsubscribeCalled(t *testing.
 
 	// send first message (fills buffer and starts handler)
 	body := encodeNotifyBody("notice://realm/area/resource", []byte("one"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body}
+	enc := transport.NewTLVEncoder()
+	enc.AddOp(NoticeNotify)
+	enc.AddBytes(transport.TagBody, body)
+	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc.Encode()}
 
 	// wait for handler to start
 	select {
@@ -190,7 +222,10 @@ func TestShouldNotDeadlockGivenBlockedDelivererWhenUnsubscribeCalled(t *testing.
 
 	// send second message which will block in deliver (buffer is 1)
 	body2 := encodeNotifyBody("notice://realm/area/resource", []byte("two"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body2}
+	enc2 := transport.NewTLVEncoder()
+	enc2.AddOp(NoticeNotify)
+	enc2.AddBytes(transport.TagBody, body2)
+	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc2.Encode()}
 
 	// unsubscribe in goroutine and ensure it doesn't deadlock on blocked deliverer.
 	done := make(chan struct{})

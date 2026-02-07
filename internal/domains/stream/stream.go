@@ -65,12 +65,13 @@ func (c *client) Append(ctx context.Context, route string, body []byte, expected
 		return 0, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(StreamAppend)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagBody, body)
 	if expectedOffset != nil {
 		enc.AddUint64(transport.TagExpectedOffset, *expectedOffset)
 	}
-	frame := transport.Frame{Type: StreamAppend, Channel: transport.ChannelStream, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelStream, Body: enc.Encode()}
 
 	// Append uses a custom response loop because the response may arrive as a
 	// data frame (not FrameTypeResp) carrying TagSeq.
@@ -112,10 +113,11 @@ func (c *client) ReadResource(ctx context.Context, route string, from uint64, li
 	}
 
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(StreamRead)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddUint64(transport.TagSeq, from)
 	enc.AddUint32(transport.TagLimit, limit)
-	frame := transport.Frame{Type: StreamRead, Channel: transport.ChannelStream, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelStream, Body: enc.Encode()}
 	if err := c.mux.Send(frame); err != nil {
 		return nil, fmt.Errorf("send read: %w", err)
 	}
@@ -197,8 +199,9 @@ func (c *client) Begin(ctx context.Context, route string) (uint64, error) {
 		return 0, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(StreamBegin)
 	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{Type: StreamBegin, Channel: transport.ChannelStream, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelStream, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
 	if err != nil {
@@ -218,8 +221,9 @@ func (c *client) Commit(ctx context.Context, route string) error {
 		return err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(StreamCommit)
 	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{Type: StreamCommit, Channel: transport.ChannelStream, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelStream, Body: enc.Encode()}
 	_, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
 	return err
 }
@@ -230,8 +234,9 @@ func (c *client) Rollback(ctx context.Context, route string) error {
 		return err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(StreamRollback)
 	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{Type: StreamRollback, Channel: transport.ChannelStream, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelStream, Body: enc.Encode()}
 	_, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
 	return err
 }
@@ -242,8 +247,9 @@ func (c *client) Last(ctx context.Context, route string) (*StreamRecord, error) 
 		return nil, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(StreamLast)
 	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{Type: StreamLast, Channel: transport.ChannelStream, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelStream, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
 	if err != nil {
@@ -264,8 +270,9 @@ func (c *client) GetMetadata(ctx context.Context, route string) (map[string]stri
 		return nil, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(StreamGetMetadata)
 	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{Type: StreamGetMetadata, Channel: transport.ChannelStream, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelStream, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapStreamError)
 	if err != nil {

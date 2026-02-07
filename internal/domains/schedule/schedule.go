@@ -38,12 +38,13 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 		return "", err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(ScheduleCreate)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddString(transport.TagCron, cronExpr)
 	if len(payload) > 0 {
 		enc.AddBytes(transport.TagBody, payload)
 	}
-	frame := transport.Frame{Type: ScheduleCreate, Channel: transport.ChannelSchedule, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelSchedule, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapScheduleError)
 	if err != nil {
@@ -60,8 +61,9 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 // Cancel cancels a scheduled job by id.
 func (c *client) Cancel(ctx context.Context, id string) error {
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(ScheduleCancel)
 	enc.AddString(transport.TagID, id)
-	frame := transport.Frame{Type: ScheduleCancel, Channel: transport.ChannelSchedule, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelSchedule, Body: enc.Encode()}
 
 	_, err := transport.SendRecv(ctx, c.mux, frame, mapScheduleError)
 	return err
@@ -73,8 +75,9 @@ func (c *client) List(ctx context.Context, route string) ([]ScheduleEntry, error
 		return nil, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(ScheduleList)
 	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{Type: ScheduleList, Channel: transport.ChannelSchedule, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelSchedule, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapScheduleError)
 	if err != nil {

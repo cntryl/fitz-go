@@ -113,8 +113,9 @@ func (s *subscription) Unsubscribe() {
 		// Notify broker only when the last handler for this route is removed.
 		if noneLeft {
 			enc := transport.NewTLVEncoder()
+			enc.AddOp(RPCUnsubscribeWorker)
 			enc.AddString(transport.TagRoute, s.route)
-			_ = s.c.mux.Send(transport.Frame{Type: RPCUnsubscribeWorker, Channel: transport.ChannelRPC, Body: enc.Encode()})
+			_ = s.c.mux.Send(transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()})
 		}
 	})
 }
@@ -131,21 +132,23 @@ type responseWriter struct {
 
 func (w *responseWriter) Send(body []byte) error {
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(RPCResponse)
 	enc.AddUint64(transport.TagID, w.id)
 	enc.AddUint64(transport.TagSeq, w.seq)
 	enc.AddBytes(transport.TagBody, body)
 	enc.AddUint8(transport.TagStreamEnd, 0)
 	w.seq++
-	return w.mux.Send(transport.Frame{Type: RPCResponse, Channel: transport.ChannelRPC, Body: enc.Encode()})
+	return w.mux.Send(transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()})
 }
 
 // sendEnd sends the final stream_end=1 frame (empty body).
 func (w *responseWriter) sendEnd() error {
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(RPCResponse)
 	enc.AddUint64(transport.TagID, w.id)
 	enc.AddUint64(transport.TagSeq, w.seq)
 	enc.AddUint8(transport.TagStreamEnd, 1)
-	return w.mux.Send(transport.Frame{Type: RPCResponse, Channel: transport.ChannelRPC, Body: enc.Encode()})
+	return w.mux.Send(transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()})
 }
 
 // sendError sends an error frame.
@@ -175,9 +178,9 @@ func (c *client) startRecv() {
 					continue
 				}
 				switch f.Type {
-				case RPCRequest:
+				case transport.FrameTypeReq:
 					c.dispatchRequest(f)
-				case RPCResponse, transport.FrameTypeResp, transport.FrameTypeErr:
+				case transport.FrameTypeResp, transport.FrameTypeErr:
 					c.deliverPending(f)
 				}
 			}
@@ -270,10 +273,11 @@ func (c *client) Call(ctx context.Context, route string, body []byte, timeout ti
 	}
 	reqID := atomic.AddUint64(&c.nextReqID, 1)
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(RPCRequest)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddUint64(transport.TagID, reqID)
 	enc.AddBytes(transport.TagBody, body)
-	frame := transport.Frame{Type: RPCRequest, Channel: transport.ChannelRPC, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()}
 
 	ch := make(chan transport.Frame, 8)
 	c.pendingMu.Lock()
@@ -357,8 +361,9 @@ func (c *client) Subscribe(ctx context.Context, route string, handler RPCHandler
 		return nil, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(RPCSubscribeWorker)
 	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{Type: RPCSubscribeWorker, Channel: transport.ChannelRPC, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()}
 	if err := c.mux.Send(frame); err != nil {
 		return nil, fmt.Errorf("send subscribe_worker: %w", err)
 	}
@@ -378,8 +383,9 @@ func (c *client) resubscribeAll(ctx context.Context) {
 	c.handlersMu.Unlock()
 	for _, r := range routes {
 		enc := transport.NewTLVEncoder()
+		enc.AddOp(RPCSubscribeWorker)
 		enc.AddString(transport.TagRoute, r)
-		_ = c.mux.Send(transport.Frame{Type: RPCSubscribeWorker, Channel: transport.ChannelRPC, Body: enc.Encode()})
+		_ = c.mux.Send(transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()})
 	}
 }
 

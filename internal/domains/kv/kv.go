@@ -41,10 +41,11 @@ func (c *client) Begin(ctx context.Context, route Route) (Tx, error) {
 	// Notify broker about transaction begin (best-effort). Broker may choose to
 	// accept client-generated tx IDs for correlation.
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(KVBegin) // wire code 100 per CLIENT_SPEC.md
 	enc.AddString(transport.TagRoute, route.String())
 	enc.AddUint64(transport.TagID, txID)
 	frame := transport.Frame{
-		Type:    KVBegin, // wire code 100 per CLIENT_SPEC.md
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),

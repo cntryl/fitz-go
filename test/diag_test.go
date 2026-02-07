@@ -45,13 +45,14 @@ func TestDiagBrokerRawFrames(t *testing.T) {
 	t.Log("--- Waiting 2s for frames after CONNECT ---")
 	drainFrames(t, mux.In(), 2*time.Second)
 
-	// 4. Send a simple Notice PUBLISH (op code 100, channel=ChannelPub=1)
+	// 4. Send a simple Notice PUBLISH (op code 500, channel=ChannelPub=1)
 	route := "notice://diag/test/ping"
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(500) // NoticePublish
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagBody, []byte("hello"))
 	pubFrame := transport.Frame{
-		Type:    100, // NoticePublish op code
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: transport.ChannelPub,
 		Body:    enc.Encode(),
@@ -65,12 +66,13 @@ func TestDiagBrokerRawFrames(t *testing.T) {
 	t.Log("--- Waiting 3s for frames after PUBLISH ---")
 	drainFrames(t, mux.In(), 3*time.Second)
 
-	// 6. Send a Lease ACQUIRE (op code 144, channel=ChannelLease=4)
+	// 6. Send a Lease ACQUIRE (op code 400, channel=ChannelLease=4)
 	enc2 := transport.NewTLVEncoder()
+	enc2.AddOp(400) // LeaseAcquire
 	enc2.AddString(transport.TagRoute, "lease://diag/test/lock1")
 	enc2.AddUint32(transport.TagTTL, 30)
 	leaseFrame := transport.Frame{
-		Type:    144, // LeaseAcquire
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: transport.ChannelLease,
 		Body:    enc2.Encode(),

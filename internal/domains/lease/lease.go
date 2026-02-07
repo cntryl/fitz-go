@@ -40,9 +40,10 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint32) (tok
 		return nil, 0, false, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(LeaseAcquire)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddUint32(transport.TagTTL, ttlSecs)
-	frame := transport.Frame{Type: LeaseAcquire, Channel: transport.ChannelLease, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelLease, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapLeaseError)
 	if err != nil {
@@ -68,10 +69,11 @@ func (c *client) Renew(ctx context.Context, route string, token []byte, ttlSecs 
 		return 0, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(LeaseRenew)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagLease, token)
 	enc.AddUint32(transport.TagTTL, ttlSecs)
-	frame := transport.Frame{Type: LeaseRenew, Channel: transport.ChannelLease, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelLease, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapLeaseError)
 	if err != nil {
@@ -93,9 +95,10 @@ func (c *client) Release(ctx context.Context, route string, token []byte) error 
 		return err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(LeaseRelease)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagLease, token)
-	frame := transport.Frame{Type: LeaseRelease, Channel: transport.ChannelLease, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelLease, Body: enc.Encode()}
 
 	_, err := transport.SendRecv(ctx, c.mux, frame, mapLeaseError)
 	return err
@@ -107,8 +110,9 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 		return nil, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(LeaseQuery)
 	enc.AddString(transport.TagRoute, route)
-	frame := transport.Frame{Type: LeaseQuery, Channel: transport.ChannelLease, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelLease, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapLeaseError)
 	if err != nil {

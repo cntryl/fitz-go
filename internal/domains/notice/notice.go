@@ -183,11 +183,14 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 	if err := validateNoticeRoute(route, false); err != nil {
 		return err
 	}
-	payload := encodePublish(route, body)
+	enc := transport.NewTLVEncoder()
+	enc.AddOp(NoticePublish)
+	enc.AddString(transport.TagRoute, route)
+	enc.AddBytes(transport.TagBody, body)
 	frame := transport.Frame{
-		Type:    NoticePublish,
+		Type:    transport.FrameTypeReq,
 		Channel: transport.ChannelPub,
-		Body:    payload,
+		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {
 		return fmt.Errorf("send publish: %w", err)
@@ -216,8 +219,22 @@ func (c *client) startRecv() {
 					if !ok {
 						return
 					}
-					if f.Type == NoticeNotify {
-						route, body, ok := decodeNotify(f.Body)
+					// Decode the opcode from TLV TagOp
+					dec, err := transport.NewTLVDecoder(f.Body)
+					if err != nil {
+						continue
+					}
+					opCode, err := dec.GetOp()
+					if err != nil {
+						continue
+					}
+					if opCode == NoticeNotify {
+						// Extract the notification body from TLV TagBody
+						notifyBody := dec.GetBytes(transport.TagBody)
+						if notifyBody == nil {
+							continue
+						}
+						route, body, ok := decodeNotify(notifyBody)
 						if !ok {
 							continue
 						}
@@ -235,8 +252,14 @@ func (c *client) startRecv() {
 						}
 						continue
 					}
-					if isNoticeResponseType(f.Type) {
-						routeKey, err := decodeNoticeResponseKey(f.Type, f.Body)
+					if isNoticeResponseType(opCode) {
+						// Extract status from TLV body
+						statusBytes := dec.GetBytes(0x40)
+						if statusBytes == nil {
+							// Fallback: try to decode from full TLV body
+							statusBytes = f.Body
+						}
+						routeKey, err := decodeNoticeResponseKey(opCode, statusBytes)
 						c.notifyWaiters(routeKey, err)
 						continue
 					}
@@ -247,11 +270,13 @@ func (c *client) startRecv() {
 }
 
 func (c *client) sendSubscribe(ctx context.Context, route string) error {
-	body := encodeSubscribe(route)
+	enc := transport.NewTLVEncoder()
+	enc.AddOp(NoticeSubscribe)
+	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{
-		Type:    NoticeSubscribe,
+		Type:    transport.FrameTypeReq,
 		Channel: transport.ChannelSub,
-		Body:    body,
+		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {
 		return fmt.Errorf("send subscribe: %w", err)
@@ -260,11 +285,13 @@ func (c *client) sendSubscribe(ctx context.Context, route string) error {
 }
 
 func (c *client) sendUnsubscribe(ctx context.Context, route string) error {
-	body := encodeUnsubscribe(route)
+	enc := transport.NewTLVEncoder()
+	enc.AddOp(NoticeUnsubscribe)
+	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{
-		Type:    NoticeUnsubscribe,
+		Type:    transport.FrameTypeReq,
 		Channel: transport.ChannelSub,
-		Body:    body,
+		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {
 		return fmt.Errorf("send unsubscribe: %w", err)

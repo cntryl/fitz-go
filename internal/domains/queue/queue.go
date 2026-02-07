@@ -40,9 +40,10 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (string
 		return "", err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(QueueEnqueue)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagBody, body)
-	frame := transport.Frame{Type: QueueEnqueue, Channel: transport.ChannelQueue, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelQueue, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapQueueError)
 	if err != nil {
@@ -66,12 +67,13 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint32, ba
 		return nil, err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(QueueReserve)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddUint32(transport.TagTTL, leaseSecs)
 	if batchSize > 0 {
 		enc.AddUint32(transport.TagBatchSize, batchSize)
 	}
-	frame := transport.Frame{Type: QueueReserve, Channel: transport.ChannelQueue, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelQueue, Body: enc.Encode()}
 
 	resp, err := transport.SendRecv(ctx, c.mux, frame, mapQueueError)
 	if err != nil {
@@ -111,6 +113,7 @@ func (c *client) Extend(ctx context.Context, route string, id string, token uint
 		return err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(QueueExtend)
 	enc.AddString(transport.TagRoute, route)
 	if id == "" {
 		return fmt.Errorf("queue extend: id cannot be empty")
@@ -122,7 +125,7 @@ func (c *client) Extend(ctx context.Context, route string, id string, token uint
 	enc.AddUint64(transport.TagID, v)
 	enc.AddUint64(transport.TagLease, token)
 	enc.AddUint32(transport.TagTTL, leaseSecs)
-	frame := transport.Frame{Type: QueueExtend, Channel: transport.ChannelQueue, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelQueue, Body: enc.Encode()}
 
 	_, err = transport.SendRecv(ctx, c.mux, frame, mapQueueError)
 	return err
@@ -134,6 +137,7 @@ func (c *client) Complete(ctx context.Context, route string, id string, token ui
 		return err
 	}
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(QueueComplete)
 	enc.AddString(transport.TagRoute, route)
 	if id == "" {
 		return fmt.Errorf("queue complete: id cannot be empty")
@@ -144,7 +148,7 @@ func (c *client) Complete(ctx context.Context, route string, id string, token ui
 	}
 	enc.AddUint64(transport.TagID, v)
 	enc.AddUint64(transport.TagLease, token)
-	frame := transport.Frame{Type: QueueComplete, Channel: transport.ChannelQueue, Body: enc.Encode()}
+	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelQueue, Body: enc.Encode()}
 
 	_, err = transport.SendRecv(ctx, c.mux, frame, mapQueueError)
 	return err

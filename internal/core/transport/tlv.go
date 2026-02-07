@@ -249,3 +249,52 @@ func (d *TLVDecoder) All() map[uint8][]byte {
 	}
 	return result
 }
+
+// EncodeOpTag encodes a uint16 operation code using escape byte encoding per CLIENT_SPEC.md.
+// Values 0x00-0xFE are encoded as single byte; values 0xFF+ are escaped as 0xFF followed by u16 BE.
+// Example: NoticePublish(500) encodes as 0xFF 0x01 0xF4
+func EncodeOpTag(opCode uint16) []byte {
+	if opCode <= 0xFE {
+		return []byte{uint8(opCode)}
+	}
+	// Escape sequence: 0xFF followed by 2-byte big-endian code
+	b := make([]byte, 3)
+	b[0] = 0xFF
+	binary.BigEndian.PutUint16(b[1:3], opCode)
+	return b
+}
+
+// DecodeOpTag decodes an operation code from escape byte format.
+// Returns the decoded code and the number of bytes consumed, or an error if truncated.
+func DecodeOpTag(data []byte) (uint16, int, error) {
+	if len(data) == 0 {
+		return 0, 0, errors.New("empty TLV value for TagOp")
+	}
+	if data[0] != 0xFF {
+		// Single byte code (0x00-0xFE)
+		return uint16(data[0]), 1, nil
+	}
+	// Escape sequence: 0xFF followed by u16 BE
+	if len(data) < 3 {
+		return 0, 0, errors.New("truncated TagOp escape sequence")
+	}
+	code := binary.BigEndian.Uint16(data[1:3])
+	return code, 3, nil
+}
+
+// AddOp adds an operation code with TagOp using escape byte encoding.
+func (e *TLVEncoder) AddOp(opCode uint16) *TLVEncoder {
+	encoded := EncodeOpTag(opCode)
+	return e.AddTag(TagOp, encoded)
+}
+
+// GetOp retrieves an operation code from TagOp, decoding escape bytes.
+// Returns 0 if TagOp is not present.
+func (d *TLVDecoder) GetOp() (uint16, error) {
+	value := d.GetBytes(TagOp)
+	if value == nil {
+		return 0, nil
+	}
+	code, _, err := DecodeOpTag(value)
+	return code, err
+}

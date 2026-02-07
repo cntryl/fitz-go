@@ -73,7 +73,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 
 	// Build the request TLV payload.
 	enc := transport.NewTLVEncoder()
-	enc.AddUint8(transport.TagOp, transport.KVOpGet)
+	enc.AddOp(KVGet)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagKey, key)
 	enc.AddUint64(transport.TagID, requestID)
@@ -160,7 +160,7 @@ func (t *transaction) Scan(ctx context.Context, startKey []byte, endKey []byte, 
 	enc.AddUint64(transport.TagID, requestID)
 
 	// Add operation tag and send request frame.
-	enc.AddUint8(transport.TagOp, transport.KVOpScan)
+	enc.AddOp(KVScan)
 	frame := transport.Frame{
 		Type:    transport.FrameTypeReq,
 		Flags:   0,
@@ -304,7 +304,7 @@ func (t *transaction) Put(ctx context.Context, key []byte, value []byte) error {
 
 	// Build and send PUT request immediately.
 	enc := transport.NewTLVEncoder()
-	enc.AddUint8(transport.TagOp, transport.KVOpPut)
+	enc.AddOp(KVPut)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagKey, key)
 	enc.AddBytes(transport.TagBody, value)
@@ -341,7 +341,7 @@ func (t *transaction) Insert(ctx context.Context, key []byte, value []byte) erro
 
 	// Build and send INSERT request immediately.
 	enc := transport.NewTLVEncoder()
-	enc.AddUint8(transport.TagOp, transport.KVOpInsert)
+	enc.AddOp(KVInsert)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagKey, key)
 	enc.AddBytes(transport.TagBody, value)
@@ -378,7 +378,7 @@ func (t *transaction) Delete(ctx context.Context, key []byte) error {
 
 	// Build and send DELETE request immediately.
 	enc := transport.NewTLVEncoder()
-	enc.AddUint8(transport.TagOp, transport.KVOpDelete)
+	enc.AddOp(KVDelete)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagKey, key)
 	enc.AddUint64(transport.TagID, t.txID)
@@ -414,7 +414,7 @@ func (t *transaction) DeleteRange(ctx context.Context, startKey []byte, endKey [
 
 	// Build and send DELETE_RANGE request immediately.
 	enc := transport.NewTLVEncoder()
-	enc.AddUint8(transport.TagOp, transport.KVOpDeleteRange)
+	enc.AddOp(KVDeleteRange)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddBytes(transport.TagStartKey, startKey)
 	enc.AddBytes(transport.TagEndKey, endKey)
@@ -458,11 +458,11 @@ func (t *transaction) Commit(ctx context.Context) error {
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddUint64(transport.TagID, t.txID)
 	// Include operation tag for commit so receivers can easily identify it.
-	enc.AddUint8(transport.TagOp, transport.KVOpCommit)
+	enc.AddOp(KVCommit)
 
-	// Use KV-specific COMMIT frame type to match broker expectations.
+	// Use KV-specific request frame type to match broker expectations.
 	frame := transport.Frame{
-		Type:    KVCommit,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
@@ -519,11 +519,12 @@ func (t *transaction) Rollback(ctx context.Context) error {
 
 	// Send ROLLBACK signal to broker using KV-specific frame type.
 	enc := transport.NewTLVEncoder()
+	enc.AddOp(KVRollback)
 	enc.AddString(transport.TagRoute, t.route.String())
 	enc.AddUint64(transport.TagID, t.txID)
 
 	frame := transport.Frame{
-		Type:    KVRollback,
+		Type:    transport.FrameTypeReq,
 		Flags:   0,
 		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
