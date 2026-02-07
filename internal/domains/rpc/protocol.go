@@ -5,13 +5,13 @@ import (
 	"strings"
 )
 
-// Wire opcodes for RPC domain (per CLIENT_SPEC.md). Values are low-byte uint8 equivalents.
+// Wire opcodes for RPC domain (per CLIENT_SPEC.md). Values are message type identifiers.
 const (
-	RPCSubscribeWorker   uint8 = 44
-	RPCUnsubscribeWorker uint8 = 45
-	RPCRequest           uint8 = 46
-	RPCResponse          uint8 = 47
-	RPCAck               uint8 = 48
+	RPCSubscribeWorker   uint16 = 300
+	RPCUnsubscribeWorker uint16 = 301
+	RPCRequest           uint16 = 302
+	RPCResponse          uint16 = 303
+	RPCAck               uint16 = 304
 )
 
 // Domain-specific errors.

@@ -5,15 +5,15 @@ import (
 	"strings"
 )
 
-// Wire opcodes for Stream domain (per CLIENT_SPEC.md). Values are low-byte uint8 equivalents.
+// Wire opcodes for Stream domain (per CLIENT_SPEC.md). Values are message type identifiers.
 const (
-	StreamBegin       uint8 = 200
-	StreamAppend      uint8 = 201
-	StreamCommit      uint8 = 202
-	StreamRollback    uint8 = 203
-	StreamRead        uint8 = 204
-	StreamLast        uint8 = 205
-	StreamGetMetadata uint8 = 206
+	StreamBegin       uint16 = 600
+	StreamAppend      uint16 = 601
+	StreamCommit      uint16 = 602
+	StreamRollback    uint16 = 603
+	StreamRead        uint16 = 604
+	StreamLast        uint16 = 605
+	StreamGetMetadata uint16 = 606
 )
 
 // Domain-specific errors.

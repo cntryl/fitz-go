@@ -5,12 +5,12 @@ import (
 	"strings"
 )
 
-// Wire opcodes for Queue domain (per CLIENT_SPEC.md). Values are low-byte uint8 equivalents.
+// Wire opcodes for Queue domain (per CLIENT_SPEC.md). Values are message type identifiers.
 const (
-	QueueEnqueue  uint8 = 200
-	QueueReserve  uint8 = 202
-	QueueExtend   uint8 = 203
-	QueueComplete uint8 = 204
+	QueueEnqueue  uint16 = 200
+	QueueReserve  uint16 = 202
+	QueueExtend   uint16 = 203
+	QueueComplete uint16 = 204
 )
 
 // Domain-specific errors.

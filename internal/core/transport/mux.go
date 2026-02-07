@@ -11,11 +11,11 @@ import (
 )
 
 // Frame represents a single top-level Fitz TLV frame transported over the
-// connection. Format: type(u8) | flags(u8) | channel(u32 BE) | body
+// connection. Format: type(u16 BE) | flags(u8) | channel(u32 BE) | body
 // Body is TLV payload and is left opaque for domain layers to decode.
 // See `CLIENT_SPEC.md` for authoritative frame layout and TLV tag meanings.
 type Frame struct {
-	Type    uint8
+	Type    uint16
 	Flags   uint8
 	Channel uint32
 	Body    []byte
@@ -23,12 +23,12 @@ type Frame struct {
 
 // FrameType constants (small set used by transport tests and domain layers).
 const (
-	FrameTypeConnOpen  uint8 = 1
-	FrameTypeAck       uint8 = 2
-	FrameTypeErr       uint8 = 3
-	FrameTypeHeartbeat uint8 = 0xFE
-	FrameTypeReq       uint8 = 10
-	FrameTypeResp      uint8 = 11
+	FrameTypeConnOpen  uint16 = 1
+	FrameTypeAck       uint16 = 2
+	FrameTypeErr       uint16 = 3
+	FrameTypeHeartbeat uint16 = 0xFE
+	FrameTypeReq       uint16 = 10
+	FrameTypeResp      uint16 = 11
 )
 
 // Well-known channel IDs used for multiplexing domain traffic.
@@ -141,7 +141,7 @@ func (w *WebSocketFramer) WriteFrame(payload []byte) error {
 	}
 	// For WebSocket transport, CONNECT frames should wrap token bytes in TagToken TLV
 	// to preserve historical behavior. Payload layout: type(1) | flags(1) | channel(4) | body
-	if len(payload) >= frameHeaderSize && payload[0] == FrameTypeConnOpen {
+	if len(payload) >= frameHeaderSize && binary.BigEndian.Uint16(payload[0:2]) == FrameTypeConnOpen {
 		header := append([]byte(nil), payload[:frameHeaderSize]...)
 		body := payload[frameHeaderSize:]
 		e := NewTLVEncoder()
@@ -281,10 +281,10 @@ func (m *Mux) readLoop() {
 			return
 		}
 		f := Frame{
-			Type:    payload[0],
-			Flags:   payload[1],
-			Channel: binary.BigEndian.Uint32(payload[2:6]),
-			Body:    append([]byte(nil), payload[6:]...),
+			Type:    binary.BigEndian.Uint16(payload[0:2]),
+			Flags:   payload[2],
+			Channel: binary.BigEndian.Uint32(payload[3:7]),
+			Body:    append([]byte(nil), payload[7:]...),
 		}
 		select {
 		case m.inCh <- f:
@@ -305,9 +305,11 @@ func (m *Mux) writeLoop() {
 			// Build payload: header + body. Let the framer handle transport-specific
 			// behavior (e.g., CONNECT wrapping for WebSocket).
 			var payload []byte
+			var typeBuf [2]byte
+			binary.BigEndian.PutUint16(typeBuf[:], f.Type)
 			var chBuf [4]byte
 			binary.BigEndian.PutUint32(chBuf[:], f.Channel)
-			header := []byte{f.Type, f.Flags, chBuf[0], chBuf[1], chBuf[2], chBuf[3]}
+			header := []byte{typeBuf[0], typeBuf[1], f.Flags, chBuf[0], chBuf[1], chBuf[2], chBuf[3]}
 			payload = append(header, f.Body...)
 			err := m.fr.WriteFrame(payload)
 			m.writeMu.Unlock()

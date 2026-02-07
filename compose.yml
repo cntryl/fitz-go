@@ -32,7 +32,7 @@ services:
       FITZ_STORAGE_PATH: "/data" # Storage directory
 
       # Logging
-      RUST_LOG: "info,fitz=debug"
+      RUST_LOG: "info,fitz=trace"
 
       # Optional: Cloud storage (uncomment for S3/GCS/Azure)
       # FITZ_STORAGE_MODE: "s3"

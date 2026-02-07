@@ -7,15 +7,15 @@ import (
 
 // Wire opcodes for KV domain (per CLIENT_SPEC.md: 100+).
 const (
-	KVBegin       uint8 = 100
-	KVCommit      uint8 = 101
-	KVRollback    uint8 = 102
-	KVGet         uint8 = 103
-	KVPut         uint8 = 104
-	KVInsert      uint8 = 105
-	KVDelete      uint8 = 106
-	KVDeleteRange uint8 = 107
-	KVScan        uint8 = 108
+	KVBegin       uint16 = 100
+	KVCommit      uint16 = 101
+	KVRollback    uint16 = 102
+	KVGet         uint16 = 103
+	KVPut         uint16 = 104
+	KVInsert      uint16 = 105
+	KVDelete      uint16 = 106
+	KVDeleteRange uint16 = 107
+	KVScan        uint16 = 108
 )
 
 // Domain-specific errors.

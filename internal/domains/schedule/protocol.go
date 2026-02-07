@@ -5,11 +5,11 @@ import (
 	"strings"
 )
 
-// Wire opcodes for Schedule domain (per CLIENT_SPEC.md). Values are low-byte uint8 equivalents.
+// Wire opcodes for Schedule domain (per CLIENT_SPEC.md). Values are message type identifiers.
 const (
-	ScheduleCreate uint8 = 244
-	ScheduleCancel uint8 = 245
-	ScheduleList   uint8 = 246
+	ScheduleCreate uint16 = 700
+	ScheduleCancel uint16 = 701
+	ScheduleList   uint16 = 702
 )
 
 // Domain-specific errors.

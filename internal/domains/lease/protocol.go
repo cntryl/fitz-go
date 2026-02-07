@@ -7,10 +7,10 @@ import (
 
 // Wire opcodes for Lease domain (per CLIENT_SPEC.md 400–403).
 const (
-	LeaseAcquire uint8 = 144
-	LeaseRenew   uint8 = 145
-	LeaseRelease uint8 = 146
-	LeaseQuery   uint8 = 147
+	LeaseAcquire uint16 = 400
+	LeaseRenew   uint16 = 401
+	LeaseRelease uint16 = 402
+	LeaseQuery   uint16 = 403
 )
 
 // Domain-specific errors (mapped from broker error responses).

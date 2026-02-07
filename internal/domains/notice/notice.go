@@ -284,7 +284,7 @@ func (c *client) resubscribeAll(ctx context.Context) {
 	}
 }
 
-func (c *client) waitForAck(ctx context.Context, op uint8) error {
+func (c *client) waitForAck(ctx context.Context, op uint16) error {
 	key := noticeWaitKey(op)
 	ch := make(chan error, 1)
 	c.ackMu.Lock()

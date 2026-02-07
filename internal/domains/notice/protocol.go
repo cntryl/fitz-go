@@ -5,13 +5,13 @@ import (
 	"fmt"
 )
 
-// Wire operation codes for Notice domain. Values are low-byte uint8 equivalents.
+// Wire operation codes for Notice domain. Values are message type identifiers.
 const (
-	NoticePublish        uint8 = 100
-	NoticeSubscribe      uint8 = 101
-	NoticeUnsubscribe    uint8 = 102
-	NoticeUnsubscribeAll uint8 = 103
-	NoticeNotify         uint8 = 104
+	NoticePublish        uint16 = 500
+	NoticeSubscribe      uint16 = 501
+	NoticeUnsubscribe    uint16 = 502
+	NoticeUnsubscribeAll uint16 = 503
+	NoticeNotify         uint16 = 504
 )
 
 // Domain-specific errors.
@@ -111,11 +111,11 @@ func decodeStatus(body []byte) (uint8, string, bool) {
 	return status, string(body[5 : 5+msgLen]), true
 }
 
-func isNoticeResponseType(t uint8) bool {
+func isNoticeResponseType(t uint16) bool {
 	return t == NoticePublish || t == NoticeSubscribe || t == NoticeUnsubscribe || t == NoticeUnsubscribeAll
 }
 
-func decodeNoticeResponseKey(op uint8, body []byte) (string, error) {
+func decodeNoticeResponseKey(op uint16, body []byte) (string, error) {
 	status, errMsg, ok := decodeStatus(body)
 	if !ok {
 		return "", nil
@@ -126,7 +126,7 @@ func decodeNoticeResponseKey(op uint8, body []byte) (string, error) {
 	return noticeWaitKey(op), nil
 }
 
-func noticeWaitKey(op uint8) string {
+func noticeWaitKey(op uint16) string {
 	return fmt.Sprintf("%d", op)
 }
 
