@@ -233,8 +233,9 @@ func TestShouldRemoveAckWaiterGivenTimeoutWhenNoAckReceived(t *testing.T) {
 	err := nc.sendUnsubscribe(context.Background(), "notice://realm/area/timeout")
 	elapsed := time.Since(start)
 
-	// Assert
-	assert.NoError(t, err)
+	// Assert — waitForAck returns error on timeout
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
 	assert.GreaterOrEqual(t, int(elapsed.Milliseconds()), 500)
 
 	nc.ackMu.Lock()
