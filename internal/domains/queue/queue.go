@@ -22,12 +22,19 @@ type LeaseMessage struct {
 }
 
 // client is a concrete implementation of queue.Client backed by the transport mux.
+type muxProvider interface {
+	Send(transport.Frame) error
+	In() <-chan transport.Frame
+	Ctx() context.Context
+	OnReconnect(func())
+}
+
 type client struct {
-	mux *transport.Mux
+	mux muxProvider
 }
 
 // NewClient creates a new Queue domain client backed by the transport mux.
-func NewClient(mux *transport.Mux) Client {
+func NewClient(mux muxProvider) Client {
 	return &client{mux: mux}
 }
 
@@ -39,7 +46,7 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (string
 	frame := transport.Frame{
 		Type:    QueueEnqueue,
 		Flags:   0,
-		Channel: ChannelQueue,
+		Channel: transport.ChannelQueue,
 		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {
@@ -58,7 +65,7 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint32, ba
 	frame := transport.Frame{
 		Type:    QueueReserve,
 		Flags:   0,
-		Channel: ChannelQueue,
+		Channel: transport.ChannelQueue,
 		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {
@@ -76,7 +83,7 @@ func (c *client) Complete(ctx context.Context, route string, id string, token ui
 	frame := transport.Frame{
 		Type:    QueueComplete,
 		Flags:   0,
-		Channel: ChannelQueue,
+		Channel: transport.ChannelQueue,
 		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {

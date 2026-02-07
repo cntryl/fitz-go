@@ -33,7 +33,16 @@ const (
 
 // Well-known channel IDs used for multiplexing domain traffic.
 const (
-	ChannelLease uint32 = 4
+	ChannelControl  uint32 = 0
+	ChannelPub      uint32 = 1
+	ChannelSub      uint32 = 2
+	ChannelRPC      uint32 = 3
+	ChannelLease    uint32 = 4
+	ChannelInternal uint32 = 5
+	ChannelKV       uint32 = 6
+	ChannelStream   uint32 = 7
+	ChannelQueue    uint32 = 8
+	ChannelSchedule uint32 = 9
 )
 
 // Framer abstracts transport framing so Mux no longer needs to guess transport

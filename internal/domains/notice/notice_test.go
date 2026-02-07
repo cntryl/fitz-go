@@ -53,7 +53,7 @@ func TestSubscribeHandlerReceivesMessage(t *testing.T) {
 	assert.NoError(t, err)
 
 	body := encodeNotifyBody("notice://realm/area/resource", []byte("hello"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: ChannelSub, Body: body}
+	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body}
 
 	select {
 	case v := <-recv:
@@ -110,7 +110,7 @@ func TestUnsubscribeWaitsForInFlightHandler(t *testing.T) {
 	assert.NoError(t, err)
 
 	body := encodeNotifyBody("notice://realm/area/resource", []byte("busy"))
-	m.in <- transport.Frame{Type: NoticeNotify, Channel: ChannelSub, Body: body}
+	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body}
 
 	// wait for handler to start
 	select {

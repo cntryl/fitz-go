@@ -1,8 +1,15 @@
 package kv
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/cntryl/cntryl-go/internal/core/transport"
+)
 
 // KV protocol constants and error codes.
+
+// Local alias to centralized channel constant for backward compatibility.
+const ChannelKV = transport.ChannelKV
 
 // Standard error codes returned by the broker in KV operations.
 var (
@@ -13,17 +20,6 @@ var (
 	ErrKeyTooLarge         = errors.New("key too large")
 	ErrValueTooLarge       = errors.New("value too large")
 	ErrTransactionAborted  = errors.New("transaction aborted")
-)
-
-// Channel constants (per CLIENT_SPEC.md).
-const (
-	ChannelControl  uint32 = 0
-	ChannelPub      uint32 = 1
-	ChannelSub      uint32 = 2
-	ChannelRPC      uint32 = 3
-	ChannelLease    uint32 = 4
-	ChannelInternal uint32 = 5
-	ChannelKV       uint32 = 6 // extended for KV domain
 )
 
 // Transport-agnostic wire codes for KV ops (per CLIENT_SPEC.md: 100+)

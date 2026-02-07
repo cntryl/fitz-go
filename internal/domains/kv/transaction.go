@@ -84,7 +84,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 	frame := transport.Frame{
 		Type:    transport.FrameTypeReq,
 		Flags:   0,
-		Channel: ChannelKV,
+		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
 	}
 	if err := t.mux.Send(frame); err != nil {
@@ -102,7 +102,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 			}
 
 			// Check if this is our response (same channel, matching ID).
-			if respFrame.Channel != ChannelKV {
+			if respFrame.Channel != transport.ChannelKV {
 				continue
 			}
 
@@ -171,7 +171,7 @@ func (t *transaction) Scan(ctx context.Context, startKey []byte, endKey []byte, 
 	frame := transport.Frame{
 		Type:    transport.FrameTypeReq,
 		Flags:   0,
-		Channel: ChannelKV,
+		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
 	}
 	if err := t.mux.Send(frame); err != nil {
@@ -351,7 +351,7 @@ func (t *transaction) Insert(ctx context.Context, key []byte, value []byte) erro
 	frame := transport.Frame{
 		Type:    transport.FrameTypeReq,
 		Flags:   0,
-		Channel: ChannelKV,
+		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
 	}
 	return t.mux.Send(frame)
@@ -465,7 +465,7 @@ func (t *transaction) Commit(ctx context.Context) error {
 	frame := transport.Frame{
 		Type:    KVCommit,
 		Flags:   0,
-		Channel: ChannelKV,
+		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
 	}
 

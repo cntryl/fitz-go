@@ -22,12 +22,19 @@ type ScheduleEntry struct {
 }
 
 // client is a concrete implementation of schedule.Client backed by the transport mux.
+type muxProvider interface {
+	Send(transport.Frame) error
+	In() <-chan transport.Frame
+	Ctx() context.Context
+	OnReconnect(func())
+}
+
 type client struct {
-	mux *transport.Mux
+	mux muxProvider
 }
 
 // NewClient creates a new Schedule domain client backed by the transport mux.
-func NewClient(mux *transport.Mux) Client {
+func NewClient(mux muxProvider) Client {
 	return &client{mux: mux}
 }
 
@@ -40,7 +47,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 	frame := transport.Frame{
 		Type:    600 % 256,
 		Flags:   0,
-		Channel: 9,
+		Channel: transport.ChannelSchedule,
 		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {
@@ -56,7 +63,7 @@ func (c *client) Cancel(ctx context.Context, id string) error {
 	frame := transport.Frame{
 		Type:    601 % 256,
 		Flags:   0,
-		Channel: 9,
+		Channel: transport.ChannelSchedule,
 		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {
@@ -72,7 +79,7 @@ func (c *client) List(ctx context.Context, route string) ([]ScheduleEntry, error
 	frame := transport.Frame{
 		Type:    602 % 256,
 		Flags:   0,
-		Channel: 9,
+		Channel: transport.ChannelSchedule,
 		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {

@@ -10,12 +10,7 @@ import (
 	"github.com/cntryl/cntryl-go/internal/core/transport"
 )
 
-// Channel and wire codes for Notice domain (per CLIENT_SPEC.md semantics).
-// Channels are broker-internal, but kept here for compatibility with the mux.
-const (
-	ChannelPub uint32 = 1
-	ChannelSub uint32 = 2
-)
+// Wire operation codes for Notice domain (per CLIENT_SPEC.md semantics).
 
 // Wire operation codes for Notice domain. Values are low-byte uint8 equivalents.
 const (
@@ -294,7 +289,7 @@ func (c *client) sendSubscribe(ctx context.Context, route string) error {
 	frame := transport.Frame{
 		Type:    NoticeSubscribe,
 		Flags:   0,
-		Channel: ChannelSub,
+		Channel: transport.ChannelSub,
 		Body:    body,
 	}
 	if err := c.mux.Send(frame); err != nil {
@@ -309,7 +304,7 @@ func (c *client) sendUnsubscribe(ctx context.Context, route string) error {
 	frame := transport.Frame{
 		Type:    NoticeUnsubscribe,
 		Flags:   0,
-		Channel: ChannelSub,
+		Channel: transport.ChannelSub,
 		Body:    body,
 	}
 	if err := c.mux.Send(frame); err != nil {
@@ -341,7 +336,7 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 	frame := transport.Frame{
 		Type:    NoticePublish,
 		Flags:   0,
-		Channel: ChannelPub,
+		Channel: transport.ChannelPub,
 		Body:    payload,
 	}
 	if err := c.mux.Send(frame); err != nil {

@@ -1,10 +1,5 @@
 package stream
 
-// Channel used for Stream domain traffic.
-const (
-	ChannelStream uint32 = 7
-)
-
 // Wire opcodes for Stream domain (low byte values).
 const (
 	StreamBegin    uint8 = 300 % 256

@@ -21,14 +21,27 @@ import (
 
 // domainMux adapts the transport mux for domain clients.
 type domainMux struct {
-	send func(transport.Frame) error
-	in   <-chan transport.Frame
-	ctx  context.Context
+	send        func(transport.Frame) error
+	in          <-chan transport.Frame
+	ctx         context.Context
+	reconnectCb func(func())
 }
 
 func (d *domainMux) Send(f transport.Frame) error { return d.send(f) }
 func (d *domainMux) In() <-chan transport.Frame   { return d.in }
 func (d *domainMux) Ctx() context.Context         { return d.ctx }
+func (d *domainMux) OnReconnect(cb func()) {
+	if d.reconnectCb != nil {
+		d.reconnectCb(cb)
+	}
+}
+
+// lowercase alias used by some domain muxProvider interfaces
+func (d *domainMux) onReconnect(cb func()) {
+	if d.reconnectCb != nil {
+		d.reconnectCb(cb)
+	}
+}
 
 // FramerFactory creates a Framer from a raw net.Conn.
 type FramerFactory func(net.Conn) transport.Framer
@@ -49,7 +62,13 @@ type Client struct {
 	retryBackoff  time.Duration
 	maxRetries    int
 	// per-domain inbound channels (dispatcher will route frames here)
-	kvIn chan transport.Frame
+	kvIn       chan transport.Frame
+	noticeIn   chan transport.Frame
+	streamIn   chan transport.Frame
+	queueIn    chan transport.Frame
+	rpcIn      chan transport.Frame
+	leaseIn    chan transport.Frame
+	scheduleIn chan transport.Frame
 
 	domainClients struct {
 		notice   notice.Client
@@ -162,17 +181,62 @@ func (c *Client) Connect(ctx context.Context) error {
 	// Initialize per-domain channels and start dispatcher before creating
 	// domain clients so they can receive frames from their dedicated channels.
 	c.kvIn = make(chan transport.Frame, 128)
+	c.noticeIn = make(chan transport.Frame, 128)
+	c.streamIn = make(chan transport.Frame, 128)
+	c.queueIn = make(chan transport.Frame, 128)
+	c.rpcIn = make(chan transport.Frame, 128)
+	c.leaseIn = make(chan transport.Frame, 128)
+	c.scheduleIn = make(chan transport.Frame, 128)
 	go func() {
+		defer func() {
+			close(c.kvIn)
+			close(c.noticeIn)
+			close(c.streamIn)
+			close(c.queueIn)
+			close(c.rpcIn)
+			close(c.leaseIn)
+			close(c.scheduleIn)
+		}()
 		for f := range c.mux.In() {
 			switch f.Channel {
-			case kv.ChannelKV:
+			case transport.ChannelKV:
 				select {
 				case c.kvIn <- f:
 				default:
 					// Drop if receiver overloaded to avoid blocking the dispatcher
 				}
+			case transport.ChannelPub, transport.ChannelSub:
+				select {
+				case c.noticeIn <- f:
+				default:
+				}
+			case transport.ChannelStream:
+				select {
+				case c.streamIn <- f:
+				default:
+				}
+			case transport.ChannelQueue:
+				select {
+				case c.queueIn <- f:
+				default:
+				}
+			case transport.ChannelRPC:
+				select {
+				case c.rpcIn <- f:
+				default:
+				}
+			case transport.ChannelLease:
+				select {
+				case c.leaseIn <- f:
+				default:
+				}
+			case transport.ChannelSchedule:
+				select {
+				case c.scheduleIn <- f:
+				default:
+				}
 			default:
-				// Other domains currently read directly from c.mux.In().
+				// Unknown channel — ignore
 			}
 		}
 	}()
@@ -193,6 +257,10 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	return nil
 }
+
+// existing client struct fields are extended with per-domain inbound channels
+// (add these fields near existing kvIn definition)
+func (c *Client) ensureDomainChannelsDefined() {}
 
 // Close gracefully closes the connection and domain clients.
 func (c *Client) Close() error {
@@ -259,19 +327,19 @@ func (c *Client) Lease() lease.Client {
 // This is called after a successful connection.
 func (c *Client) initializeDomainClients() {
 	// KV client uses a domain-specific mux adapter to avoid competing readers on the shared mux
-	c.domainClients.kv = kv.NewClient(&domainMux{send: c.mux.Send, in: c.kvIn, ctx: c.mux.Ctx()})
-	// Initialize lease client; other domains initialized as implemented.
-	c.domainClients.lease = lease.NewClient(c.mux)
+	c.domainClients.kv = kv.NewClient(&domainMux{send: c.mux.Send, in: c.kvIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
+	// Initialize lease client
+	c.domainClients.lease = lease.NewClient(&domainMux{send: c.mux.Send, in: c.leaseIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
 	// Notice domain client
-	c.domainClients.notice = notice.NewClient(c.mux)
+	c.domainClients.notice = notice.NewClient(&domainMux{send: c.mux.Send, in: c.noticeIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
 	// RPC client
-	c.domainClients.rpc = rpc.NewClient(c.mux)
+	c.domainClients.rpc = rpc.NewClient(&domainMux{send: c.mux.Send, in: c.rpcIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
 	// Stream client
-	c.domainClients.stream = stream.NewClient(c.mux)
+	c.domainClients.stream = stream.NewClient(&domainMux{send: c.mux.Send, in: c.streamIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
 	// Queue client
-	c.domainClients.queue = queue.NewClient(c.mux)
+	c.domainClients.queue = queue.NewClient(&domainMux{send: c.mux.Send, in: c.queueIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
 	// Schedule client
-	c.domainClients.schedule = schedule.NewClient(c.mux)
+	c.domainClients.schedule = schedule.NewClient(&domainMux{send: c.mux.Send, in: c.scheduleIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
 }
 
 // sendConnect sends the CONNECT frame with JWT token per CLIENT_SPEC.md.

@@ -30,12 +30,19 @@ func (msg *RPCMsg) Response(ctx context.Context, body []byte) {
 type RPCMetadata map[string]string
 
 // client is the concrete implementation of the RPC Client interface.
-type client struct {
-	mux *transport.Mux
+type muxProvider interface {
+	Send(transport.Frame) error
+	In() <-chan transport.Frame
+	Ctx() context.Context
+	OnReconnect(func())
 }
 
-// NewClient creates a new RPC client backed by the provided mux.
-func NewClient(mux *transport.Mux) Client {
+type client struct {
+	mux muxProvider
+}
+
+// NewClient creates a new RPC domain client backed by the transport mux.
+func NewClient(mux muxProvider) Client {
 	return &client{mux: mux}
 }
 

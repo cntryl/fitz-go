@@ -21,12 +21,20 @@ type StreamRecord struct {
 }
 
 // client is a concrete implementation of stream.Client backed by the transport mux.
+// muxProvider is a minimal mux abstraction used by domain clients.
+type muxProvider interface {
+	Send(transport.Frame) error
+	In() <-chan transport.Frame
+	Ctx() context.Context
+	OnReconnect(func())
+}
+
 type client struct {
-	mux *transport.Mux
+	mux muxProvider
 }
 
 // NewClient creates a new Stream domain client backed by the transport mux.
-func NewClient(mux *transport.Mux) Client {
+func NewClient(mux muxProvider) Client {
 	return &client{mux: mux}
 }
 
@@ -41,7 +49,7 @@ func (c *client) Append(ctx context.Context, route string, body []byte, expected
 	frame := transport.Frame{
 		Type:    StreamAppend,
 		Flags:   0,
-		Channel: ChannelStream,
+		Channel: transport.ChannelStream,
 		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {
@@ -59,7 +67,7 @@ func (c *client) Append(ctx context.Context, route string, body []byte, expected
 			if !ok {
 				return 0, fmt.Errorf("mux closed")
 			}
-			if f.Channel != ChannelStream {
+			if f.Channel != transport.ChannelStream {
 				continue
 			}
 			dec, err := transport.NewTLVDecoder(f.Body)
@@ -86,7 +94,7 @@ func (c *client) ReadResource(ctx context.Context, route string, from uint64, li
 	frame := transport.Frame{
 		Type:    StreamRead,
 		Flags:   0,
-		Channel: ChannelStream,
+		Channel: transport.ChannelStream,
 		Body:    enc.Encode(),
 	}
 	if err := c.mux.Send(frame); err != nil {
@@ -103,7 +111,7 @@ func (c *client) ReadResource(ctx context.Context, route string, from uint64, li
 			if !ok {
 				return nil, fmt.Errorf("mux closed")
 			}
-			if f.Channel != ChannelStream {
+			if f.Channel != transport.ChannelStream {
 				continue
 			}
 			dec, err := transport.NewTLVDecoder(f.Body)
