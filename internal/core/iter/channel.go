@@ -38,7 +38,14 @@ func (it *ChannelIterator[T]) Next() bool {
 	v, ok := <-it.items
 	if !ok {
 		if it.err == nil {
-			it.err = <-it.errCh
+			// Wait for producer error, but don't block forever if producer crashed.
+			select {
+			case e := <-it.errCh:
+				it.err = e
+			default:
+				// Producer didn't send an error yet; this can happen if
+				// the items channel was closed without an errCh write.
+			}
 		}
 		return false
 	}

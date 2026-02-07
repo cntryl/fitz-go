@@ -61,6 +61,12 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 	if len(key) == 0 {
 		return nil, false, fmt.Errorf("key cannot be empty")
 	}
+	if t.committed.Load() {
+		return nil, false, fmt.Errorf("transaction already committed")
+	}
+	if t.rolledback.Load() {
+		return nil, false, fmt.Errorf("transaction already rolled back")
+	}
 
 	// Use a unique request ID for correlation.
 	requestID := nextTxID.Add(1)
@@ -103,16 +109,16 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 				return nil, false, fmt.Errorf("decode response: %w", err)
 			}
 
-			// Check for error response.
-			if dec.Has(transport.TagErr) {
-				errMsg := dec.GetString(transport.TagErr)
-				return nil, false, mapKVError(errMsg)
-			}
-
-			// Check if response has the matching ID.
+			// Check if response has the matching ID first.
 			respID, _ := dec.GetUint64(transport.TagID)
 			if respID != requestID {
 				continue // Not our response.
+			}
+
+			// Check for error response (only after ID match).
+			if dec.Has(transport.TagErr) {
+				errMsg := dec.GetString(transport.TagErr)
+				return nil, false, mapKVError(errMsg)
 			}
 
 			// Response payload.
@@ -130,6 +136,12 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 func (t *transaction) Scan(ctx context.Context, startKey []byte, endKey []byte, limit uint32) (iter.Iterator[KVPair], error) {
 	if limit == 0 {
 		return nil, fmt.Errorf("limit must be > 0")
+	}
+	if t.committed.Load() {
+		return nil, fmt.Errorf("transaction already committed")
+	}
+	if t.rolledback.Load() {
+		return nil, fmt.Errorf("transaction already rolled back")
 	}
 
 	// Use a unique request ID for correlation.
@@ -160,17 +172,20 @@ func (t *transaction) Scan(ctx context.Context, startKey []byte, endKey []byte, 
 	}
 
 	// Return an iterator that streams results from the mux.
+	scanCtx, scanCancel := context.WithCancel(ctx)
 	return &scanIterator{
-		ctx:  ctx,
-		mux:  t.mux,
-		txID: requestID,
-		done: false,
+		ctx:    scanCtx,
+		cancel: scanCancel,
+		mux:    t.mux,
+		txID:   requestID,
+		done:   false,
 	}, nil
 }
 
 // scanIterator implements iter.Iterator[KVPair] for Scan results.
 type scanIterator struct {
 	ctx     context.Context
+	cancel  context.CancelFunc
 	mux     transport.MuxProvider
 	txID    uint64
 	current KVPair
@@ -213,18 +228,18 @@ func (si *scanIterator) Next() bool {
 				return false
 			}
 
-			// Check for error.
+			// Check ID match first.
+			respID, _ := dec.GetUint64(transport.TagID)
+			if respID != si.txID {
+				continue
+			}
+
+			// Check for error (only after ID match).
 			if dec.Has(transport.TagErr) {
 				errMsg := dec.GetString(transport.TagErr)
 				si.err = mapKVError(errMsg)
 				si.done = true
 				return false
-			}
-
-			// Check ID match.
-			respID, _ := dec.GetUint64(transport.TagID)
-			if respID != si.txID {
-				continue
 			}
 
 			// Extract key/value pair.
@@ -261,6 +276,9 @@ func (si *scanIterator) Close() error {
 	si.mu.Lock()
 	defer si.mu.Unlock()
 	si.done = true
+	if si.cancel != nil {
+		si.cancel()
+	}
 	return nil
 }
 
@@ -460,9 +478,8 @@ func (t *transaction) Commit(ctx context.Context) error {
 	for {
 		select {
 		case <-ackCtx.Done():
-			// Timeout - assume commit processed but warn.
-			t.committed.Store(true)
-			return nil
+			// Timeout — we cannot confirm the commit succeeded.
+			return fmt.Errorf("commit timed out waiting for broker acknowledgement")
 		case respFrame, ok := <-t.mux.In():
 			if !ok {
 				return fmt.Errorf("mux closed while waiting for commit ack")

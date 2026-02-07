@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 )
@@ -51,14 +52,15 @@ func SendRecv(ctx context.Context, mux MuxProvider, req Frame, errMapper func(st
 
 // DecodeTLVError extracts the error message from a TLV error frame and maps it
 // via errMapper. If errMapper is nil the raw message is returned as an error.
-// If TLV decoding fails, defaultMsg is used.
+// If TLV decoding fails, the decode error and raw body are included for diagnostics.
 func DecodeTLVError(f Frame, defaultMsg string, errMapper func(string) error) error {
 	dec, err := NewTLVDecoder(f.Body)
 	if err != nil {
+		wrapped := fmt.Errorf("%s (TLV decode failed: %w, body hex: %s)", defaultMsg, err, hex.EncodeToString(f.Body))
 		if errMapper != nil {
-			return errMapper(defaultMsg)
+			return errMapper(wrapped.Error())
 		}
-		return errors.New(defaultMsg)
+		return wrapped
 	}
 	msg := dec.GetString(TagErr)
 	if msg == "" {

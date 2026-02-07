@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cntryl/cntryl-go/internal/core/transport"
+	"github.com/cntryl/cntryl-go/internal/core/types"
 )
 
 // Client provides ephemeral exclusive lease primitives.
@@ -35,6 +36,9 @@ func NewClient(mux transport.MuxProvider) Client {
 
 // Acquire attempts to acquire a lease for the given route and TTL (seconds).
 func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint32) (token []byte, expiresAt int64, held bool, err error) {
+	if err := types.ValidateRoute(route, "lease"); err != nil {
+		return nil, 0, false, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddUint32(transport.TagTTL, ttlSecs)
@@ -60,6 +64,9 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint32) (tok
 
 // Renew extends the lease TTL for an existing lease token.
 func (c *client) Renew(ctx context.Context, route string, token []byte, ttlSecs uint32) (expiresAt int64, err error) {
+	if err := types.ValidateRoute(route, "lease"); err != nil {
+		return 0, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagLease, token)
@@ -82,6 +89,9 @@ func (c *client) Renew(ctx context.Context, route string, token []byte, ttlSecs 
 
 // Release frees a lease indicated by token.
 func (c *client) Release(ctx context.Context, route string, token []byte) error {
+	if err := types.ValidateRoute(route, "lease"); err != nil {
+		return err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagLease, token)
@@ -93,6 +103,9 @@ func (c *client) Release(ctx context.Context, route string, token []byte) error 
 
 // Query retrieves the current status of a lease for the given route.
 func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
+	if err := types.ValidateRoute(route, "lease"); err != nil {
+		return nil, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: LeaseQuery, Channel: transport.ChannelLease, Body: enc.Encode()}

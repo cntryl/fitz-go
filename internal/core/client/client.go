@@ -36,13 +36,6 @@ func (d *domainMux) OnReconnect(cb func()) {
 	}
 }
 
-// lowercase alias used by some domain muxProvider interfaces
-func (d *domainMux) onReconnect(cb func()) {
-	if d.reconnectCb != nil {
-		d.reconnectCb(cb)
-	}
-}
-
 // FramerFactory creates a Framer from a raw net.Conn.
 type FramerFactory func(net.Conn) transport.Framer
 
@@ -245,6 +238,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	// CONNECT frame MUST be sent before any other operations.
 	if err := c.sendConnect(ctx); err != nil {
 		_ = c.mux.Close()
+		c.mux = nil
 		return fmt.Errorf("CONNECT handshake failed: %w", err)
 	}
 	// Give broker a short grace period to finish session setup (no explicit ACK in spec).
@@ -257,10 +251,6 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	return nil
 }
-
-// existing client struct fields are extended with per-domain inbound channels
-// (add these fields near existing kvIn definition)
-func (c *Client) ensureDomainChannelsDefined() {}
 
 // Close gracefully closes the connection and domain clients.
 func (c *Client) Close() error {
@@ -375,7 +365,7 @@ func (c *Client) sendConnect(ctx context.Context) error {
 	// "Invalid CONNECT: Broker closes connection within 1 second (no response frame sent)"
 	// We wait briefly to detect immediate connection closure (indicates auth failure).
 	// If connection remains open after timeout, assume success.
-	const connectTimeout = 2 * time.Second
+	const connectTimeout = 200 * time.Millisecond
 	timeoutCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 

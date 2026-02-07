@@ -13,6 +13,7 @@ import (
 type Client interface {
 	Subscribe(ctx context.Context, route string, handler NoticeHandler) (Subscription, error)
 	Publish(ctx context.Context, route string, body []byte) error
+	Close() error
 }
 
 // NoticeHandler processes an inbound notification.
@@ -44,11 +45,14 @@ type client struct {
 	ackMu      sync.Mutex
 	ackWaiters map[string][]chan error
 	once       sync.Once
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 // NewClient creates a new Notice domain client backed by the transport mux.
 func NewClient(mux transport.MuxProvider) Client {
-	c := &client{mux: mux, subs: make(map[string][]*subscription), ackWaiters: make(map[string][]chan error)}
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &client{mux: mux, subs: make(map[string][]*subscription), ackWaiters: make(map[string][]chan error), ctx: ctx, cancel: cancel}
 	mux.OnReconnect(func() {
 		c.resubscribeAll(context.Background())
 	})
@@ -191,6 +195,12 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 	return c.waitForAck(ctx, NoticePublish)
 }
 
+// Close stops the background receive loop and releases resources.
+func (c *client) Close() error {
+	c.cancel()
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -198,30 +208,38 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 func (c *client) startRecv() {
 	c.once.Do(func() {
 		go func() {
-			for f := range c.mux.In() {
-				if f.Type == NoticeNotify {
-					route, body, ok := decodeNotify(f.Body)
+			for {
+				select {
+				case <-c.ctx.Done():
+					return
+				case f, ok := <-c.mux.In():
 					if !ok {
+						return
+					}
+					if f.Type == NoticeNotify {
+						route, body, ok := decodeNotify(f.Body)
+						if !ok {
+							continue
+						}
+						msg := NoticeMsg{Route: route, Metadata: nil, Body: body}
+						c.mu.Lock()
+						var targets []*subscription
+						for pat, subs := range c.subs {
+							if noticeMatchRoute(pat, route) {
+								targets = append(targets, subs...)
+							}
+						}
+						c.mu.Unlock()
+						for _, s := range targets {
+							s.deliver(msg)
+						}
 						continue
 					}
-					msg := NoticeMsg{Route: route, Metadata: nil, Body: body}
-					c.mu.Lock()
-					var targets []*subscription
-					for pat, subs := range c.subs {
-						if noticeMatchRoute(pat, route) {
-							targets = append(targets, subs...)
-						}
+					if isNoticeResponseType(f.Type) {
+						routeKey, err := decodeNoticeResponseKey(f.Type, f.Body)
+						c.notifyWaiters(routeKey, err)
+						continue
 					}
-					c.mu.Unlock()
-					for _, s := range targets {
-						s.deliver(msg)
-					}
-					continue
-				}
-				if isNoticeResponseType(f.Type) {
-					routeKey, err := decodeNoticeResponseKey(f.Type, f.Body)
-					c.notifyWaiters(routeKey, err)
-					continue
 				}
 			}
 		}()
@@ -280,7 +298,7 @@ func (c *client) waitForAck(ctx context.Context, op uint8) error {
 		return ctx.Err()
 	case <-time.After(500 * time.Millisecond):
 		c.removeWaiter(key, ch)
-		return nil
+		return fmt.Errorf("timed out waiting for broker acknowledgement")
 	}
 }
 

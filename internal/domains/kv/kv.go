@@ -2,7 +2,7 @@ package kv
 
 import (
 	"context"
-	"sync"
+	"fmt"
 
 	"github.com/cntryl/cntryl-go/internal/core/transport"
 )
@@ -22,7 +22,6 @@ type Client interface {
 // client is a concrete implementation of Client using the provided mux provider.
 type client struct {
 	mux transport.MuxProvider
-	mu  sync.RWMutex
 }
 
 // NewClient creates a new KV domain client backed by the provided mux provider.
@@ -50,7 +49,9 @@ func (c *client) Begin(ctx context.Context, route Route) (Tx, error) {
 		Channel: transport.ChannelKV,
 		Body:    enc.Encode(),
 	}
-	_ = c.mux.Send(frame) // best effort; if broker does not understand begin, ops may still fail later
+	if err := c.mux.Send(frame); err != nil {
+		return nil, fmt.Errorf("send KV begin: %w", err)
+	}
 
 	return &transaction{
 		route:    route,

@@ -79,10 +79,11 @@ func (d *DefaultDialer) dialWebSocket(ctx context.Context, addr string) (net.Con
 		c = t
 	}
 
-	if err := doClientHandshake(c, u.Host, u.RequestURI()); err != nil {
+	reader, err := doClientHandshake(c, u.Host, u.RequestURI())
+	if err != nil {
 		c.Close()
 		return nil, err
 	}
 
-	return &wsConnAdapter{conn: c}, nil
+	return &wsConnAdapter{conn: c, reader: reader}, nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/cntryl/cntryl-go/internal/core/iter"
 	"github.com/cntryl/cntryl-go/internal/core/transport"
+	"github.com/cntryl/cntryl-go/internal/core/types"
 )
 
 // Client is the API for the RPC domain.
@@ -20,6 +21,8 @@ type Client interface {
 	Call(ctx context.Context, route string, body []byte, timeout time.Duration) (iter.Iterator[Response], error)
 	// Subscribe registers a streaming worker handler for the given route.
 	Subscribe(ctx context.Context, route string, handler RPCHandler) (Subscription, error)
+	// Close stops the background receive loop and releases resources.
+	Close() error
 }
 
 // Response is a single frame in a (possibly streaming) RPC response.
@@ -63,11 +66,14 @@ type client struct {
 	nextReqID  uint64
 	pendingMu  sync.Mutex
 	pending    map[uint64]chan transport.Frame
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 // NewClient creates a new RPC domain client backed by the transport mux.
 func NewClient(mux transport.MuxProvider) Client {
-	c := &client{mux: mux, handlers: make(map[string][]*subscription), pending: make(map[uint64]chan transport.Frame)}
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &client{mux: mux, handlers: make(map[string][]*subscription), pending: make(map[uint64]chan transport.Frame), ctx: ctx, cancel: cancel}
 	c.startRecv()
 	mux.OnReconnect(func() {
 		c.resubscribeAll(context.Background())
@@ -157,17 +163,26 @@ func (w *responseWriter) sendError(herr error) error {
 // startRecv dispatches inbound RPC frames to workers or pending Call correlations.
 func (c *client) startRecv() {
 	go func() {
-		for f := range c.mux.In() {
-			if f.Channel != transport.ChannelRPC {
-				continue
-			}
-			switch f.Type {
-			case RPCRequest:
-				c.dispatchRequest(f)
-			case RPCResponse, transport.FrameTypeResp, transport.FrameTypeErr:
-				c.deliverPending(f)
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case f, ok := <-c.mux.In():
+				if !ok {
+					goto cleanup
+				}
+				if f.Channel != transport.ChannelRPC {
+					continue
+				}
+				switch f.Type {
+				case RPCRequest:
+					c.dispatchRequest(f)
+				case RPCResponse, transport.FrameTypeResp, transport.FrameTypeErr:
+					c.deliverPending(f)
+				}
 			}
 		}
+	cleanup:
 		// mux channel closed — close all pending waiters.
 		c.pendingMu.Lock()
 		for id, ch := range c.pending {
@@ -203,7 +218,7 @@ func (c *client) dispatchRequest(f transport.Frame) {
 			default:
 			}
 			w := &responseWriter{id: id, mux: c.mux}
-			herr := s.handler(context.Background(), req, w)
+			herr := s.handler(c.ctx, req, w)
 			if herr != nil {
 				_ = w.sendError(herr)
 			} else {
@@ -226,9 +241,11 @@ func (c *client) deliverPending(f transport.Frame) {
 	ch, found := c.pending[id]
 	c.pendingMu.Unlock()
 	if found {
+		// Block with a short timeout instead of silently dropping.
 		select {
 		case ch <- f:
-		default:
+		case <-time.After(5 * time.Second):
+			// Receiver overloaded — frame lost. This is a last resort.
 		}
 	}
 }
@@ -248,6 +265,9 @@ func (c *client) removePending(id uint64) {
 // frames until the worker signals stream_end=1 or an error occurs.
 // The caller MUST call Close() on the returned iterator.
 func (c *client) Call(ctx context.Context, route string, body []byte, timeout time.Duration) (iter.Iterator[Response], error) {
+	if err := types.ValidateRoute(route, "rpc"); err != nil {
+		return nil, err
+	}
 	reqID := atomic.AddUint64(&c.nextReqID, 1)
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
@@ -275,7 +295,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte, timeout ti
 		for {
 			select {
 			case <-callCtx.Done():
-				errCh <- ErrRPCTimeout
+				errCh <- fmt.Errorf("rpc call timed out: %w", context.DeadlineExceeded)
 				return
 			case f, ok := <-ch:
 				if !ok {
@@ -310,7 +330,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte, timeout ti
 				select {
 				case items <- Response{Sequence: seq, Body: respBody}:
 				case <-callCtx.Done():
-					errCh <- ErrRPCTimeout
+					errCh <- fmt.Errorf("rpc call timed out: %w", context.DeadlineExceeded)
 					return
 				}
 				if streamEnd {
@@ -333,6 +353,9 @@ func (c *client) Call(ctx context.Context, route string, body []byte, timeout ti
 // Subscribe registers a streaming worker handler for the given route and
 // notifies the broker.
 func (c *client) Subscribe(ctx context.Context, route string, handler RPCHandler) (Subscription, error) {
+	if err := types.ValidateRoute(route, "rpc"); err != nil {
+		return nil, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: RPCSubscribeWorker, Channel: transport.ChannelRPC, Body: enc.Encode()}
@@ -358,4 +381,10 @@ func (c *client) resubscribeAll(ctx context.Context) {
 		enc.AddString(transport.TagRoute, r)
 		_ = c.mux.Send(transport.Frame{Type: RPCSubscribeWorker, Channel: transport.ChannelRPC, Body: enc.Encode()})
 	}
+}
+
+// Close stops the background receive loop and releases resources.
+func (c *client) Close() error {
+	c.cancel()
+	return nil
 }

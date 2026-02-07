@@ -132,10 +132,7 @@ func (w *WebSocketFramer) ReadFrame() ([]byte, error) {
 	if len(data) > MaxFrameSize {
 		return nil, errors.New("frame size exceeds maximum")
 	}
-	// Return a copy to keep callers defensive
-	out := make([]byte, len(data))
-	copy(out, data)
-	return out, nil
+	return data, nil
 }
 
 func (w *WebSocketFramer) WriteFrame(payload []byte) error {

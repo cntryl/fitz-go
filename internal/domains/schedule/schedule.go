@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/cntryl/cntryl-go/internal/core/transport"
+	"github.com/cntryl/cntryl-go/internal/core/types"
 )
 
 // Client provides schedule management APIs.
@@ -33,6 +34,9 @@ func NewClient(mux transport.MuxProvider) Client {
 
 // Create schedules a job; returns the schedule ID assigned by the broker.
 func (c *client) Create(ctx context.Context, route string, cronExpr string, payload []byte) (string, error) {
+	if err := types.ValidateRoute(route, "schedule"); err != nil {
+		return "", err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddString(transport.TagCron, cronExpr)
@@ -56,7 +60,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 // Cancel cancels a scheduled job by id.
 func (c *client) Cancel(ctx context.Context, id string) error {
 	enc := transport.NewTLVEncoder()
-	enc.AddString(transport.TagToken, id)
+	enc.AddString(transport.TagID, id)
 	frame := transport.Frame{Type: ScheduleCancel, Channel: transport.ChannelSchedule, Body: enc.Encode()}
 
 	_, err := transport.SendRecv(ctx, c.mux, frame, mapScheduleError)
@@ -65,6 +69,9 @@ func (c *client) Cancel(ctx context.Context, id string) error {
 
 // List returns schedule entries for a route.
 func (c *client) List(ctx context.Context, route string) ([]ScheduleEntry, error) {
+	if err := types.ValidateRoute(route, "schedule"); err != nil {
+		return nil, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: ScheduleList, Channel: transport.ChannelSchedule, Body: enc.Encode()}
@@ -77,10 +84,10 @@ func (c *client) List(ctx context.Context, route string) ([]ScheduleEntry, error
 	if derr != nil {
 		return nil, fmt.Errorf("invalid TLV in response: %w", derr)
 	}
-	// Entries are encoded as repeated TagID/TagRoute/TagBody triples.
+	// Entries are encoded as repeated TagID/TagRoute/TagCron triples.
 	ids := dec.GetAll(transport.TagID)
 	routes := dec.GetAll(transport.TagRoute)
-	crons := dec.GetAll(transport.TagBody)
+	crons := dec.GetAll(transport.TagCron)
 	entries := make([]ScheduleEntry, 0, len(ids))
 	for i := range ids {
 		// IDs are encoded as u64 BE values; format as decimal string.

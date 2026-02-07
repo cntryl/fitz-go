@@ -7,6 +7,7 @@ import (
 
 	"github.com/cntryl/cntryl-go/internal/core/iter"
 	"github.com/cntryl/cntryl-go/internal/core/transport"
+	"github.com/cntryl/cntryl-go/internal/core/types"
 )
 
 // Client is the API for the Stream domain.
@@ -60,6 +61,9 @@ func NewClient(mux transport.MuxProvider) Client {
 
 // Append appends a record and returns the new offset assigned by the broker.
 func (c *client) Append(ctx context.Context, route string, body []byte, expectedOffset *uint64) (uint64, error) {
+	if err := types.ValidateRoute(route, "stream"); err != nil {
+		return 0, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagBody, body)
@@ -96,6 +100,9 @@ func (c *client) Append(ctx context.Context, route string, body []byte, expected
 
 // ReadResource returns an iterator that streams records from the broker.
 func (c *client) ReadResource(ctx context.Context, route string, from uint64, limit uint32, opts ...ReadOption) (iter.Iterator[StreamRecord], error) {
+	if err := types.ValidateRoute(route, "stream"); err != nil {
+		return nil, err
+	}
 	ro := readOptions{bufferSize: 8}
 	for _, o := range opts {
 		o(&ro)
@@ -120,10 +127,22 @@ func (c *client) ReadResource(ctx context.Context, route string, from uint64, li
 	go func() {
 		defer close(records)
 		count := uint32(0)
+		var timer *time.Timer
+		if ro.perFrameTimeout > 0 {
+			timer = time.NewTimer(ro.perFrameTimeout)
+			defer timer.Stop()
+		}
 		for {
 			var to <-chan time.Time
-			if ro.perFrameTimeout > 0 {
-				to = time.After(ro.perFrameTimeout)
+			if timer != nil {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(ro.perFrameTimeout)
+				to = timer.C
 			}
 			select {
 			case <-ctx.Done():
@@ -174,6 +193,9 @@ func (c *client) ReadResource(ctx context.Context, route string, from uint64, li
 
 // Begin requests a new stream session and returns the starting offset.
 func (c *client) Begin(ctx context.Context, route string) (uint64, error) {
+	if err := types.ValidateRoute(route, "stream"); err != nil {
+		return 0, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: StreamBegin, Channel: transport.ChannelStream, Body: enc.Encode()}
@@ -192,6 +214,9 @@ func (c *client) Begin(ctx context.Context, route string) (uint64, error) {
 
 // Commit finalizes the session for a stream resource.
 func (c *client) Commit(ctx context.Context, route string) error {
+	if err := types.ValidateRoute(route, "stream"); err != nil {
+		return err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: StreamCommit, Channel: transport.ChannelStream, Body: enc.Encode()}
@@ -201,6 +226,9 @@ func (c *client) Commit(ctx context.Context, route string) error {
 
 // Rollback aborts an active session.
 func (c *client) Rollback(ctx context.Context, route string) error {
+	if err := types.ValidateRoute(route, "stream"); err != nil {
+		return err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: StreamRollback, Channel: transport.ChannelStream, Body: enc.Encode()}
@@ -210,6 +238,9 @@ func (c *client) Rollback(ctx context.Context, route string) error {
 
 // Last returns the last record in the stream (if any).
 func (c *client) Last(ctx context.Context, route string) (*StreamRecord, error) {
+	if err := types.ValidateRoute(route, "stream"); err != nil {
+		return nil, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: StreamLast, Channel: transport.ChannelStream, Body: enc.Encode()}
@@ -229,6 +260,9 @@ func (c *client) Last(ctx context.Context, route string) (*StreamRecord, error) 
 
 // GetMetadata requests stream metadata and returns it as key/value pairs.
 func (c *client) GetMetadata(ctx context.Context, route string) (map[string]string, error) {
+	if err := types.ValidateRoute(route, "stream"); err != nil {
+		return nil, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: StreamGetMetadata, Channel: transport.ChannelStream, Body: enc.Encode()}

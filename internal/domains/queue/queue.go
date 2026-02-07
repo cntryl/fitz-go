@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/cntryl/cntryl-go/internal/core/transport"
+	"github.com/cntryl/cntryl-go/internal/core/types"
 )
 
 // Client is the API for the Queue domain.
@@ -35,6 +36,9 @@ func NewClient(mux transport.MuxProvider) Client {
 
 // Enqueue sends a message to the queue for the given route and returns a message ID.
 func (c *client) Enqueue(ctx context.Context, route string, body []byte) (string, error) {
+	if err := types.ValidateRoute(route, "queue"); err != nil {
+		return "", err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagBody, body)
@@ -58,6 +62,9 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (string
 
 // Reserve requests messages from the queue with lease semantics.
 func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint32, batchSize uint32) ([]QueueItem, error) {
+	if err := types.ValidateRoute(route, "queue"); err != nil {
+		return nil, err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
 	enc.AddUint32(transport.TagTTL, leaseSecs)
@@ -100,33 +107,45 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint32, ba
 
 // Extend extends the lease for a reserved message.
 func (c *client) Extend(ctx context.Context, route string, id string, token uint64, leaseSecs uint32) error {
+	if err := types.ValidateRoute(route, "queue"); err != nil {
+		return err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
-	if id != "" {
-		if v, err := strconv.ParseUint(id, 10, 64); err == nil {
-			enc.AddUint64(transport.TagID, v)
-		}
+	if id == "" {
+		return fmt.Errorf("queue extend: id cannot be empty")
 	}
+	v, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return fmt.Errorf("queue extend: invalid id %q: %w", id, err)
+	}
+	enc.AddUint64(transport.TagID, v)
 	enc.AddUint64(transport.TagLease, token)
 	enc.AddUint32(transport.TagTTL, leaseSecs)
 	frame := transport.Frame{Type: QueueExtend, Channel: transport.ChannelQueue, Body: enc.Encode()}
 
-	_, err := transport.SendRecv(ctx, c.mux, frame, mapQueueError)
+	_, err = transport.SendRecv(ctx, c.mux, frame, mapQueueError)
 	return err
 }
 
 // Complete acknowledges completion of a reserved message.
 func (c *client) Complete(ctx context.Context, route string, id string, token uint64) error {
+	if err := types.ValidateRoute(route, "queue"); err != nil {
+		return err
+	}
 	enc := transport.NewTLVEncoder()
 	enc.AddString(transport.TagRoute, route)
-	if id != "" {
-		if v, err := strconv.ParseUint(id, 10, 64); err == nil {
-			enc.AddUint64(transport.TagID, v)
-		}
+	if id == "" {
+		return fmt.Errorf("queue complete: id cannot be empty")
 	}
+	v, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return fmt.Errorf("queue complete: invalid id %q: %w", id, err)
+	}
+	enc.AddUint64(transport.TagID, v)
 	enc.AddUint64(transport.TagLease, token)
 	frame := transport.Frame{Type: QueueComplete, Channel: transport.ChannelQueue, Body: enc.Encode()}
 
-	_, err := transport.SendRecv(ctx, c.mux, frame, mapQueueError)
+	_, err = transport.SendRecv(ctx, c.mux, frame, mapQueueError)
 	return err
 }
