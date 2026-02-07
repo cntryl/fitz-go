@@ -585,9 +585,9 @@ func TestShouldUseDefaultGivenCorruptBodyWhenDecodeTLVErrorCalled(t *testing.T) 
 	// Act
 	err := transport.DecodeTLVError(f, "fallback message", mapLeaseError)
 
-	// Assert
+	// Assert — message now includes diagnostic info from the decode failure
 	assert.Error(t, err)
-	assert.Equal(t, "fallback message", err.Error())
+	assert.Contains(t, err.Error(), "fallback message")
 }
 
 func TestShouldMapErrorFromTLVGivenKnownErrorWhenDecodeTLVErrorCalled(t *testing.T) {

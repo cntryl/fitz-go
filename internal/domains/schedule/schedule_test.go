@@ -14,10 +14,10 @@ func TestShouldReturnParsedScheduleEntriesGivenTLVWhenDecoding(t *testing.T) {
 	enc := transport.NewTLVEncoder()
 	enc.AddUint64(transport.TagID, 123)
 	enc.AddString(transport.TagRoute, "a")
-	enc.AddString(transport.TagBody, "cron")
+	enc.AddString(transport.TagCron, "cron")
 	enc.AddUint64(transport.TagID, 456)
 	enc.AddString(transport.TagRoute, "b")
-	enc.AddString(transport.TagBody, "cron2")
+	enc.AddString(transport.TagCron, "cron2")
 	b := enc.Encode()
 
 	// Act
@@ -27,7 +27,7 @@ func TestShouldReturnParsedScheduleEntriesGivenTLVWhenDecoding(t *testing.T) {
 	require.NoError(t, err)
 	ids := dec.GetAll(transport.TagID)
 	routes := dec.GetAll(transport.TagRoute)
-	crons := dec.GetAll(transport.TagBody)
+	crons := dec.GetAll(transport.TagCron)
 
 	entries := make([]ScheduleEntry, 0, len(ids))
 	for i := range ids {

@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -67,20 +68,31 @@ func TestShouldReturnSingleResponseGivenCallWhenServerReplies(t *testing.T) {
 	m := newMockMux()
 	c := NewClient(m)
 
-	route := "realm/area/resource"
+	route := "rpc://realm/area/resource"
 	reqBody := []byte("hello")
 	respBody := []byte("world")
 
 	// Act: simulate broker replying with a single-frame streaming response
+	errCh := make(chan error, 1)
 	go func() {
 		f := <-m.sendCh
-		require.Equal(t, RPCRequest, f.Type)
+		if f.Type != RPCRequest {
+			errCh <- fmt.Errorf("expected RPCRequest, got %d", f.Type)
+			return
+		}
 		dec, err := transport.NewTLVDecoder(f.Body)
-		require.NoError(t, err)
+		if err != nil {
+			errCh <- err
+			return
+		}
 		id, err := dec.GetUint64(transport.TagID)
-		require.NoError(t, err)
+		if err != nil {
+			errCh <- err
+			return
+		}
 		// Send single response with stream_end=1
 		m.inCh <- buildResponseFrame(id, 0, respBody, true)
+		errCh <- nil
 	}()
 
 	it, err := c.Call(context.Background(), route, reqBody, time.Second)
@@ -93,6 +105,7 @@ func TestShouldReturnSingleResponseGivenCallWhenServerReplies(t *testing.T) {
 	assert.False(t, it.Next())
 	assert.NoError(t, it.Err())
 	assert.NoError(t, it.Close())
+	require.NoError(t, <-errCh)
 }
 
 func TestShouldStreamMultipleResponsesGivenCallWhenServerStreams(t *testing.T) {
@@ -100,18 +113,26 @@ func TestShouldStreamMultipleResponsesGivenCallWhenServerStreams(t *testing.T) {
 	m := newMockMux()
 	c := NewClient(m)
 
-	route := "realm/area/resource"
+	route := "rpc://realm/area/resource"
 
+	errCh := make(chan error, 1)
 	go func() {
 		f := <-m.sendCh
 		dec, err := transport.NewTLVDecoder(f.Body)
-		require.NoError(t, err)
+		if err != nil {
+			errCh <- err
+			return
+		}
 		id, err := dec.GetUint64(transport.TagID)
-		require.NoError(t, err)
+		if err != nil {
+			errCh <- err
+			return
+		}
 		// Stream 3 frames then end
 		m.inCh <- buildResponseFrame(id, 0, []byte("a"), false)
 		m.inCh <- buildResponseFrame(id, 1, []byte("b"), false)
 		m.inCh <- buildResponseFrame(id, 2, []byte("c"), true)
+		errCh <- nil
 	}()
 
 	// Act
@@ -126,6 +147,7 @@ func TestShouldStreamMultipleResponsesGivenCallWhenServerStreams(t *testing.T) {
 	assert.NoError(t, it.Err())
 	assert.Equal(t, []string{"a", "b", "c"}, results)
 	assert.NoError(t, it.Close())
+	require.NoError(t, <-errCh)
 }
 
 func TestShouldReturnErrorGivenCallWhenServerSendsErr(t *testing.T) {
@@ -133,16 +155,24 @@ func TestShouldReturnErrorGivenCallWhenServerSendsErr(t *testing.T) {
 	m := newMockMux()
 	c := NewClient(m)
 
-	route := "realm/area/resource"
+	route := "rpc://realm/area/resource"
 	serverErr := "boom"
 
+	errCh := make(chan error, 1)
 	go func() {
 		f := <-m.sendCh
 		dec, err := transport.NewTLVDecoder(f.Body)
-		require.NoError(t, err)
+		if err != nil {
+			errCh <- err
+			return
+		}
 		id, err := dec.GetUint64(transport.TagID)
-		require.NoError(t, err)
+		if err != nil {
+			errCh <- err
+			return
+		}
 		m.inCh <- buildErrorFrame(id, serverErr)
+		errCh <- nil
 	}()
 
 	// Act
@@ -154,6 +184,7 @@ func TestShouldReturnErrorGivenCallWhenServerSendsErr(t *testing.T) {
 	require.Error(t, it.Err())
 	assert.Contains(t, it.Err().Error(), serverErr)
 	assert.NoError(t, it.Close())
+	require.NoError(t, <-errCh)
 }
 
 func TestShouldReturnTimeoutGivenCallWhenNoResponse(t *testing.T) {
@@ -162,12 +193,13 @@ func TestShouldReturnTimeoutGivenCallWhenNoResponse(t *testing.T) {
 	c := NewClient(m)
 
 	// Act — don't reply
-	it, err := c.Call(context.Background(), "realm/area/resource", []byte("x"), 50*time.Millisecond)
+	it, err := c.Call(context.Background(), "rpc://realm/area/resource", []byte("x"), 50*time.Millisecond)
 
 	// Assert
 	require.NoError(t, err)
 	assert.False(t, it.Next())
-	assert.Equal(t, ErrRPCTimeout, it.Err())
+	require.Error(t, it.Err())
+	assert.ErrorIs(t, it.Err(), context.DeadlineExceeded)
 	assert.NoError(t, it.Close())
 }
 
@@ -180,7 +212,7 @@ func TestShouldDispatchToWorkerGivenSubscribe(t *testing.T) {
 	m := newMockMux()
 	c := NewClient(m)
 
-	route := "realm/area/resource"
+	route := "rpc://realm/area/resource"
 	reqBody := []byte("ping")
 	respBody := []byte("pong")
 
@@ -237,7 +269,7 @@ func TestShouldStreamMultipleFramesGivenSubscribedWorkerWhenHandlerCallsSendMult
 	m := newMockMux()
 	c := NewClient(m)
 
-	route := "realm/area/resource"
+	route := "rpc://realm/area/resource"
 
 	// Handler streams 3 chunks
 	_, err := c.Subscribe(context.Background(), route, func(ctx context.Context, r InboundRequest, w ResponseWriter) error {
@@ -287,7 +319,7 @@ func TestShouldSendErrorFrameGivenSubscribedWorkerWhenHandlerReturnsError(t *tes
 	m := newMockMux()
 	c := NewClient(m)
 
-	route := "realm/area/resource"
+	route := "rpc://realm/area/resource"
 	_, err := c.Subscribe(context.Background(), route, func(ctx context.Context, r InboundRequest, w ResponseWriter) error {
 		return errors.New("handler failed")
 	})

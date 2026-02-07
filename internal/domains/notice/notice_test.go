@@ -45,7 +45,8 @@ func (m *mockMux) triggerReconnect() {
 	}
 }
 
-func TestSubscribeHandlerReceivesMessage(t *testing.T) {
+func TestShouldDeliverMessageToHandlerGivenSubscribedWhenNoticeArrives(t *testing.T) {
+	// Arrange
 	m := newMockMux()
 	c := NewClient(m)
 	recv := make(chan string, 1)
@@ -55,9 +56,11 @@ func TestSubscribeHandlerReceivesMessage(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
+	// Act
 	body := encodeNotifyBody("notice://realm/area/resource", []byte("hello"))
 	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body}
 
+	// Assert
 	select {
 	case v := <-recv:
 		assert.Equal(t, "hello", v)
@@ -66,7 +69,8 @@ func TestSubscribeHandlerReceivesMessage(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeStopsFurtherHandlers(t *testing.T) {
+func TestShouldStopDeliveryGivenUnsubscribedWhenNoticeArrives(t *testing.T) {
+	// Arrange
 	m := newMockMux()
 	c := NewClient(m)
 	recv := make(chan string, 4)
@@ -86,11 +90,12 @@ func TestUnsubscribeStopsFurtherHandlers(t *testing.T) {
 		t.Fatalf("timeout waiting for first handler")
 	}
 
-	// unsubscribe and send another message; handler must not be invoked
+	// Act — unsubscribe and send another message
 	s.Unsubscribe()
 	body2 := encodeNotifyBody("notice://realm/area/resource", []byte("two"))
 	m.in <- transport.Frame{Type: NoticeNotify, Channel: transport.ChannelSub, Body: body2}
 
+	// Assert — handler must not be invoked
 	select {
 	case <-recv:
 		t.Fatalf("handler called after unsubscribe")
@@ -99,7 +104,8 @@ func TestUnsubscribeStopsFurtherHandlers(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeWaitsForInFlightHandler(t *testing.T) {
+func TestShouldWaitForHandlerGivenInFlightWhenUnsubscribeCalled(t *testing.T) {
+	// Arrange
 	m := newMockMux()
 	c := NewClient(m)
 	started := make(chan struct{})
@@ -122,36 +128,37 @@ func TestUnsubscribeWaitsForInFlightHandler(t *testing.T) {
 		t.Fatalf("timeout waiting for handler to start")
 	}
 
-	// now unsubscribe and ensure it waits for handler to finish
+	// Act — unsubscribe and ensure it waits for handler to finish
 	start := time.Now()
 	s.Unsubscribe()
 	elapsed := time.Since(start)
+
+	// Assert
 	assert.GreaterOrEqual(t, int(elapsed.Milliseconds()), int(dur.Milliseconds()))
 }
 
-func TestResubscribeOnReconnect(t *testing.T) {
+func TestShouldResubscribeGivenActiveSubscriptionsWhenReconnectOccurs(t *testing.T) {
+	// Arrange
 	m := newMockMux()
 	c := NewClient(m)
-
-	// subscribe should send a subscribe frame
 	_, err := c.Subscribe(context.Background(), "notice://realm/x/resource", func(ctx context.Context, msg NoticeMsg) error { return nil })
 	assert.NoError(t, err)
 	assert.Greater(t, len(m.sent), 0)
-	// clear history and simulate reconnect
+
+	// Act — clear history and simulate reconnect
 	m.sent = nil
 	m.triggerReconnect()
 
-	// reconnect should result in resubscribe frames sent
+	// Assert — reconnect should result in resubscribe frames sent
 	select {
 	case <-time.After(100 * time.Millisecond):
-		// check what was sent
 		if len(m.sent) == 0 {
 			t.Fatalf("no resubscribe frames observed")
 		}
 	}
 }
 
-func TestUnsubscribeCancelsBlockedDeliverers(t *testing.T) {
+func TestShouldNotDeadlockGivenBlockedDelivererWhenUnsubscribeCalled(t *testing.T) {
 	m := newMockMux()
 	c := NewClient(m)
 	started := make(chan struct{})
@@ -214,16 +221,20 @@ func TestUnsubscribeCancelsBlockedDeliverers(t *testing.T) {
 	}
 }
 
-func TestAckWaiterRemovedOnTimeout(t *testing.T) {
+func TestShouldRemoveAckWaiterGivenTimeoutWhenNoAckReceived(t *testing.T) {
+	// Arrange
 	m := newMockMux()
 	m.autoAck = false
 	cIntf := NewClient(m)
 	nc := cIntf.(*client)
 
+	// Act
 	start := time.Now()
 	err := nc.sendUnsubscribe(context.Background(), "notice://realm/area/timeout")
-	assert.NoError(t, err)
 	elapsed := time.Since(start)
+
+	// Assert
+	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, int(elapsed.Milliseconds()), 500)
 
 	nc.ackMu.Lock()
@@ -232,7 +243,7 @@ func TestAckWaiterRemovedOnTimeout(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestNoticeMatchRoute(t *testing.T) {
+func TestShouldMatchRoutesGivenWildcardPatternsWhenCompared(t *testing.T) {
 	tab := []struct {
 		pattern string
 		route   string
