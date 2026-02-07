@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/cntryl/cntryl-go/internal/core/transport"
@@ -82,7 +83,16 @@ func (c *client) List(ctx context.Context, route string) ([]ScheduleEntry, error
 	crons := dec.GetAll(transport.TagBody)
 	entries := make([]ScheduleEntry, 0, len(ids))
 	for i := range ids {
-		e := ScheduleEntry{ID: string(ids[i])}
+		// IDs are encoded as u64 BE values; format as decimal string.
+		idstr := ""
+		if len(ids[i]) == 8 {
+			id := binary.BigEndian.Uint64(ids[i])
+			idstr = fmt.Sprintf("%d", id)
+		} else {
+			// Fallback: if broker sent a non-u64 representation, preserve raw bytes as string.
+			idstr = string(ids[i])
+		}
+		e := ScheduleEntry{ID: idstr}
 		if i < len(routes) {
 			e.Route = string(routes[i])
 		}

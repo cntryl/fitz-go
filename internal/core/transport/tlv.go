@@ -130,9 +130,8 @@ func (e *TLVEncoder) Encode() []byte {
 }
 
 // TLVDecoder decodes a byte slice into TLV entries.
-// It preserves multiple values for the same tag in order of appearance.
-// Convenience getters (GetBytes/GetString/GetUint32/etc.) return the last
-// value seen for a tag to preserve backward-compatible semantics.
+// It treats duplicate tags as a protocol error. Convenience getters (GetBytes/GetString/GetUint32/etc.)
+// return the last value seen for a tag when present.
 type TLVDecoder struct {
 	entries map[uint8][][]byte
 }
@@ -165,8 +164,11 @@ func (d *TLVDecoder) parse(data []byte) error {
 		value := make([]byte, length)
 		copy(value, data[offset:offset+int(length)])
 		offset += int(length)
-		// Preserve multiple values for the same tag. Append in order of appearance.
-		d.entries[tag] = append(d.entries[tag], value)
+		// If a tag is already present, treat duplicates as a protocol error.
+		if _, exists := d.entries[tag]; exists {
+			return fmt.Errorf("duplicate TLV tag: %d", tag)
+		}
+		d.entries[tag] = [][]byte{value}
 	}
 	return nil
 }
