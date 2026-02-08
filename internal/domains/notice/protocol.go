@@ -51,7 +51,7 @@ func encodeUnsubscribe(route string) []byte {
 	return encodeSubscribe(route)
 }
 
-func decodeNotify(body []byte) (string, []byte, bool) {
+func DecodeNotify(body []byte) (string, []byte, bool) {
 	_, route, ok := decodeFirstRoute(body)
 	if !ok {
 		return "", nil, false
@@ -111,11 +111,11 @@ func decodeStatus(body []byte) (uint8, string, bool) {
 	return status, string(body[5 : 5+msgLen]), true
 }
 
-func isNoticeResponseType(t uint16) bool {
+func IsNoticeResponseType(t uint16) bool {
 	return t == NoticePublish || t == NoticeSubscribe || t == NoticeUnsubscribe || t == NoticeUnsubscribeAll
 }
 
-func decodeNoticeResponseKey(op uint16, body []byte) (string, error) {
+func DecodeNoticeResponseKey(op uint16, body []byte) (string, error) {
 	status, errMsg, ok := decodeStatus(body)
 	if !ok {
 		return "", nil
@@ -123,10 +123,10 @@ func decodeNoticeResponseKey(op uint16, body []byte) (string, error) {
 	if status != 0 {
 		return "", fmt.Errorf("notice error: %s", errMsg)
 	}
-	return noticeWaitKey(op), nil
+	return NoticeWaitKey(op), nil
 }
 
-func noticeWaitKey(op uint16) string {
+func NoticeWaitKey(op uint16) string {
 	return fmt.Sprintf("%d", op)
 }
 
@@ -160,7 +160,7 @@ func stripNoticeScheme(route string) string {
 	return route
 }
 
-func validateNoticeRoute(route string, allowWildcards bool) error {
+func ValidateNoticeRoute(route string, allowWildcards bool) error {
 	if len(route) < 9 || route[:9] != "notice://" {
 		return fmt.Errorf("notice route must start with notice://")
 	}
@@ -187,8 +187,8 @@ func validateNoticeRoute(route string, allowWildcards bool) error {
 	return nil
 }
 
-// noticeMatchRoute matches a subscription pattern against a notification route.
-func noticeMatchRoute(pattern, route string) bool {
+// NoticeMatchRoute matches a subscription pattern against a notification route.
+func NoticeMatchRoute(pattern, route string) bool {
 	pat := stripNoticeScheme(pattern)
 	rt := stripNoticeScheme(route)
 	if pat == rt {

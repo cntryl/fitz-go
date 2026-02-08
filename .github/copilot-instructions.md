@@ -2,7 +2,7 @@
 
 ## Quick summary
 - This repo is a Go SDK for the Fitz/cntryl wire protocol. The canonical protocol and client expectations live in `CLIENT_SPEC.md` — read that first. 📚
-- The library surface is organized as thin domain clients under `internal/<domain>`: `kv`, `lease`, `notice`, `queue`, `rpc`, `stream`. Each domain exposes a small `Client` interface (e.g., `internal/kv/kv.go`). 🔧
+- The library surface is organized as domain clients under `internal/domains/<domain>`: `kv`, `lease`, `notice`, `queue`, `rpc`, `schedule`, `stream`. Each domain is a flat package containing the `Client` interface, concrete implementation, protocol constants, and unit tests (e.g., `internal/domains/kv/kv.go`). 🔧
 
 ## Big picture (how things fit together) 💡
 - Top-level package `fitz` (`client.go`) exposes a `Client` interface that returns domain clients: `Notice()`, `Stream()`, `Queue()`, `RPC()`, `KV()`, `Lease()`.
@@ -10,8 +10,9 @@
 - The codebase intentionally keeps domain clients as minimal interfaces; implementations (including no-op test scaffolds) live under the same `internal/<domain>` package.
 
 ## Local conventions & patterns (essential) 🔍
-- **Domain packages under `internal/` are interface-only.** Each domain package should export only the minimal `Client` interface and domain types; do not add implementations or domain tests here. Implementations (and their unit tests) belong in separate packages or a different module.
-- Shared domain-level constants and types (e.g., commonly used error values) may remain in `internal/common` where appropriate. Do not add implementation helpers (constructors, no-op clients) to the interface-only packages.
+- **Each domain is a flat package.** Interface, implementation, protocol constants, and unit tests all live in the same `internal/domains/<domain>` package. Each domain exports a `Client` interface, a `NewClient(mux)` constructor, domain types, and wire constants. The concrete struct is unexported (e.g., `client`).
+- **No `impl/` sub-packages.** Do not split interface and implementation into separate packages. This is idiomatic Go for internal packages — accept interfaces, return structs.
+- Shared core infrastructure (transport, types, iter) lives under `internal/core/`.
 
 ## Tests & build (commands you will use frequently) ▶️
 - Run unit + integration tests: `go test ./...` (runs packages under `internal/*` and root tests).
@@ -20,23 +21,23 @@
 - Standard Go tooling applies: `go build`, `go vet`, `gofmt` / `goimports`.
 
 ## Implementation notes for contributors ✍️
-- When implementing a domain client (in an implementation package):
-  - Implement the `Client` interface in a separate package (e.g., `internal/<domain>/impl` or a sibling package).
-  - Provide a constructor (e.g., `New(conn ...)`) in the implementation package and keep any test helpers (e.g., `NewNoop()`) there — **do not** add constructors or no-op helpers to the interface-only package.
-  - Preserve test contracts in the implementation package (for no-op helpers assert both `ErrNotImplemented` and non-nil stubs when applicable).
+- When implementing a domain client:
+  - Add the concrete struct (unexported, e.g., `client`) and `NewClient(mux transport.MuxProvider) Client` constructor directly in the domain package.
+  - Follow the file layout convention: `<domain>.go` (interface + types), `protocol.go` (wire constants + encoding), `client.go` (implementation), `<domain>_test.go` (unit tests).
+  - Unit tests use a `mockMux` test helper within the same package (see `queue/queue_test.go` for the canonical example).
 - Respect names from the spec: `realm`, `area`, `resource`, `operation` (these terms are intentionally enforced in `CLIENT_SPEC.md`).
 - Wire protocol & TLV details in `CLIENT_SPEC.md` are normative — ensure encoding/decoding aligns with its tags and message types.
 
 ## Tests & compatibility expectations ✅
 - Acceptance and domain semantics belong in `CLIENT_SPEC.md` (e.g., heartbeats, error codes, append semantics for streams). Update the spec if protocol changes.
-- Keep tests readable and domain-focused. Domain/package unit tests should live with their concrete implementations (not under `internal/*` interface packages). The source tree may include integration tests under `test/` that exercise the overall client behaviour.
+- Keep tests readable and domain-focused. Domain unit tests live alongside their implementation in the domain package. Integration tests under `test/` exercise the overall client behaviour against a running broker.
 
 ## Testing conventions (important) ✅
 - Tests MUST follow the repo's behavioral naming convention. Prefer the template: `TestShould{Behavior}Given{State}When{Action}`. Simpler, readable variants (e.g., `Test{Behavior}Given{State}`) are allowed only when clarity is preserved.
   - Examples: `TestShouldReturnTxGivenNoopWhenBeginCalled`, `TestShouldOpenConnectionWhenValidTokenProvided`.
 - Each test MUST assert a single behavior. If you find yourself asserting independent behaviors in one test, split it into multiple tests.
 - Tests MUST include explicit sections using comments: `// Arrange`, `// Act`, `// Assert` (in that order). Keep each section focused and concise.
-- Domain interface packages should not assert implementation behavior. When adding tests for a concrete implementation (in an implementation package), follow the testing conventions below and prefer the `NewNoop()` pattern in the implementation if a no-op is useful for test scaffolding.
+- Domain unit tests use a `mockMux` to test implementation behaviour in isolation (see existing tests in `queue`, `stream`, `lease`, `schedule` for examples).
 - Integration tests that intentionally cover multiple behaviours belong under `test/` and must document why they are broader (name and top comment).
 
 ### Assertion style (require/assert)
@@ -76,11 +77,11 @@ func TestShouldReturnTxGivenNoopWhenBeginCalled(t *testing.T) {
 - Enforcement: PR reviewers should request changes when tests violate these rules. For accepted deviations (rare), document the reason in the test comment or PR description.
 
 ## Places to look first (important files) 🔎
-- `CLIENT_SPEC.md` — protocol and domain behaviours (required reading)
+- `docs/CLIENT_SPEC.md` — protocol and domain behaviours (required reading)
 - `client.go` — top-level `Client` surface
-- `internal/common/common.go` — shared constants (e.g., `ErrNotImplemented`)
-- `internal/*` — each domain's `Client` interface (interface-only packages; implementations live elsewhere)
-- `test/integration_test.go` — example integration test
+- `internal/domains/*` — each domain's flat package (interface + impl + protocol + tests)
+- `internal/core/transport/` — TLV encoding/decoding, mux, framing
+- `test/` — integration tests against a running broker
 
 ---
 
