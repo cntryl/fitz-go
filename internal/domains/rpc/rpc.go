@@ -52,4 +52,3 @@ type InboundRequest struct {
 	Body       []byte
 	ReplyRoute string
 }
-

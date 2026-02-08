@@ -28,4 +28,3 @@ type NoticeMsg struct {
 
 // NoticeMetadata holds optional key/value metadata on a notification.
 type NoticeMetadata map[string]string
-
