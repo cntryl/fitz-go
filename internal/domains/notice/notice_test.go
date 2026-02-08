@@ -62,6 +62,11 @@ func (m *mockMux) triggerReconnect() {
 	}
 }
 
+// testNewClient creates a Notice client for testing.
+func testNewClient(mux transport.MuxProvider) Client {
+	return NewClient(mux)
+}
+
 func TestShouldDeliverMessageToHandlerGivenSubscribedWhenNoticeArrives(t *testing.T) {
 	// Arrange
 	m := newMockMux()

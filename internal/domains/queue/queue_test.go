@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"testing"
 
@@ -64,15 +65,21 @@ func TestShouldReturnItemsGivenReserveRespWhenReserveCalled(t *testing.T) {
 	// Arrange
 	m := newMockMux()
 	c := NewClient(m)
-	enc := transport.NewTLVEncoder()
-	// two messages
-	enc.AddUint64(transport.TagID, 1)
-	enc.AddUint64(transport.TagLease, 111)
-	enc.AddBytes(transport.TagBody, []byte("one"))
-	enc.AddUint64(transport.TagID, 2)
-	enc.AddUint64(transport.TagLease, 222)
-	enc.AddBytes(transport.TagBody, []byte("two"))
-	m.in <- resp(enc.Encode())
+	// Build binary counted-repeat response per spec:
+	// [u8 status=0][u32 BE lease_count=2]
+	// [u64 msg_id][u64 lease_token][u32 body_len][body bytes] × 2
+	body := make([]byte, 0, 64)
+	body = append(body, 0)                          // status = 0 (success)
+	body = binary.BigEndian.AppendUint32(body, 2)   // lease_count = 2
+	body = binary.BigEndian.AppendUint64(body, 1)   // message_id #1
+	body = binary.BigEndian.AppendUint64(body, 111) // lease_token #1
+	body = binary.BigEndian.AppendUint32(body, 3)   // body_len #1
+	body = append(body, []byte("one")...)           // body #1
+	body = binary.BigEndian.AppendUint64(body, 2)   // message_id #2
+	body = binary.BigEndian.AppendUint64(body, 222) // lease_token #2
+	body = binary.BigEndian.AppendUint32(body, 3)   // body_len #2
+	body = append(body, []byte("two")...)           // body #2
+	m.in <- resp(body)
 
 	// Act
 	items, err := c.Reserve(context.Background(), "queue://r/a/q", 30, 2)

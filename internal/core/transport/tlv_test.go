@@ -13,24 +13,18 @@ func buildTLV(tag uint8, value []byte) []byte {
 	return enc.Encode()
 }
 
-func TestShouldAllowDuplicateTLVTagWhenDecoding(t *testing.T) {
-	// Arrange
+func TestShouldRejectDuplicateTLVTagWhenDecoding(t *testing.T) {
+	// Arrange — manually construct raw bytes with duplicate TagToken
 	b := make([]byte, 0)
 	b = append(b, buildTLV(TagToken, []byte("abc"))...)
 	b = append(b, buildTLV(TagToken, []byte("def"))...)
 
 	// Act
-	dec, err := NewTLVDecoder(b)
+	_, err := NewTLVDecoder(b)
 
 	// Assert
-	require.NoError(t, err)
-	// GetBytes returns the first value.
-	require.Equal(t, []byte("abc"), dec.GetBytes(TagToken))
-	// GetAll returns all values in order.
-	vals := dec.GetAll(TagToken)
-	require.Len(t, vals, 2)
-	require.Equal(t, []byte("abc"), vals[0])
-	require.Equal(t, []byte("def"), vals[1])
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate TLV tag")
 }
 
 func TestShouldDecodeUint64AndStringWhenEncoded(t *testing.T) {
@@ -63,22 +57,15 @@ func TestShouldReturnErrorWhenDecodingTruncatedTLV(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestShouldReturnAllValuesGivenRepeatedTagWhenGetAllCalled(t *testing.T) {
+func TestShouldPanicGivenDuplicateTagWhenAddTagCalled(t *testing.T) {
 	// Arrange
 	enc := NewTLVEncoder()
 	enc.AddString(TagRoute, "a")
-	enc.AddString(TagRoute, "b")
-	b := enc.Encode()
 
-	// Act
-	dec, err := NewTLVDecoder(b)
-
-	// Assert
-	require.NoError(t, err)
-	vals := dec.GetAll(TagRoute)
-	require.Len(t, vals, 2)
-	require.Equal(t, "a", string(vals[0]))
-	require.Equal(t, "b", string(vals[1]))
+	// Act & Assert
+	require.Panics(t, func() {
+		enc.AddString(TagRoute, "b")
+	})
 }
 
 func TestShouldReturnErrorGivenBadUint64LengthWhenGetUint64Called(t *testing.T) {

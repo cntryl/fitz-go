@@ -70,6 +70,10 @@ func (c *client) Cancel(ctx context.Context, id string) error {
 }
 
 // List returns schedule entries for a route.
+// Per CLIENT_SPEC.md, LIST uses multi-frame streaming: the broker sends one
+// response frame per schedule entry, with a final frame having has_schedule_id=0.
+// Each frame body format: [u8 status][u8 has_schedule_id][u32 BE id_len][bytes id][schedule data...]
+// Schedule data is TLV-encoded with TagRoute and TagCron.
 func (c *client) List(ctx context.Context, route string) ([]ScheduleEntry, error) {
 	if err := types.ValidateRoute(route, "schedule"); err != nil {
 		return nil, err
@@ -79,37 +83,84 @@ func (c *client) List(ctx context.Context, route string) ([]ScheduleEntry, error
 	enc.AddString(transport.TagRoute, route)
 	frame := transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelSchedule, Body: enc.Encode()}
 
-	resp, err := transport.SendRecv(ctx, c.mux, frame, mapScheduleError)
-	if err != nil {
-		return nil, err
+	if err := c.mux.Send(frame); err != nil {
+		return nil, fmt.Errorf("send: %w", err)
 	}
-	dec, derr := transport.NewTLVDecoder(resp.Body)
-	if derr != nil {
-		return nil, fmt.Errorf("invalid TLV in response: %w", derr)
-	}
-	// Entries are encoded as repeated TagID/TagRoute/TagCron triples.
-	ids := dec.GetAll(transport.TagID)
-	routes := dec.GetAll(transport.TagRoute)
-	crons := dec.GetAll(transport.TagCron)
-	entries := make([]ScheduleEntry, 0, len(ids))
-	for i := range ids {
-		// IDs are encoded as u64 BE values; format as decimal string.
-		idstr := ""
-		if len(ids[i]) == 8 {
-			id := binary.BigEndian.Uint64(ids[i])
-			idstr = fmt.Sprintf("%d", id)
-		} else {
-			// Fallback: if broker sent a non-u64 representation, preserve raw bytes as string.
-			idstr = string(ids[i])
+
+	var entries []ScheduleEntry
+	for {
+		resp, err := transport.RecvFrame(ctx, c.mux.In(), transport.ChannelSchedule)
+		if err != nil {
+			return nil, err
 		}
-		e := ScheduleEntry{ID: idstr}
-		if i < len(routes) {
-			e.Route = string(routes[i])
+		if resp.Type == transport.FrameTypeErr {
+			return nil, transport.DecodeTLVError(resp, "schedule list failed", mapScheduleError)
 		}
-		if i < len(crons) {
-			e.CronExpr = string(crons[i])
+
+		entry, done, err := decodeScheduleListFrame(resp.Body)
+		if err != nil {
+			return nil, err
 		}
-		entries = append(entries, e)
+		if done {
+			break
+		}
+		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// decodeScheduleListFrame decodes a single LIST streaming response frame.
+// Format: [u8 status][u8 has_schedule_id][u32 BE schedule_id_len][bytes schedule_id][TLV schedule data...]
+// Returns the entry, whether this is the terminal frame (has_schedule_id=0), and any error.
+func decodeScheduleListFrame(data []byte) (ScheduleEntry, bool, error) {
+	if len(data) < 2 {
+		return ScheduleEntry{}, false, fmt.Errorf("truncated schedule list frame")
+	}
+	offset := 0
+
+	status := data[offset]
+	offset++
+
+	if status != 0 {
+		// Error in stream — parse error message if available.
+		if offset+4 <= len(data) {
+			errLen := binary.BigEndian.Uint32(data[offset : offset+4])
+			offset += 4
+			if offset+int(errLen) <= len(data) {
+				return ScheduleEntry{}, false, mapScheduleError(string(data[offset : offset+int(errLen)]))
+			}
+		}
+		return ScheduleEntry{}, false, mapScheduleError("unknown schedule error")
+	}
+
+	hasID := data[offset]
+	offset++
+
+	if hasID == 0 {
+		// Terminal frame: no more schedules.
+		return ScheduleEntry{}, true, nil
+	}
+
+	// [u32 BE schedule_id_len][bytes schedule_id]
+	if offset+4 > len(data) {
+		return ScheduleEntry{}, false, fmt.Errorf("truncated schedule list frame: missing id_len")
+	}
+	idLen := binary.BigEndian.Uint32(data[offset : offset+4])
+	offset += 4
+	if offset+int(idLen) > len(data) {
+		return ScheduleEntry{}, false, fmt.Errorf("truncated schedule list frame: missing id bytes")
+	}
+	scheduleID := string(data[offset : offset+int(idLen)])
+	offset += int(idLen)
+
+	// Remaining bytes are TLV-encoded schedule data (route, cron).
+	entry := ScheduleEntry{ID: scheduleID}
+	if offset < len(data) {
+		dec, err := transport.NewTLVDecoder(data[offset:])
+		if err == nil {
+			entry.Route = dec.GetString(transport.TagRoute)
+			entry.CronExpr = dec.GetString(transport.TagCron)
+		}
+	}
+	return entry, false, nil
 }

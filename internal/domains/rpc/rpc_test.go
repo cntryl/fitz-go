@@ -12,10 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testNewClient creates an RPC client for testing. This is a test helper
-// that wraps the impl package's NewClient function.
+// testNewClient creates an RPC client for testing.
 func testNewClient(mux transport.MuxProvider) Client {
-	return impl.testNewClient(mux)
+	return NewClient(mux)
 }
 
 // mockMux implements the muxProvider interface for tests.
@@ -55,7 +54,7 @@ func buildResponseFrame(id, seq uint64, body []byte, streamEnd bool) transport.F
 	} else {
 		enc.AddUint8(transport.TagStreamEnd, 0)
 	}
-	return transport.Frame{Type: RPCResponse, Channel: transport.ChannelRPC, Body: enc.Encode()}
+	return transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelRPC, Body: enc.Encode()}
 }
 
 func buildErrorFrame(id uint64, errMsg string) transport.Frame {
@@ -82,8 +81,8 @@ func TestShouldReturnSingleResponseGivenCallWhenServerReplies(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		f := <-m.sendCh
-		if f.Type != RPCRequest {
-			errCh <- fmt.Errorf("expected RPCRequest, got %d", f.Type)
+		if f.Type != transport.FrameTypeReq {
+			errCh <- fmt.Errorf("expected FrameTypeReq, got %d", f.Type)
 			return
 		}
 		dec, err := transport.NewTLVDecoder(f.Body)
@@ -236,7 +235,7 @@ func TestShouldDispatchToWorkerGivenSubscribe(t *testing.T) {
 	enc.AddUint64(transport.TagID, 42)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagBody, reqBody)
-	m.inCh <- transport.Frame{Type: RPCRequest, Channel: transport.ChannelRPC, Body: enc.Encode()}
+	m.inCh <- transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()}
 
 	// Expect two frames: the streamed body (seq=0, stream_end=0) + end frame (stream_end=1)
 	var frames []transport.Frame
@@ -292,7 +291,7 @@ func TestShouldStreamMultipleFramesGivenSubscribedWorkerWhenHandlerCallsSendMult
 	enc.AddUint64(transport.TagID, 99)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagBody, []byte("go"))
-	m.inCh <- transport.Frame{Type: RPCRequest, Channel: transport.ChannelRPC, Body: enc.Encode()}
+	m.inCh <- transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()}
 
 	// Assert: 3 data frames + 1 end frame = 4 total
 	var frames []transport.Frame
@@ -337,7 +336,7 @@ func TestShouldSendErrorFrameGivenSubscribedWorkerWhenHandlerReturnsError(t *tes
 	enc.AddUint64(transport.TagID, 77)
 	enc.AddString(transport.TagRoute, route)
 	enc.AddBytes(transport.TagBody, []byte("x"))
-	m.inCh <- transport.Frame{Type: RPCRequest, Channel: transport.ChannelRPC, Body: enc.Encode()}
+	m.inCh <- transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()}
 
 	// Assert: error frame
 	select {

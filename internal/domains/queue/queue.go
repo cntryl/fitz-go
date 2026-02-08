@@ -62,6 +62,8 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (string
 }
 
 // Reserve requests messages from the queue with lease semantics.
+// The response uses the spec's binary counted-repeat format:
+// [u8 status][u32 BE lease_count][repeat: u64 message_id, u64 lease_token, u32 body_len, bytes body]
 func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint32, batchSize uint32) ([]QueueItem, error) {
 	if err := types.ValidateRoute(route, "queue"); err != nil {
 		return nil, err
@@ -80,29 +82,78 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint32, ba
 		return nil, err
 	}
 
-	dec, derr := transport.NewTLVDecoder(resp.Body)
-	if derr != nil {
-		return nil, fmt.Errorf("invalid TLV in response: %w", derr)
+	return decodeReserveResponse(resp.Body)
+}
+
+// decodeReserveResponse parses the binary counted-repeat format for RESERVE per CLIENT_SPEC.md:
+// [u8 status][u32 BE lease_count][repeat: u64 message_id, u64 lease_token, u32 body_len, bytes body]
+func decodeReserveResponse(data []byte) ([]QueueItem, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty reserve response")
 	}
-	ids := dec.GetAll(transport.TagID)
-	leases := dec.GetAll(transport.TagLease)
-	bodies := dec.GetAll(transport.TagBody)
-	count := len(ids)
+	offset := 0
+
+	// Status byte: 0 = success, 1 = error.
+	status := data[offset]
+	offset++
+
+	if status != 0 {
+		// Error response: [u32 error_len][bytes error_msg]
+		if offset+4 > len(data) {
+			return nil, fmt.Errorf("truncated reserve error response")
+		}
+		errLen := binary.BigEndian.Uint32(data[offset : offset+4])
+		offset += 4
+		if offset+int(errLen) > len(data) {
+			return nil, fmt.Errorf("truncated reserve error message")
+		}
+		errMsg := string(data[offset : offset+int(errLen)])
+		return nil, mapQueueError(errMsg)
+	}
+
+	// Success: [u32 BE lease_count][repeat ...]
+	if offset+4 > len(data) {
+		return nil, fmt.Errorf("truncated reserve response: missing lease_count")
+	}
+	count := binary.BigEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
 	items := make([]QueueItem, 0, count)
-	for i := 0; i < count; i++ {
-		var id uint64
-		if len(ids[i]) == 8 {
-			id = binary.BigEndian.Uint64(ids[i])
+	for i := uint32(0); i < count; i++ {
+		// u64 message_id
+		if offset+8 > len(data) {
+			return nil, fmt.Errorf("truncated reserve response: missing message_id at index %d", i)
 		}
-		var lease uint64
-		if i < len(leases) && len(leases[i]) == 8 {
-			lease = binary.BigEndian.Uint64(leases[i])
+		msgID := binary.BigEndian.Uint64(data[offset : offset+8])
+		offset += 8
+
+		// u64 lease_token
+		if offset+8 > len(data) {
+			return nil, fmt.Errorf("truncated reserve response: missing lease_token at index %d", i)
 		}
-		var body []byte
-		if i < len(bodies) {
-			body = bodies[i]
+		leaseToken := binary.BigEndian.Uint64(data[offset : offset+8])
+		offset += 8
+
+		// u32 body_len
+		if offset+4 > len(data) {
+			return nil, fmt.Errorf("truncated reserve response: missing body_len at index %d", i)
 		}
-		items = append(items, QueueItem{ID: fmt.Sprintf("%d", id), Body: body, Token: lease})
+		bodyLen := binary.BigEndian.Uint32(data[offset : offset+4])
+		offset += 4
+
+		// bytes body
+		if offset+int(bodyLen) > len(data) {
+			return nil, fmt.Errorf("truncated reserve response: missing body at index %d", i)
+		}
+		body := make([]byte, bodyLen)
+		copy(body, data[offset:offset+int(bodyLen)])
+		offset += int(bodyLen)
+
+		items = append(items, QueueItem{
+			ID:    fmt.Sprintf("%d", msgID),
+			Body:  body,
+			Token: leaseToken,
+		})
 	}
 	return items, nil
 }

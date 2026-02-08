@@ -42,8 +42,8 @@ func TestDiagBrokerRawFrames(t *testing.T) {
 	t.Logf("CONNECT sent (type=%d, channel=%d)", connectFrame.Type, connectFrame.Channel)
 
 	// 3. Wait for any frames from broker after CONNECT
-	t.Log("--- Waiting 2s for frames after CONNECT ---")
-	drainFrames(t, mux.In(), 2*time.Second)
+	t.Log("--- Waiting 1s for frames after CONNECT ---")
+	drainFrames(t, mux.In(), 1*time.Second)
 
 	// 4. Send a simple Notice PUBLISH (op code 500, channel=ChannelPub=1)
 	route := "notice://diag/test/ping"
@@ -63,8 +63,8 @@ func TestDiagBrokerRawFrames(t *testing.T) {
 	t.Logf("PUBLISH sent (type=%d, channel=%d, route=%s, bodyHex=%s)", pubFrame.Type, pubFrame.Channel, route, hex.EncodeToString(pubFrame.Body))
 
 	// 5. Wait for response
-	t.Log("--- Waiting 3s for frames after PUBLISH ---")
-	drainFrames(t, mux.In(), 3*time.Second)
+	t.Log("--- Waiting 1s for frames after PUBLISH ---")
+	drainFrames(t, mux.In(), 1*time.Second)
 
 	// 6. Send a Lease ACQUIRE (op code 400, channel=ChannelLease=4)
 	enc2 := transport.NewTLVEncoder()
@@ -83,8 +83,8 @@ func TestDiagBrokerRawFrames(t *testing.T) {
 	t.Logf("LEASE ACQUIRE sent (type=%d, channel=%d, bodyHex=%s)", leaseFrame.Type, leaseFrame.Channel, hex.EncodeToString(leaseFrame.Body))
 
 	// 7. Wait for response
-	t.Log("--- Waiting 3s for frames after LEASE ACQUIRE ---")
-	drainFrames(t, mux.In(), 3*time.Second)
+	t.Log("--- Waiting 1s for frames after LEASE ACQUIRE ---")
+	drainFrames(t, mux.In(), 1*time.Second)
 
 	// 8. Try with FrameTypeReq wrapping
 	enc3 := transport.NewTLVEncoder()
@@ -102,8 +102,8 @@ func TestDiagBrokerRawFrames(t *testing.T) {
 	}
 	t.Logf("LEASE via FrameTypeReq sent (type=%d, channel=%d, bodyHex=%s)", leaseFrame2.Type, leaseFrame2.Channel, hex.EncodeToString(leaseFrame2.Body))
 
-	t.Log("--- Waiting 3s for frames after LEASE via FrameTypeReq ---")
-	drainFrames(t, mux.In(), 3*time.Second)
+	t.Log("--- Waiting 1s for frames after LEASE via FrameTypeReq ---")
+	drainFrames(t, mux.In(), 1*time.Second)
 
 	_ = mux.Close()
 }

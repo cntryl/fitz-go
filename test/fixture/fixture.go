@@ -3,7 +3,6 @@ package fixture
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -18,52 +17,31 @@ type TestFixture struct {
 	t            *testing.T
 	transport    TransportType
 	brokerAddr   string
-	authRequired bool
-	clientID     string
-	clientSecret string
 	client       *client.Client
 	cleanupFuncs []func()
 }
 
 // NewTestFixture creates a test fixture with the specified transport.
-// Reads broker configuration from environment variables:
-//   - FITZ_BROKER_ADDR (default: localhost:4091 for TCP, ws://localhost:4090/ws for WS)
-//   - FITZ_AUTH_REQUIRED (default: false)
-//   - FITZ_CLIENT_ID (required if auth enabled)
-//   - FITZ_CLIENT_SECRET (required if auth enabled)
+// Broker addresses are hardcoded to localhost (TCP: localhost:4091, WS: ws://localhost:4090/ws).
+// Auth is disabled; an empty token is always sent.
 func NewTestFixture(t *testing.T, transport TransportType) *TestFixture {
 	t.Helper()
 
-	// Read configuration from environment
-	authRequired := os.Getenv("FITZ_AUTH_REQUIRED") == "true" || os.Getenv("FITZ_AUTH_REQUIRED") == "TRUE"
-	clientID := os.Getenv("FITZ_CLIENT_ID")
-	clientSecret := os.Getenv("FITZ_CLIENT_SECRET")
-
-	// Determine broker address based on transport
-	brokerAddr := os.Getenv("FITZ_BROKER_ADDR")
-	if brokerAddr == "" {
-		switch transport {
-		case TransportTCP:
-			brokerAddr = "localhost:4091"
-		case TransportWebSocket:
-			brokerAddr = "ws://localhost:4090/ws"
-		default:
-			t.Fatalf("unsupported transport type: %s", transport)
-		}
-	}
-
-	// Validate auth configuration
-	if authRequired && (clientID == "" || clientSecret == "") {
-		t.Fatal("FITZ_AUTH_REQUIRED=true but FITZ_CLIENT_ID or FITZ_CLIENT_SECRET not set")
+	// Hardcoded broker addresses for localhost development
+	var brokerAddr string
+	switch transport {
+	case TransportTCP:
+		brokerAddr = "localhost:4091"
+	case TransportWebSocket:
+		brokerAddr = "ws://localhost:4090/ws"
+	default:
+		t.Fatalf("unsupported transport type: %s", transport)
 	}
 
 	f := &TestFixture{
 		t:            t,
 		transport:    transport,
 		brokerAddr:   brokerAddr,
-		authRequired: authRequired,
-		clientID:     clientID,
-		clientSecret: clientSecret,
 		cleanupFuncs: []func(){},
 	}
 
@@ -73,21 +51,12 @@ func NewTestFixture(t *testing.T, transport TransportType) *TestFixture {
 	return f
 }
 
-// Connect establishes a connection to the broker with appropriate authentication.
+// Connect establishes a connection to the broker with no authentication.
 func (f *TestFixture) Connect(ctx context.Context) error {
 	f.t.Helper()
 
-	var tokenProvider types.TokenProvider
-	if f.authRequired {
-		tokenProvider = func(ctx context.Context) (string, error) {
-			// For auth-enabled mode, generate JWT using client credentials
-			return GenerateTestJWT(f.clientID, f.clientSecret)
-		}
-	} else {
-		// For auth-disabled mode, send empty token
-		tokenProvider = func(ctx context.Context) (string, error) {
-			return "", nil
-		}
+	var tokenProvider types.TokenProvider = func(ctx context.Context) (string, error) {
+		return "", nil
 	}
 
 	f.client = client.NewClient(f.brokerAddr, tokenProvider)
@@ -99,41 +68,19 @@ func (f *TestFixture) SetBrokerAddr(addr string) {
 	f.brokerAddr = addr
 }
 
-// StartBrokerIfNeeded returns a broker address to use for tests. Behavior:
-//   - If transport-specific env vars are set, prefer them:
-//   - FITZ_BROKER_ADDR_TCP  - used for TCP tests
-//   - FITZ_BROKER_ADDR_WS   - used for WebSocket tests
-//   - Otherwise if the generic FITZ_BROKER_ADDR is set, it is returned for all transports.
-//   - Otherwise it starts an in-process simulator broker for the requested transport
-//     and returns its address and stop function.
-//
-// If FITZ_REQUIRE_REAL_BROKER is set to "true", this function will fail with an
-// error when no suitable FITZ_BROKER_ADDR* is provided. Use this to run tests
-// strictly against a real broker (e.g., for validation).
+// StartBrokerIfNeeded returns the hardcoded localhost broker address for the
+// requested transport (TCP: localhost:4091, WS: ws://localhost:4090/ws).
+// For unknown transports it falls back to the in-process simulator.
 func StartBrokerIfNeeded(transport TransportType) (addr string, stop func(), err error) {
-	// Transport-specific overrides
+	// Hardcoded localhost broker addresses
 	switch transport {
 	case TransportTCP:
-		if b := os.Getenv("FITZ_BROKER_ADDR_TCP"); b != "" {
-			return b, func() {}, nil
-		}
+		return "localhost:4091", func() {}, nil
 	case TransportWebSocket:
-		if b := os.Getenv("FITZ_BROKER_ADDR_WS"); b != "" {
-			return b, func() {}, nil
-		}
+		return "ws://localhost:4090/ws", func() {}, nil
+	default:
+		return StartSimBroker(string(transport))
 	}
-
-	// Generic fallback
-	if b := os.Getenv("FITZ_BROKER_ADDR"); b != "" {
-		return b, func() {}, nil
-	}
-
-	// If tests require a real broker, fail fast instead of starting a simulator
-	if os.Getenv("FITZ_REQUIRE_REAL_BROKER") == "true" || os.Getenv("FITZ_REQUIRE_REAL_BROKER") == "TRUE" {
-		return "", nil, fmt.Errorf("FITZ_REQUIRE_REAL_BROKER set but no FITZ_BROKER_ADDR or transport-specific FITZ_BROKER_ADDR_* provided")
-	}
-
-	return StartSimBroker(string(transport))
 }
 
 // Client returns the connected Fitz client.
