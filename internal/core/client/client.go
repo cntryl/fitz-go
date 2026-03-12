@@ -47,9 +47,9 @@ type Client struct {
 	tokenProvider types.TokenProvider
 	config        *Config
 
-	mu         sync.RWMutex
-	conn       *connection.Connection
-	closed     atomic.Bool
+	mu     sync.RWMutex
+	conn   *connection.Connection
+	closed atomic.Bool
 
 	// Domain clients
 	kvClient       kv.Client
@@ -159,10 +159,10 @@ func WithTracer(tracer trace.Tracer) Option {
 func NewClient(addr string, tokenProvider types.TokenProvider) *Client {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &Client{
-		addr:          addr,
-		tokenProvider: tokenProvider,
-		config:        defaultConfig(),
-		lifecycleCtx:  lifecycleCtx,
+		addr:            addr,
+		tokenProvider:   tokenProvider,
+		config:          defaultConfig(),
+		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 	}
 }

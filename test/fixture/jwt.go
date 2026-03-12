@@ -49,13 +49,13 @@ func generateTestJWT(secret string, audience string, expiresAt time.Time) (strin
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"iss":   "",
-		"aud":   claims.Audience,
-		"sub":   claims.Subject,
-		"tid":   claims.TenantID,
-		"exp":   claims.Expires,
-		"iat":   claims.IssuedAt,
-		"fitz":  map[string]any{"permissions": claims.Fitz.Permissions},
+		"iss":  "",
+		"aud":  claims.Audience,
+		"sub":  claims.Subject,
+		"tid":  claims.TenantID,
+		"exp":  claims.Expires,
+		"iat":  claims.IssuedAt,
+		"fitz": map[string]any{"permissions": claims.Fitz.Permissions},
 	})
 	return token.SignedString([]byte(secret))
 }

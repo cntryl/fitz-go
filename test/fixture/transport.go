@@ -11,16 +11,34 @@ const (
 )
 
 // RunWithBothTransports runs a test function with both TCP and WebSocket transports,
-// verifying protocol equivalence per CLIENT_SPEC.md.
+// and the standard anonymous/authenticated acceptance matrix.
 func RunWithBothTransports(t *testing.T, testFn func(t *testing.T, transport TransportType)) {
+	t.Helper()
+
+	authModes := []AuthMode{AuthModeAnonymous, AuthModeValidJWT}
+	transports := []TransportType{TransportTCP, TransportWebSocket}
+	for _, authMode := range authModes {
+		authMode := authMode
+		t.Run(string(authMode), func(t *testing.T) {
+			for _, transport := range transports {
+				transport := transport
+				t.Run(string(transport), func(t *testing.T) {
+					testFn(t, transport)
+				})
+			}
+		})
+	}
+}
+
+// RunWithTransportsOnly runs a test function across TCP and WebSocket without
+// introducing an auth-mode matrix.
+func RunWithTransportsOnly(t *testing.T, testFn func(t *testing.T, transport TransportType)) {
 	t.Helper()
 
 	transports := []TransportType{TransportTCP, TransportWebSocket}
 	for _, transport := range transports {
-		transport := transport // capture range variable
+		transport := transport
 		t.Run(string(transport), func(t *testing.T) {
-			// Run transports sequentially to avoid cross-transport race conditions in
-			// Tests remain independent and deterministic.
 			testFn(t, transport)
 		})
 	}

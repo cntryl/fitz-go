@@ -56,14 +56,14 @@ func TestShouldConnectViaWebSocketGivenValidAddressWhenWebSocketTransportUsed(t 
 }
 
 func TestShouldAuthenticateGivenValidJWTWhenAuthEnabledBrokerConfigured(t *testing.T) {
-	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
+	fixture.RunWithTransportsOnly(t, func(t *testing.T, transportType fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transportType)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		// Act
-		f.ConnectWithAuthOrSkip(ctx, fixture.AuthModeValidJWT)
+		f.ConnectWithAuthOrFail(ctx, fixture.AuthModeValidJWT)
 
 		// Assert
 		require.NotNil(t, f.Client())
@@ -71,7 +71,7 @@ func TestShouldAuthenticateGivenValidJWTWhenAuthEnabledBrokerConfigured(t *testi
 }
 
 func TestShouldRejectExpiredJWTGivenAuthEnabledBrokerConfiguredWhenConnectCalled(t *testing.T) {
-	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
+	fixture.RunWithTransportsOnly(t, func(t *testing.T, transportType fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transportType)
 		f.SetAuthMode(fixture.AuthModeExpiredJWT)
@@ -90,7 +90,7 @@ func TestShouldRejectExpiredJWTGivenAuthEnabledBrokerConfiguredWhenConnectCalled
 }
 
 func TestShouldRejectInvalidSignatureJWTGivenAuthEnabledBrokerConfiguredWhenConnectCalled(t *testing.T) {
-	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
+	fixture.RunWithTransportsOnly(t, func(t *testing.T, transportType fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transportType)
 		f.SetAuthMode(fixture.AuthModeInvalidSignature)
@@ -246,7 +246,8 @@ func TestShouldNotRecoverNoticeSubscriptionGivenDisconnectWhenReconnectedWithout
 func TestShouldRejectNonConnectFrameGivenNewTransportWhenFrameSentBeforeAuthentication(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
 		// Arrange
-		addr, stop, err := fixture.StartBrokerIfNeeded(transportType)
+		authMode := fixture.AuthModeForTestName(t.Name())
+		addr, stop, err := fixture.StartBrokerIfNeeded(transportType, authMode)
 		if err != nil {
 			t.Skipf("broker not available: %v", err)
 		}
