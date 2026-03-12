@@ -27,52 +27,65 @@ func newTestWSTransport(conn *testkit.MockWSConn) *WebSocketTransport {
 	}
 }
 
-// TestShouldWriteBinaryFrame tests WebSocket binary frame writing.
-func TestShouldWriteBinaryFrame(t *testing.T) {
+// TestShouldWriteBinaryFrameGivenPayloadWhenWriteCalled tests WebSocket write framing.
+func TestShouldWriteBinaryFrameGivenPayloadWhenWriteCalled(t *testing.T) {
 	t.Run("valid payload", func(t *testing.T) {
+		// Arrange
 		conn := &testkit.MockWSConn{
 			Messages: make([][]byte, 0),
 		}
 		transport := newTestWSTransport(conn)
 
 		payload := []byte{0x01, 0x02, 0x03}
+
+		// Act
 		err := transport.Write(context.Background(), payload)
 
+		// Assert
 		require.NoError(t, err)
 		assert.Len(t, conn.Messages, 1)
 		assert.Equal(t, payload, conn.Messages[0])
 	})
 
 	t.Run("empty payload", func(t *testing.T) {
+		// Arrange
 		conn := &testkit.MockWSConn{
 			Messages: make([][]byte, 0),
 		}
 		transport := newTestWSTransport(conn)
 
 		payload := []byte{}
+
+		// Act
 		err := transport.Write(context.Background(), payload)
 
+		// Assert
 		require.NoError(t, err)
 		assert.Len(t, conn.Messages, 1)
 	})
 
 	t.Run("large payload", func(t *testing.T) {
+		// Arrange
 		conn := &testkit.MockWSConn{
 			Messages: make([][]byte, 0),
 		}
 		transport := newTestWSTransport(conn)
 
 		payload := make([]byte, 65535)
+
+		// Act
 		err := transport.Write(context.Background(), payload)
 
+		// Assert
 		require.NoError(t, err)
 		assert.Len(t, conn.Messages, 1)
 	})
 }
 
-// TestShouldReadBinaryFrame tests WebSocket binary frame reading.
-func TestShouldReadBinaryFrame(t *testing.T) {
+// TestShouldReadBinaryFrameGivenBinaryMessageWhenReadCalled tests WebSocket read framing.
+func TestShouldReadBinaryFrameGivenBinaryMessageWhenReadCalled(t *testing.T) {
 	t.Run("binary message", func(t *testing.T) {
+		// Arrange
 		data := []byte{0x01, 0x02, 0x03, 0x04}
 		conn := &testkit.MockWSConn{
 			NextMessage: data,
@@ -80,28 +93,34 @@ func TestShouldReadBinaryFrame(t *testing.T) {
 		}
 		transport := newTestWSTransport(conn)
 
+		// Act
 		frame, err := transport.Read(context.Background())
 
+		// Assert
 		require.NoError(t, err)
 		assert.Equal(t, data, frame)
 	})
 
 	t.Run("empty message", func(t *testing.T) {
+		// Arrange
 		conn := &testkit.MockWSConn{
 			NextMessage: []byte{},
 			IsText:      false,
 		}
 		transport := newTestWSTransport(conn)
 
+		// Act
 		frame, err := transport.Read(context.Background())
 
+		// Assert
 		require.NoError(t, err)
 		assert.Equal(t, []byte{}, frame)
 	})
 }
 
-// TestShouldRejectTextFrames tests that text frames are rejected.
-func TestShouldRejectTextFrames(t *testing.T) {
+// TestShouldRejectTextFrameGivenTextMessageWhenReadCalled tests text frame rejection.
+func TestShouldRejectTextFrameGivenTextMessageWhenReadCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockWSConn{
 		NextMessage: []byte("text message"),
 		IsText:      true,
@@ -111,36 +130,52 @@ func TestShouldRejectTextFrames(t *testing.T) {
 		reader: bufio.NewReader(conn),
 	}
 
+	// Act
 	_, err := transport.Read(context.Background())
 
+	// Assert
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, io.EOF))
 }
 
-// TestShouldParseWSURL tests WebSocket URL parsing.
-func TestShouldParseWSURL(t *testing.T) {
+// TestShouldParseWSURLGivenURLStringWhenURLParsed tests URL parsing assumptions used by dialing.
+func TestShouldParseWSURLGivenURLStringWhenURLParsed(t *testing.T) {
 	t.Run("ws scheme", func(t *testing.T) {
-		// Just verify the URL parsing logic doesn't crash
+		// Arrange
+
+		// Act
 		u, err := url.Parse("ws://localhost:4090/ws")
+
+		// Assert
 		require.NoError(t, err)
 		assert.Equal(t, "ws", u.Scheme)
 	})
 
 	t.Run("wss scheme", func(t *testing.T) {
+		// Arrange
+
+		// Act
 		u, err := url.Parse("wss://localhost:4090/ws")
+
+		// Assert
 		require.NoError(t, err)
 		assert.Equal(t, "wss", u.Scheme)
 	})
 
 	t.Run("invalid url", func(t *testing.T) {
-		// Invalid URL should fail at dial time, not parse time
+		// Arrange
+
+		// Act
 		_, err := url.Parse("ht!tp://invalid")
+
+		// Assert
 		require.Error(t, err)
 	})
 }
 
-// TestShouldTimeoutReadGivenDeadline tests WebSocket read timeout.
-func TestShouldTimeoutWSReadGivenDeadline(t *testing.T) {
+// TestShouldTimeoutReadGivenShortDeadlineWhenWSReadCalled tests WebSocket read timeouts.
+func TestShouldTimeoutReadGivenShortDeadlineWhenWSReadCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockWSConn{
 		Blocked: true, // Will block forever
 	}
@@ -149,45 +184,56 @@ func TestShouldTimeoutWSReadGivenDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
+	// Act
 	_, err := transport.Read(ctx)
 
+	// Assert
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded))
 }
 
-// TestShouldCloseGracefully tests WebSocket close.
-func TestShouldCloseWSGracefully(t *testing.T) {
+// TestShouldCloseGracefullyGivenOpenWSTransportWhenCloseCalled tests WebSocket close behavior.
+func TestShouldCloseGracefullyGivenOpenWSTransportWhenCloseCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockWSConn{}
 	transport := newTestWSTransport(conn)
 
+	// Act
 	err := transport.Close()
 
+	// Assert
 	require.NoError(t, err)
 	assert.True(t, conn.Closed)
 }
 
-// TestShouldReturnRemoteAddr tests WebSocket remote address.
-func TestShouldReturnWSRemoteAddr(t *testing.T) {
+// TestShouldReturnRemoteAddrGivenWSTransportWhenRemoteAddrCalled tests WebSocket remote address reporting.
+func TestShouldReturnRemoteAddrGivenWSTransportWhenRemoteAddrCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockWSConn{
 		RemoteAddrHost: "ws://example.com:4090/ws",
 	}
 	transport := newTestWSTransport(conn)
 
+	// Act
 	addr := transport.RemoteAddr()
 
+	// Assert
 	assert.NotEmpty(t, addr)
 }
 
-// TestShouldHandleContextCancellation tests context cancellation.
-func TestShouldHandleContextCancellation(t *testing.T) {
+// TestShouldRejectWriteGivenCanceledContextWhenWSWriteCalled tests context cancellation handling.
+func TestShouldRejectWriteGivenCanceledContextWhenWSWriteCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockWSConn{}
 	transport := newTestWSTransport(conn)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
+	// Act
 	err := transport.Write(ctx, []byte{0x01})
 
+	// Assert
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, context.Canceled))
 }

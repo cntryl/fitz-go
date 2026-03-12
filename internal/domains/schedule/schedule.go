@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -75,6 +76,8 @@ type client struct {
 	subscriptions   map[uint64]*Subscription
 	nextClientSubID uint64
 }
+
+var _ reconnect.DomainRestorer = (*client)(nil)
 
 func (c *client) initScheduleNotifyHandler() {
 	c.mu.Lock()
@@ -293,25 +296,75 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 	}
 	c.initScheduleNotifyHandler()
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleSubscribe, scheduleSubscribePayloadWriter(pattern))
+	sub, err := c.subscribe(ctx, pattern, handler)
 	if err != nil {
 		if log := c.conn.Logger(); log != nil {
 			log.Error("schedule.Subscribe failed", "pattern", pattern, "error", err)
 		}
+		return nil, err
+	}
+	return sub, nil
+}
+
+// Unsubscribe per CLIENT_SPEC.md (704):
+// Request: [string route_pattern]
+func (c *client) unsubscribe(sub *Subscription) {
+	c.mu.Lock()
+	delete(c.subscriptions, sub.subID)
+	c.mu.Unlock()
+
+	// Best-effort unsubscribe; ignore errors to match notice semantics.
+	ctx := context.Background()
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleUnsubscribe, scheduleUnsubscribePayloadWriter(sub.pattern))
+	if err != nil {
+		return
+	}
+	connection.ParseStandardResponse(resp)
+}
+
+func (c *client) ReplaceConnection(conn *connection.Connection) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.conn = conn
+	if c.initialized {
+		c.conn.RegisterScheduleNotifyHandler(c.handleScheduleNotify)
+	}
+}
+
+func (c *client) RestoreSubscriptions(ctx context.Context) error {
+	c.mu.RLock()
+	snapshot := make([]*Subscription, 0, len(c.subscriptions))
+	for _, sub := range c.subscriptions {
+		snapshot = append(snapshot, &Subscription{pattern: sub.pattern, handler: sub.handler, client: c})
+	}
+	c.mu.RUnlock()
+
+	restored := make(map[uint64]*Subscription, len(snapshot))
+	for _, sub := range snapshot {
+		restoredSub, err := c.subscribe(ctx, sub.pattern, sub.handler)
+		if err != nil {
+			return err
+		}
+		restored[restoredSub.subID] = restoredSub
+	}
+
+	c.mu.Lock()
+	c.subscriptions = restored
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *client) subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*Subscription, error) {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleSubscribe, scheduleSubscribePayloadWriter(pattern))
+	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.Subscribe failed", "pattern", pattern, "error", err)
-		}
 		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapScheduleError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.Subscribe failed", "pattern", pattern, "status", "unexpected")
-		}
 		return nil, fmt.Errorf("SUBSCRIBE failed: unexpected status")
 	}
 
@@ -336,20 +389,4 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 	c.subscriptions[subID] = sub
 	c.mu.Unlock()
 	return sub, nil
-}
-
-// Unsubscribe per CLIENT_SPEC.md (704):
-// Request: [string route_pattern]
-func (c *client) unsubscribe(sub *Subscription) {
-	c.mu.Lock()
-	delete(c.subscriptions, sub.subID)
-	c.mu.Unlock()
-
-	// Best-effort unsubscribe; ignore errors to match notice semantics.
-	ctx := context.Background()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleUnsubscribe, scheduleUnsubscribePayloadWriter(sub.pattern))
-	if err != nil {
-		return
-	}
-	connection.ParseStandardResponse(resp)
 }

@@ -31,7 +31,7 @@ type Client interface {
 	// connection attempt.
 	//
 	// Per CLIENT_SPEC.md, both TCP and WebSocket transports MUST be supported
-	// with identical wire protocol semantics (TLV framing).
+	// with identical Fitz wire protocol semantics.
 	Connect(ctx context.Context) error
 
 	// Close cleanly shuts down the client and associated resources.

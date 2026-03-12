@@ -10,7 +10,7 @@ import (
 )
 
 // TestShouldEncodeLeaseAcquireRequest tests ACQUIRE operation encoding.
-func TestShouldEncodeLeaseAcquireRequest(t *testing.T) {
+func TestShouldEncodeLeaseAcquireRequestGivenRouteAndTTLWhenPayloadWritten(t *testing.T) {
 	t.Run("valid route and ttl", func(t *testing.T) {
 		// Arrange
 		route := "lease://acme/app/locks"
@@ -53,7 +53,7 @@ func TestShouldEncodeLeaseAcquireRequest(t *testing.T) {
 }
 
 // TestShouldEncodeLeaseRenewRequest tests RENEW operation encoding.
-func TestShouldEncodeLeaseRenewRequest(t *testing.T) {
+func TestShouldEncodeLeaseRenewRequestGivenTokenAndTTLWhenPayloadWritten(t *testing.T) {
 	t.Run("valid token and ttl", func(t *testing.T) {
 		// Arrange
 		token := uint64(0x0123456789ABCDEF)
@@ -79,7 +79,7 @@ func TestShouldEncodeLeaseRenewRequest(t *testing.T) {
 }
 
 // TestShouldEncodeLeaseReleaseRequest tests RELEASE operation encoding.
-func TestShouldEncodeLeaseReleaseRequest(t *testing.T) {
+func TestShouldEncodeLeaseReleaseRequestGivenTokenWhenPayloadWritten(t *testing.T) {
 	t.Run("valid token", func(t *testing.T) {
 		// Arrange
 		token := uint64(0xFEDCBA9876543210)
@@ -105,7 +105,7 @@ func TestShouldEncodeLeaseReleaseRequest(t *testing.T) {
 }
 
 // TestShouldEncodeLeaseQueryRequest tests QUERY operation encoding.
-func TestShouldEncodeLeaseQueryRequest(t *testing.T) {
+func TestShouldEncodeLeaseQueryRequestGivenRouteWhenPayloadWritten(t *testing.T) {
 	t.Run("query with route", func(t *testing.T) {
 		// Arrange
 		route := "lease://acme/app/locks/resource1"
@@ -138,7 +138,7 @@ func TestShouldEncodeLeaseQueryRequest(t *testing.T) {
 }
 
 // TestShouldMapLeaseErrors tests error mapping.
-func TestShouldMapLeaseErrors(t *testing.T) {
+func TestShouldMapLeaseErrorsGivenBrokerMessageWhenMapLeaseErrorCalled(t *testing.T) {
 	t.Run("map held error", func(t *testing.T) {
 		// Arrange
 		errMsg := "the lease is held by another owner"

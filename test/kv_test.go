@@ -319,7 +319,7 @@ func TestShouldDeleteRangeGivenRangeWhenDeleteRangeCalled(t *testing.T) {
 }
 
 // TestShouldRespectLimitGivenScanCalled verifies SCAN limit is enforced.
-func TestShouldRespectLimitGivenScanCalled(t *testing.T) {
+func TestShouldRespectLimitGivenScanLimitWhenScanCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		// Arrange
 		f := fixture.NewTestFixture(t, transport)

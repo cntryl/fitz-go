@@ -12,6 +12,7 @@ import (
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/iter"
+	"github.com/cntryl/fitz-go/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -82,6 +83,8 @@ func NewClient(conn *connection.Connection) Client {
 	}
 	return c
 }
+
+var _ reconnect.DomainRestorer = (*client)(nil)
 
 // initRPCHandler registers the RPC response handler on first use.
 func (c *client) initRPCHandler() {
@@ -260,33 +263,14 @@ func (c *client) Subscribe(ctx context.Context, route string, handler RPCHandler
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route))
+	sub, err := c.subscribeWorker(ctx, route, handler)
 	if err != nil {
 		if log := c.conn.Logger(); log != nil {
 			log.Error("rpc.Subscribe failed", "route", route, "error", err)
 		}
-		return nil, fmt.Errorf("SUBSCRIBE_WORKER request failed: %w", err)
+		return nil, err
 	}
-
-	success, _, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("rpc.Subscribe failed", "route", route, "error", err)
-		}
-		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err.Error()))
-	}
-	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("rpc.Subscribe failed", "route", route, "status", "unexpected")
-		}
-		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: unexpected status")
-	}
-
-	c.mu.Lock()
-	c.workers[route] = handler
-	c.mu.Unlock()
-
-	return &Subscription{route: route, client: c}, nil
+	return sub, nil
 }
 
 // unsubscribeWorker removes a worker registration.
@@ -528,4 +512,50 @@ func (it *rpcIterator) Close() error {
 	delete(it.client.pendingRPCs, it.correlationID)
 	it.client.mu.Unlock()
 	return nil
+}
+
+func (c *client) ReplaceConnection(conn *connection.Connection) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.conn = conn
+	if c.initialized {
+		c.conn.RegisterRPCResponseHandler(c.handleRPCResponse)
+		c.conn.RegisterRPCRequestHandler(c.handleRPCRequest)
+	}
+}
+
+func (c *client) RestoreSubscriptions(ctx context.Context) error {
+	c.mu.Lock()
+	snapshot := make(map[string]RPCHandler, len(c.workers))
+	for route, handler := range c.workers {
+		snapshot[route] = handler
+	}
+	c.mu.Unlock()
+
+	for route, handler := range snapshot {
+		if _, err := c.subscribeWorker(ctx, route, handler); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCHandler) (*Subscription, error) {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route))
+	if err != nil {
+		return nil, fmt.Errorf("SUBSCRIBE_WORKER request failed: %w", err)
+	}
+
+	success, _, err := connection.ParseStandardResponse(resp)
+	if err != nil {
+		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err.Error()))
+	}
+	if !success {
+		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: unexpected status")
+	}
+
+	c.mu.Lock()
+	c.workers[route] = handler
+	c.mu.Unlock()
+	return &Subscription{route: route, client: c}, nil
 }

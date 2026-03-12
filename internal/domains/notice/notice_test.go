@@ -10,7 +10,7 @@ import (
 )
 
 // TestShouldDecodeNotify tests notification message decoding.
-func TestShouldDecodeNotify(t *testing.T) {
+func TestShouldDecodeNotifyGivenEncodedPayloadWhenDecodeNotifyCalled(t *testing.T) {
 	t.Run("simple notification", func(t *testing.T) {
 		// Arrange - construct a notification payload
 		// Format: [route_len(4)][route][payload_len(4)][payload]
@@ -92,7 +92,7 @@ func TestShouldDecodeNotify(t *testing.T) {
 }
 
 // TestShouldDefineNoticeOpcodes tests that Notice opcodes are properly defined.
-func TestShouldDefineNoticeOpcodes(t *testing.T) {
+func TestShouldDefineNoticeOpcodesGivenConstantsWhenRead(t *testing.T) {
 	t.Run("publish opcode", func(t *testing.T) {
 		assert.Equal(t, uint16(500), NoticePublish)
 	})
@@ -127,7 +127,7 @@ func TestShouldDefineNoticeOpcodes(t *testing.T) {
 }
 
 // TestShouldDefineNoticeErrors tests that Notice error variables are defined.
-func TestShouldDefineNoticeErrors(t *testing.T) {
+func TestShouldDefineNoticeErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("invalid route error", func(t *testing.T) {
 		assert.NotNil(t, ErrNoticeRouteInvalid)
 		assert.Equal(t, "invalid notice route", ErrNoticeRouteInvalid.Error())
@@ -145,7 +145,7 @@ func TestShouldDefineNoticeErrors(t *testing.T) {
 }
 
 // TestShouldValidateNoticeRoutes tests notice route validation.
-func TestShouldValidateNoticeRoutes(t *testing.T) {
+func TestShouldValidateNoticeRoutesGivenPatternsWhenValidateNoticeRouteCalled(t *testing.T) {
 	validRoutes := []string{
 		"notice://acme/app/events/published",
 		"notice://acme/app/logs/created",
@@ -164,7 +164,7 @@ func TestShouldValidateNoticeRoutes(t *testing.T) {
 }
 
 // TestShouldHandleWildcardPatterns tests wildcard pattern handling in Notice.
-func TestShouldHandleWildcardPatterns(t *testing.T) {
+func TestShouldHandleWildcardPatternsGivenPatternAndRouteWhenNoticeMatchRouteCalled(t *testing.T) {
 	t.Run("single segment wildcard", func(t *testing.T) {
 		// Arrange
 		pattern := "notice://acme/app/*/fired"

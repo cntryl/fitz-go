@@ -6,7 +6,7 @@ import (
 )
 
 // TestShouldEncodeU64GivenValidValue tests WriteU64 encoding.
-func TestShouldEncodeU64GivenValidValue(t *testing.T) {
+func TestShouldEncodeU64GivenValidValueWhenWriteU64Called(t *testing.T) {
 	// Arrange
 	buf := &bytes.Buffer{}
 
@@ -21,7 +21,7 @@ func TestShouldEncodeU64GivenValidValue(t *testing.T) {
 }
 
 // TestShouldEncodeU32GivenValidValue tests WriteU32 encoding.
-func TestShouldEncodeU32GivenValidValue(t *testing.T) {
+func TestShouldEncodeU32GivenValidValueWhenWriteU32Called(t *testing.T) {
 	// Arrange
 	buf := &bytes.Buffer{}
 
@@ -36,7 +36,7 @@ func TestShouldEncodeU32GivenValidValue(t *testing.T) {
 }
 
 // TestShouldEncodeStringGivenValidString tests WriteString encoding.
-func TestShouldEncodeStringGivenValidString(t *testing.T) {
+func TestShouldEncodeStringGivenValidStringWhenWriteStringCalled(t *testing.T) {
 	// Arrange
 	buf := &bytes.Buffer{}
 
@@ -54,7 +54,7 @@ func TestShouldEncodeStringGivenValidString(t *testing.T) {
 }
 
 // TestShouldEncodeBytesGivenValidData tests WriteBytes encoding.
-func TestShouldEncodeBytesGivenValidData(t *testing.T) {
+func TestShouldEncodeBytesGivenValidDataWhenWriteBytesCalled(t *testing.T) {
 	// Arrange
 	buf := &bytes.Buffer{}
 	data := []byte{0xDE, 0xAD, 0xBE, 0xEF}
@@ -73,7 +73,7 @@ func TestShouldEncodeBytesGivenValidData(t *testing.T) {
 }
 
 // TestShouldEncodeRouteGivenValidRoute tests WriteRoute encoding.
-func TestShouldEncodeRouteGivenValidRoute(t *testing.T) {
+func TestShouldEncodeRouteGivenValidRouteWhenWriteRouteCalled(t *testing.T) {
 	// Arrange
 	buf := &bytes.Buffer{}
 
@@ -95,7 +95,7 @@ func TestShouldEncodeRouteGivenValidRoute(t *testing.T) {
 }
 
 // TestShouldEncodeWithBufferGivenSimpleEncoding tests EncodeWithBuffer pattern.
-func TestShouldEncodeWithBufferGivenSimpleEncoding(t *testing.T) {
+func TestShouldEncodeWithBufferGivenSimpleEncodingWhenEncodeWithBufferCalled(t *testing.T) {
 	// Arrange & Act
 	result := EncodeWithBuffer(func(buf *bytes.Buffer) {
 		WriteU64(buf, 123)
@@ -114,7 +114,7 @@ func TestShouldEncodeWithBufferGivenSimpleEncoding(t *testing.T) {
 }
 
 // TestShouldReturnEmptySliceGivenNoData tests EncodeWithBuffer with no data.
-func TestShouldReturnEmptySliceGivenNoData(t *testing.T) {
+func TestShouldReturnEmptySliceGivenNoDataWhenEncodeWithBufferCalled(t *testing.T) {
 	// Arrange & Act
 	result := EncodeWithBuffer(func(buf *bytes.Buffer) {
 		// No writes
@@ -127,7 +127,7 @@ func TestShouldReturnEmptySliceGivenNoData(t *testing.T) {
 }
 
 // TestShouldWriteBytesRawGivenNoLengthPrefix tests WriteBytesRaw.
-func TestShouldWriteBytesRawGivenNoLengthPrefix(t *testing.T) {
+func TestShouldWriteBytesRawGivenRawDataWhenWriteBytesRawCalled(t *testing.T) {
 	// Arrange
 	buf := &bytes.Buffer{}
 	data := []byte{0x01, 0x02, 0x03}
@@ -142,7 +142,7 @@ func TestShouldWriteBytesRawGivenNoLengthPrefix(t *testing.T) {
 }
 
 // TestShouldEncodeComplexMessageGivenMultipleFields tests complex encoding.
-func TestShouldEncodeComplexMessageGivenMultipleFields(t *testing.T) {
+func TestShouldEncodeComplexMessageGivenMultipleFieldsWhenEncodingHelpersCalled(t *testing.T) {
 	// Arrange & Act
 	result := EncodeWithBuffer(func(buf *bytes.Buffer) {
 		WriteU64(buf, 42)                        // txID

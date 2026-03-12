@@ -25,7 +25,9 @@ services:
       - "4091:4091" # TCP (binary protocol)
     environment:
       # Auth configuration
-      FITZ_AUTH_REQUIRED: FALSE
+      FITZ_AUTH_REQUIRED: TRUE
+      FITZ_JWT_HMAC_SECRET: "dev-secret-change-me"
+      FITZ_JWT_AUDIENCE: "fitz"
 
       # Storage configuration
       FITZ_STORAGE_MODE: "memory" # local, memory, s3, gcs, azure

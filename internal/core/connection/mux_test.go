@@ -9,26 +9,29 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestShouldAllocateCorrelationID tests that each request gets a unique ID.
-func TestShouldAllocateCorrelationID(t *testing.T) {
+// TestShouldTrackRequestsGivenRegisteredRequestsWhenMetricsRead tests request registration accounting.
+func TestShouldTrackRequestsGivenRegisteredRequestsWhenMetricsRead(t *testing.T) {
 	t.Run("incremental IDs", func(t *testing.T) {
+		// Arrange
 		mux := connection.NewMultiplexer()
 		defer mux.Close()
 
+		// Act
 		for i := 0; i < 3; i++ {
 			ch := make(chan []byte, 1)
 			mux.RegisterRequest(uint16(100+i), ch, nil)
-			// IDs are assigned during registration, but we can verify registration succeeds
 		}
-
 		metrics := mux.Metrics()
+
+		// Assert
 		assert.Equal(t, int64(3), metrics.RequestsInFlight)
 	})
 }
 
-// TestShouldRouteResponseByCorrelationID tests that responses go to correct channels.
-func TestShouldRouteResponseByCorrelationID(t *testing.T) {
+// TestShouldRouteResponseGivenMatchingMessageTypeWhenDispatchCalled tests response routing by message type.
+func TestShouldRouteResponseGivenMatchingMessageTypeWhenDispatchCalled(t *testing.T) {
 	t.Run("matching ID receives response", func(t *testing.T) {
+		// Arrange
 		mux := connection.NewMultiplexer()
 		defer mux.Close()
 
@@ -38,23 +41,27 @@ func TestShouldRouteResponseByCorrelationID(t *testing.T) {
 		mux.RegisterRequest(100, ch1, nil)
 		mux.RegisterRequest(200, ch2, nil)
 
+		// Act
 		mux.Dispatch(100, []byte("response1"))
 		mux.Dispatch(200, []byte("response2"))
 
+		// Assert
 		assert.Equal(t, []byte("response1"), <-ch1)
 		assert.Equal(t, []byte("response2"), <-ch2)
 	})
 
 	t.Run("unregistered ID discards response", func(t *testing.T) {
+		// Arrange
 		mux := connection.NewMultiplexer()
 		defer mux.Close()
 
 		ch := make(chan []byte, 1)
 		mux.RegisterRequest(100, ch, nil)
 
-		// Dispatch to unregistered ID (should not panic or block)
+		// Act
 		mux.Dispatch(999, []byte("orphaned"))
 
+		// Assert
 		select {
 		case <-ch:
 			t.Fatal("response should not be received on ch")
@@ -64,8 +71,9 @@ func TestShouldRouteResponseByCorrelationID(t *testing.T) {
 	})
 }
 
-// TestShouldUnblockWaiterOnResponse tests that waiting goroutines are unblocked.
-func TestShouldUnblockWaiterOnResponse(t *testing.T) {
+// TestShouldUnblockWaiterGivenPendingRequestWhenDispatchCalled tests waiter wake-up on dispatch.
+func TestShouldUnblockWaiterGivenPendingRequestWhenDispatchCalled(t *testing.T) {
+	// Arrange
 	mux := connection.NewMultiplexer()
 	defer mux.Close()
 
@@ -84,16 +92,19 @@ func TestShouldUnblockWaiterOnResponse(t *testing.T) {
 		}
 	}()
 
+	// Act
 	time.Sleep(50 * time.Millisecond)
 	mux.Dispatch(100, []byte("response"))
 
+	// Assert
 	success := <-done
 	assert.True(t, success)
 }
 
-// TestShouldHandleConcurrentRequests tests multiple concurrent requests.
-func TestShouldHandleConcurrentRequests(t *testing.T) {
+// TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCalled tests concurrent dispatch behavior.
+func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCalled(t *testing.T) {
 	t.Run("10 concurrent requests", func(t *testing.T) {
+		// Arrange
 		mux := connection.NewMultiplexer()
 		defer mux.Close()
 
@@ -105,12 +116,12 @@ func TestShouldHandleConcurrentRequests(t *testing.T) {
 			mux.RegisterRequest(uint16(100+i), ch, nil)
 		}
 
-		// Dispatch responses
+		// Act
 		for i := 0; i < numRequests; i++ {
 			mux.Dispatch(uint16(100+i), []byte("response"+string(rune(i))))
 		}
 
-		// Collect all responses
+		// Assert
 		for i := 0; i < numRequests; i++ {
 			resp := <-responses[i]
 			assert.NotNil(t, resp)
@@ -121,6 +132,7 @@ func TestShouldHandleConcurrentRequests(t *testing.T) {
 	})
 
 	t.Run("100 concurrent requests", func(t *testing.T) {
+		// Arrange
 		mux := connection.NewMultiplexer()
 		defer mux.Close()
 
@@ -132,7 +144,7 @@ func TestShouldHandleConcurrentRequests(t *testing.T) {
 			mux.RegisterRequest(uint16(i), ch, nil)
 		}
 
-		// Dispatch responses concurrently
+		// Act
 		var wg sync.WaitGroup
 		for i := 0; i < numRequests; i++ {
 			wg.Add(1)
@@ -143,7 +155,7 @@ func TestShouldHandleConcurrentRequests(t *testing.T) {
 		}
 		wg.Wait()
 
-		// Collect all responses
+		// Assert
 		for i := 0; i < numRequests; i++ {
 			resp := <-responses[i]
 			assert.NotNil(t, resp)
@@ -151,8 +163,9 @@ func TestShouldHandleConcurrentRequests(t *testing.T) {
 	})
 }
 
-// TestShouldMaintainFIFOOrder tests that responses are delivered in FIFO order.
-func TestShouldMaintainFIFOOrder(t *testing.T) {
+// TestShouldMaintainFIFOOrderGivenSharedMessageTypeWhenDispatchCalled tests FIFO response ordering.
+func TestShouldMaintainFIFOOrderGivenSharedMessageTypeWhenDispatchCalled(t *testing.T) {
+	// Arrange
 	mux := connection.NewMultiplexer()
 	defer mux.Close()
 
@@ -165,54 +178,60 @@ func TestShouldMaintainFIFOOrder(t *testing.T) {
 	mux.RegisterRequest(100, ch2, nil)
 	mux.RegisterRequest(100, ch3, nil)
 
-	// Dispatch in order
+	// Act
 	mux.Dispatch(100, []byte("first"))
 	mux.Dispatch(100, []byte("second"))
 	mux.Dispatch(100, []byte("third"))
 
-	// Verify FIFO order
+	// Assert
 	assert.Equal(t, []byte("first"), <-ch1)
 	assert.Equal(t, []byte("second"), <-ch2)
 	assert.Equal(t, []byte("third"), <-ch3)
 }
 
-// TestShouldCloseGracefully tests multiplexer close.
-func TestShouldCloseGracefully(t *testing.T) {
+// TestShouldCloseGracefullyGivenRegisteredRequestWhenCloseCalledTwice tests idempotent close behavior.
+func TestShouldCloseGracefullyGivenRegisteredRequestWhenCloseCalledTwice(t *testing.T) {
+	// Arrange
 	mux := connection.NewMultiplexer()
 	ch := make(chan []byte, 1)
 	mux.RegisterRequest(100, ch, nil)
 
-	// Close should complete without hang
+	// Act
+	mux.Close()
 	mux.Close()
 
-	// Verify no panics on subsequent close
-	mux.Close()
+	// Assert
 }
 
-// TestShouldReportMetrics tests metrics accuracy.
-func TestShouldReportMetrics(t *testing.T) {
+// TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead tests metric updates across dispatch.
+func TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead(t *testing.T) {
+	// Arrange
 	mux := connection.NewMultiplexer()
 	defer mux.Close()
 
-	// Initially empty
+	// Act
 	metrics := mux.Metrics()
+
+	// Assert
 	assert.Zero(t, metrics.RequestsInFlight)
 	assert.Zero(t, metrics.RequestsTotal)
 
-	// Register one request
+	// Arrange
 	ch := make(chan []byte, 1)
 	mux.RegisterRequest(100, ch, nil)
 
+	// Act
 	metrics = mux.Metrics()
+
+	// Assert
 	assert.Equal(t, int64(1), metrics.RequestsInFlight)
 	assert.Equal(t, uint64(1), metrics.RequestsTotal)
 
-	// Dispatch response
+	// Act
 	mux.Dispatch(100, []byte("resp"))
-
-	// Consume response
 	<-ch
 
+	// Assert
 	metrics = mux.Metrics()
 	assert.Equal(t, int64(0), metrics.RequestsInFlight)
 	assert.Equal(t, uint64(1), metrics.RequestsTotal)

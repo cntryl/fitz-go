@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -145,6 +146,8 @@ func NewClient(conn *connection.Connection) Client {
 		subscriptions: make(map[uint64]*Subscription),
 	}
 }
+
+var _ reconnect.DomainRestorer = (*client)(nil)
 
 // Send per CLIENT_SPEC.md:
 // Request: [route_len][route][body_len][body][has_delay(u8)][delay_secs?]
@@ -314,34 +317,81 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Availabi
 	}
 	c.initNotifyHandler()
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueSubscribe, subscribePayloadWriter(pattern))
+	sub, err := c.subscribe(ctx, pattern, handler)
 	if err != nil {
 		if log := c.conn.Logger(); log != nil {
 			log.Error("queue.Subscribe failed", "pattern", pattern, "error", err)
 		}
+		return nil, err
+	}
+	return sub, nil
+}
+
+// unsubscribe removes a subscription.
+func (c *client) unsubscribe(sub *Subscription) {
+	c.mu.Lock()
+	delete(c.subscriptions, sub.subID)
+	c.mu.Unlock()
+
+	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
+	ctx := context.Background()
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(sub.pattern))
+	if err != nil {
+		return
+	}
+	parseQueueResponse(resp)
+}
+
+func (c *client) ReplaceConnection(conn *connection.Connection) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.conn = conn
+	if c.initialized {
+		c.conn.RegisterNotifyHandler(protocol.MessageTypeQueueNotify, c.handleNotify)
+	}
+}
+
+func (c *client) RestoreSubscriptions(ctx context.Context) error {
+	c.mu.RLock()
+	snapshot := make([]*Subscription, 0, len(c.subscriptions))
+	for _, sub := range c.subscriptions {
+		snapshot = append(snapshot, &Subscription{pattern: sub.pattern, handler: sub.handler, client: c})
+	}
+	c.mu.RUnlock()
+
+	restored := make(map[uint64]*Subscription, len(snapshot))
+	for _, sub := range snapshot {
+		restoredSub, err := c.subscribe(ctx, sub.pattern, sub.handler)
+		if err != nil {
+			return err
+		}
+		restored[restoredSub.subID] = restoredSub
+	}
+
+	c.mu.Lock()
+	c.subscriptions = restored
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *client) subscribe(ctx context.Context, pattern string, handler AvailabilityHandler) (*Subscription, error) {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueSubscribe, subscribePayloadWriter(pattern))
+	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
 
 	success, remaining, err := parseQueueResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("queue.Subscribe failed", "pattern", pattern, "error", err)
-		}
 		return nil, fmt.Errorf("SUBSCRIBE failed: %w", err)
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("queue.Subscribe failed", "pattern", pattern, "status", "unexpected")
-		}
 		return nil, fmt.Errorf("SUBSCRIBE failed: unexpected status")
 	}
 
-	// Parse optional subscription_id: [u8 has_sub_id][u64 sub_id if has=1]
 	if len(remaining) < 1 {
 		return nil, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
 	}
-	hasSubID := remaining[0]
-	if hasSubID != 1 {
+	if remaining[0] != 1 {
 		return nil, fmt.Errorf("SUBSCRIBE response missing subscription_id")
 	}
 	if len(remaining) < 9 {
@@ -359,25 +409,8 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Availabi
 		client:  c,
 		handler: handler,
 	}
-
 	c.mu.Lock()
 	c.subscriptions[subID] = sub
 	c.mu.Unlock()
-
 	return sub, nil
-}
-
-// unsubscribe removes a subscription.
-func (c *client) unsubscribe(sub *Subscription) {
-	c.mu.Lock()
-	delete(c.subscriptions, sub.subID)
-	c.mu.Unlock()
-
-	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
-	ctx := context.Background()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(sub.pattern))
-	if err != nil {
-		return
-	}
-	parseQueueResponse(resp)
 }

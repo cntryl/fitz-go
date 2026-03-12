@@ -203,12 +203,17 @@ func (c *Connection) Start(ctx context.Context) error {
 		return ctx.Err()
 
 	case <-time.After(authTimeout):
-		// No response within timeout
-		if c.logger != nil {
-			c.logger.Error("authentication timeout")
+		// Valid JWT CONNECT is silently accepted by the broker; if the transport
+		// remains open through the auth window, treat the connection as
+		// authenticated.
+		if c.getConnError() != nil {
+			return c.getConnError()
 		}
-		c.Close()
-		return ErrAuthenticationTimeout
+		c.confirmAuthentication()
+		if c.logger != nil {
+			c.logger.Info("connection authenticated after silent CONNECT window")
+		}
+		return nil
 	}
 }
 
@@ -610,4 +615,14 @@ func (c *Connection) getConnError() error {
 // Metrics returns multiplexer metrics.
 func (c *Connection) Metrics() MultiplexerMetrics {
 	return c.mux.Metrics()
+}
+
+// Done closes when the dispatch loop exits.
+func (c *Connection) Done() <-chan struct{} {
+	return c.done
+}
+
+// Err returns the terminal connection error, if any.
+func (c *Connection) Err() error {
+	return c.getConnError()
 }

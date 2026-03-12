@@ -13,7 +13,7 @@ import (
 // Mock transport is now provided by testkit.MockTransport from internal/testkit package
 
 // TestShouldCreateConnectionGivenValidConfig tests basic connection creation.
-func TestShouldCreateConnectionGivenValidConfig(t *testing.T) {
+func TestShouldCreateConnectionGivenValidConfigWhenNewCalled(t *testing.T) {
 	// Arrange
 	transport := &testkit.MockTransport{}
 	cfg := connection.DefaultConfig()
@@ -26,7 +26,7 @@ func TestShouldCreateConnectionGivenValidConfig(t *testing.T) {
 }
 
 // TestShouldParseStandardResponseGivenSuccessStatus tests success response parsing.
-func TestShouldParseStandardResponseGivenSuccessStatus(t *testing.T) {
+func TestShouldParseStandardResponseGivenSuccessStatusWhenParseStandardResponseCalled(t *testing.T) {
 	// Arrange - Success response: [status=0][remaining data]
 	payload := []byte{0x00, 0x01, 0x02, 0x03}
 
@@ -40,7 +40,7 @@ func TestShouldParseStandardResponseGivenSuccessStatus(t *testing.T) {
 }
 
 // TestShouldParseStandardResponseGivenErrorStatus tests error response parsing.
-func TestShouldParseStandardResponseGivenErrorStatus(t *testing.T) {
+func TestShouldParseStandardResponseGivenErrorStatusWhenParseStandardResponseCalled(t *testing.T) {
 	// Arrange - Error response: [status=1][u32 BE len][error message]
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
@@ -59,14 +59,14 @@ func TestShouldParseStandardResponseGivenErrorStatus(t *testing.T) {
 }
 
 // TestShouldRejectParseGivenEmptyPayload tests edge case of empty payload.
-func TestShouldRejectParseGivenEmptyPayload(t *testing.T) {
+func TestShouldRejectParseGivenEmptyPayloadWhenParseStandardResponseCalled(t *testing.T) {
 	_, _, err := connection.ParseStandardResponse([]byte{})
 
 	require.Error(t, err)
 }
 
 // TestShouldEncodeDecodeU32BE tests U32BE encoding/decoding.
-func TestShouldEncodeDecodeU32BE(t *testing.T) {
+func TestShouldEncodeDecodeU32BEGivenValueWhenHelpersCalled(t *testing.T) {
 	t.Run("value 0", func(t *testing.T) {
 		buf := connection.GetBuffer()
 		defer connection.PutBuffer(buf)
@@ -91,7 +91,7 @@ func TestShouldEncodeDecodeU32BE(t *testing.T) {
 }
 
 // TestShouldEncodeDecodeU64BE tests U64BE encoding/decoding.
-func TestShouldEncodeDecodeU64BE(t *testing.T) {
+func TestShouldEncodeDecodeU64BEGivenValueWhenHelpersCalled(t *testing.T) {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 
@@ -105,7 +105,7 @@ func TestShouldEncodeDecodeU64BE(t *testing.T) {
 }
 
 // TestShouldEncodeDecodeU8 tests U8 encoding/decoding.
-func TestShouldEncodeDecodeU8(t *testing.T) {
+func TestShouldEncodeDecodeU8GivenValueWhenHelpersCalled(t *testing.T) {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 
@@ -117,7 +117,7 @@ func TestShouldEncodeDecodeU8(t *testing.T) {
 }
 
 // TestShouldEncodeDecodeString tests string encoding/decoding.
-func TestShouldEncodeDecodeString(t *testing.T) {
+func TestShouldEncodeDecodeStringGivenValueWhenHelpersCalled(t *testing.T) {
 	t.Run("simple ASCII", func(t *testing.T) {
 		buf := connection.GetBuffer()
 		defer connection.PutBuffer(buf)
@@ -157,7 +157,7 @@ func TestShouldEncodeDecodeString(t *testing.T) {
 }
 
 // TestShouldMatchResponsesInFIFOOrder tests multiplexer FIFO ordering.
-func TestShouldMatchResponsesInFIFOOrder(t *testing.T) {
+func TestShouldMatchResponsesInFIFOOrderGivenSharedMessageTypeWhenDispatchCalled(t *testing.T) {
 	// Arrange
 	mux := connection.NewMultiplexer()
 	defer mux.Close()
@@ -183,7 +183,7 @@ func TestShouldMatchResponsesInFIFOOrder(t *testing.T) {
 }
 
 // TestShouldReturnMetricsGivenMultiplexer tests metrics collection.
-func TestShouldReturnMetricsGivenMultiplexer(t *testing.T) {
+func TestShouldReturnMetricsGivenRegisteredRequestWhenMetricsCalled(t *testing.T) {
 	// Arrange
 	mux := connection.NewMultiplexer()
 	defer mux.Close()
@@ -200,7 +200,7 @@ func TestShouldReturnMetricsGivenMultiplexer(t *testing.T) {
 }
 
 // TestShouldDispatchToCorrectChannel tests response routing.
-func TestShouldDispatchToCorrectChannel(t *testing.T) {
+func TestShouldDispatchToCorrectChannelGivenMatchingMessageTypeWhenDispatchCalled(t *testing.T) {
 	mux := connection.NewMultiplexer()
 	defer mux.Close()
 

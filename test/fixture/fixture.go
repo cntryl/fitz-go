@@ -19,6 +19,12 @@ const (
 	EnvBrokerTCPAddr = "FITZ_BROKER_TCP_ADDR"
 	// EnvBrokerWSAddr specifies the WebSocket broker address (default: ws://localhost:4090/ws)
 	EnvBrokerWSAddr = "FITZ_BROKER_WS_ADDR"
+	// EnvBrokerAuthRequired enables auth acceptance tests when set to "true".
+	EnvBrokerAuthRequired = "FITZ_BROKER_AUTH_REQUIRED"
+	// EnvBrokerJWTHMACSecret configures the HMAC secret used to mint test JWTs.
+	EnvBrokerJWTHMACSecret = "FITZ_BROKER_JWT_HMAC_SECRET"
+	// EnvBrokerJWTAudience configures the JWT audience expected by the broker.
+	EnvBrokerJWTAudience = "FITZ_BROKER_JWT_AUDIENCE"
 )
 
 // Note: Integration tests require a running Fitz broker.
@@ -30,9 +36,19 @@ type TestFixture struct {
 	t            *testing.T
 	transport    TransportType
 	brokerAddr   string
+	authMode     AuthMode
 	client       *client.Client
 	cleanupFuncs []func()
 }
+
+type AuthMode string
+
+const (
+	AuthModeAnonymous        AuthMode = "anonymous"
+	AuthModeValidJWT         AuthMode = "valid_jwt"
+	AuthModeExpiredJWT       AuthMode = "expired_jwt"
+	AuthModeInvalidSignature AuthMode = "invalid_signature"
+)
 
 // NewTestFixture creates a test fixture with the specified transport.
 // Broker addresses can be configured via environment variables or use localhost defaults.
@@ -62,6 +78,7 @@ func NewTestFixture(t *testing.T, transport TransportType) *TestFixture {
 		t:            t,
 		transport:    transport,
 		brokerAddr:   brokerAddr,
+		authMode:     AuthModeAnonymous,
 		cleanupFuncs: []func(){},
 	}
 
@@ -75,12 +92,17 @@ func NewTestFixture(t *testing.T, transport TransportType) *TestFixture {
 func (f *TestFixture) Connect(ctx context.Context) error {
 	f.t.Helper()
 
-	var tokenProvider types.TokenProvider = func(ctx context.Context) (string, error) {
-		return "", nil
+	tokenProvider, err := f.tokenProviderForMode()
+	if err != nil {
+		return err
 	}
 
 	f.client = client.NewClient(f.brokerAddr, tokenProvider)
 	return f.client.Connect(ctx)
+}
+
+func (f *TestFixture) SetAuthMode(mode AuthMode) {
+	f.authMode = mode
 }
 
 // SetBrokerAddr overrides the fixture broker address.
@@ -89,21 +111,20 @@ func (f *TestFixture) SetBrokerAddr(addr string) {
 }
 
 // StartBrokerIfNeeded returns the broker address for the requested transport.
-// Addresses can be configured via environment variables (FITZ_BROKER_TCP_ADDR, FITZ_BROKER_WS_ADDR)
-// or default to localhost (TCP: localhost:4091, WS: ws://localhost:4090/ws).
-// Only TCP and WebSocket are supported; unknown transports return an error.
+// Broker-backed acceptance tests only run when the corresponding environment
+// variable is explicitly configured.
 func StartBrokerIfNeeded(transport TransportType) (addr string, stop func(), err error) {
 	switch transport {
 	case TransportTCP:
 		addr = os.Getenv(EnvBrokerTCPAddr)
 		if addr == "" {
-			addr = "localhost:4091"
+			return "", nil, fmt.Errorf("%s not configured", EnvBrokerTCPAddr)
 		}
 		return addr, func() {}, nil
 	case TransportWebSocket:
 		addr = os.Getenv(EnvBrokerWSAddr)
 		if addr == "" {
-			addr = "ws://localhost:4090/ws"
+			return "", nil, fmt.Errorf("%s not configured", EnvBrokerWSAddr)
 		}
 		return addr, func() {}, nil
 	default:
@@ -157,6 +178,15 @@ func (f *TestFixture) ConnectOrSkip(ctx context.Context) {
 	}
 }
 
+func (f *TestFixture) ConnectWithAuthOrSkip(ctx context.Context, mode AuthMode) {
+	f.t.Helper()
+	if os.Getenv(EnvBrokerAuthRequired) != "true" {
+		f.t.Skip("auth-enabled broker not configured")
+	}
+	f.SetAuthMode(mode)
+	f.ConnectOrSkip(ctx)
+}
+
 // UniqueRealm generates a unique realm name for test isolation.
 func (f *TestFixture) UniqueRealm() string {
 	return fmt.Sprintf("test-%d", time.Now().UnixNano())
@@ -181,4 +211,40 @@ func (f *TestFixture) UniqueRoute(scheme string) string {
 		return fmt.Sprintf("%s://%s/%s/%s/%s", scheme, realm, area, resource, "run")
 	}
 	return fmt.Sprintf("%s://%s/%s/%s", scheme, realm, area, resource)
+}
+
+func (f *TestFixture) tokenProviderForMode() (types.TokenProvider, error) {
+	secret := os.Getenv(EnvBrokerJWTHMACSecret)
+	if secret == "" {
+		secret = "test-secret-key"
+	}
+	audience := os.Getenv(EnvBrokerJWTAudience)
+	if audience == "" {
+		audience = "fitz"
+	}
+
+	switch f.authMode {
+	case AuthModeAnonymous:
+		return func(context.Context) (string, error) { return "", nil }, nil
+	case AuthModeValidJWT:
+		token, err := GenerateValidTestJWT(secret, audience)
+		if err != nil {
+			return nil, err
+		}
+		return func(context.Context) (string, error) { return token, nil }, nil
+	case AuthModeExpiredJWT:
+		token, err := GenerateExpiredTestJWT(secret, audience)
+		if err != nil {
+			return nil, err
+		}
+		return func(context.Context) (string, error) { return token, nil }, nil
+	case AuthModeInvalidSignature:
+		token, err := GenerateInvalidSignatureTestJWT(secret, audience)
+		if err != nil {
+			return nil, err
+		}
+		return func(context.Context) (string, error) { return token, nil }, nil
+	default:
+		return nil, fmt.Errorf("unsupported auth mode: %s", f.authMode)
+	}
 }

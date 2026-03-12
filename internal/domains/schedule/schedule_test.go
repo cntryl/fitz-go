@@ -9,7 +9,7 @@ import (
 )
 
 // TestShouldMapScheduleError tests error message mapping.
-func TestShouldMapScheduleError(t *testing.T) {
+func TestShouldMapScheduleErrorGivenBrokerMessageWhenMapScheduleErrorCalled(t *testing.T) {
 	t.Run("map schedule not found error", func(t *testing.T) {
 		// Arrange
 		errMsg := "schedule not found"
@@ -57,7 +57,7 @@ func TestShouldMapScheduleError(t *testing.T) {
 }
 
 // TestShouldDefineScheduleOpcodes tests that Schedule opcodes are properly defined.
-func TestShouldDefineScheduleOpcodes(t *testing.T) {
+func TestShouldDefineScheduleOpcodesGivenConstantsWhenRead(t *testing.T) {
 	t.Run("create opcode", func(t *testing.T) {
 		assert.Equal(t, uint16(700), ScheduleCreate)
 	})
@@ -97,7 +97,7 @@ func TestShouldDefineScheduleOpcodes(t *testing.T) {
 }
 
 // TestShouldDefineScheduleErrors tests that Schedule error variables are defined.
-func TestShouldDefineScheduleErrors(t *testing.T) {
+func TestShouldDefineScheduleErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("schedule not found error", func(t *testing.T) {
 		assert.NotNil(t, ErrScheduleNotFound)
 		assert.Equal(t, "schedule not found", ErrScheduleNotFound.Error())
@@ -105,7 +105,7 @@ func TestShouldDefineScheduleErrors(t *testing.T) {
 }
 
 // TestShouldValidateCronExpressions tests cron expression validation.
-func TestShouldValidateCronExpressions(t *testing.T) {
+func TestShouldAcceptCronExpressionsGivenRepresentativeInputsWhenValidatedByCaller(t *testing.T) {
 	validExpressions := []string{
 		"0 0 * * *",             // Daily at midnight
 		"*/5 * * * *",           // Every 5 minutes
@@ -125,7 +125,7 @@ func TestShouldValidateCronExpressions(t *testing.T) {
 }
 
 // TestShouldDefineScheduleTargets tests schedule target resource/operation handling.
-func TestShouldDefineScheduleTargets(t *testing.T) {
+func TestShouldDefineScheduleTargetsGivenRepresentativeRoutesWhenRead(t *testing.T) {
 	t.Run("target with operation", func(t *testing.T) {
 		target := "schedule://acme/app/backup/execute"
 		assert.NotEmpty(t, target)

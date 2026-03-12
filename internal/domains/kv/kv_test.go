@@ -9,7 +9,7 @@ import (
 )
 
 // TestShouldEncodeBeginGivenValidRoute tests BEGIN request encoding with route and mode.
-func TestShouldEncodeBeginGivenValidRoute(t *testing.T) {
+func TestShouldEncodeBeginGivenValidRouteWhenBeginPayloadWritten(t *testing.T) {
 	// Arrange
 	route := "kv://acme/app/users"
 	mode := TxModeReadOnly
@@ -38,7 +38,7 @@ func TestShouldEncodeBeginGivenValidRoute(t *testing.T) {
 }
 
 // TestShouldEncodeBeginGivenReadWriteMode tests BEGIN encoding with ReadWrite mode.
-func TestShouldEncodeBeginGivenReadWriteMode(t *testing.T) {
+func TestShouldEncodeBeginGivenReadWriteModeWhenBeginPayloadWritten(t *testing.T) {
 	// Arrange
 	route := "kv://acme/app/users"
 	mode := TxModeReadWrite
@@ -60,7 +60,7 @@ func TestShouldEncodeBeginGivenReadWriteMode(t *testing.T) {
 }
 
 // TestShouldEncodeGetGivenValidKeyAndTxID tests GET request encoding.
-func TestShouldEncodeGetGivenValidKeyAndTxID(t *testing.T) {
+func TestShouldEncodeGetGivenValidKeyAndTxIDWhenGetPayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(12345)
 	route := "kv://acme/app/users"
@@ -99,7 +99,7 @@ func TestShouldEncodeGetGivenValidKeyAndTxID(t *testing.T) {
 }
 
 // TestShouldEncodePutGivenValidKeyAndValue tests PUT request encoding.
-func TestShouldEncodePutGivenValidKeyAndValue(t *testing.T) {
+func TestShouldEncodePutGivenValidKeyAndValueWhenPutPayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(67890)
 	route := "kv://acme/app/users"
@@ -138,7 +138,7 @@ func TestShouldEncodePutGivenValidKeyAndValue(t *testing.T) {
 }
 
 // TestShouldEncodeInsertGivenValidData tests INSERT request encoding.
-func TestShouldEncodeInsertGivenValidData(t *testing.T) {
+func TestShouldEncodeInsertGivenValidDataWhenInsertPayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(11111)
 	route := "kv://acme/app/users"
@@ -159,7 +159,7 @@ func TestShouldEncodeInsertGivenValidData(t *testing.T) {
 }
 
 // TestShouldEncodeDeleteGivenValidKey tests DELETE request encoding.
-func TestShouldEncodeDeleteGivenValidKey(t *testing.T) {
+func TestShouldEncodeDeleteGivenValidKeyWhenDeletePayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(22222)
 	route := "kv://acme/app/users"
@@ -179,7 +179,7 @@ func TestShouldEncodeDeleteGivenValidKey(t *testing.T) {
 }
 
 // TestShouldEncodeDeleteRangeGivenValidRange tests DELETE_RANGE request encoding.
-func TestShouldEncodeDeleteRangeGivenValidRange(t *testing.T) {
+func TestShouldEncodeDeleteRangeGivenValidRangeWhenDeleteRangePayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(33333)
 	route := "kv://acme/app/users"
@@ -216,7 +216,7 @@ func TestShouldEncodeDeleteRangeGivenValidRange(t *testing.T) {
 }
 
 // TestShouldEncodeScanGivenFullRangeQuery tests SCAN request encoding with full range.
-func TestShouldEncodeScanGivenFullRangeQuery(t *testing.T) {
+func TestShouldEncodeScanGivenFullRangeQueryWhenScanPayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(44444)
 	route := "kv://acme/app/users"
@@ -245,7 +245,7 @@ func TestShouldEncodeScanGivenFullRangeQuery(t *testing.T) {
 }
 
 // TestShouldEncodeScanGivenReverseQuery tests SCAN request encoding with reverse=true.
-func TestShouldEncodeScanGivenReverseQuery(t *testing.T) {
+func TestShouldEncodeScanGivenReverseQueryWhenScanPayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(55555)
 	route := "kv://acme/app/users"
@@ -268,7 +268,7 @@ func TestShouldEncodeScanGivenReverseQuery(t *testing.T) {
 }
 
 // TestShouldEncodeCommitGivenValidTxID tests COMMIT request encoding.
-func TestShouldEncodeCommitGivenValidTxID(t *testing.T) {
+func TestShouldEncodeCommitGivenValidTxIDWhenCommitPayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(66666)
 	route := "kv://acme/app/users"
@@ -297,7 +297,7 @@ func TestShouldEncodeCommitGivenValidTxID(t *testing.T) {
 }
 
 // TestShouldEncodeRollbackGivenValidTxID tests ROLLBACK request encoding.
-func TestShouldEncodeRollbackGivenValidTxID(t *testing.T) {
+func TestShouldEncodeRollbackGivenValidTxIDWhenRollbackPayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(77777)
 	route := "kv://acme/app/users"
@@ -316,7 +316,7 @@ func TestShouldEncodeRollbackGivenValidTxID(t *testing.T) {
 }
 
 // TestShouldRejectOversizedKeyGivenKeyTooLarge tests ValidateKeySize enforcement.
-func TestShouldRejectOversizedKeyGivenKeyTooLarge(t *testing.T) {
+func TestShouldRejectOversizedKeyGivenKeyTooLargeWhenValidationRuns(t *testing.T) {
 	// Arrange
 	txID := uint64(88888)
 	route := "kv://acme/app/users"
@@ -331,7 +331,7 @@ func TestShouldRejectOversizedKeyGivenKeyTooLarge(t *testing.T) {
 }
 
 // TestShouldRejectOversizedValueGivenValueTooLarge tests ValidateValueSize enforcement.
-func TestShouldRejectOversizedValueGivenValueTooLarge(t *testing.T) {
+func TestShouldRejectOversizedValueGivenValueTooLargeWhenValidationRuns(t *testing.T) {
 	// Arrange
 	txID := uint64(99999)
 	route := "kv://acme/app/users"
@@ -347,7 +347,7 @@ func TestShouldRejectOversizedValueGivenValueTooLarge(t *testing.T) {
 }
 
 // TestShouldAcceptMaxSizeKeyGivenExactLimit tests edge case at exact size limit.
-func TestShouldAcceptMaxSizeKeyGivenExactLimit(t *testing.T) {
+func TestShouldAcceptMaxSizeKeyGivenExactLimitWhenValidationRuns(t *testing.T) {
 	// Arrange
 	txID := uint64(10101)
 	route := "kv://acme/app/users"
@@ -362,7 +362,7 @@ func TestShouldAcceptMaxSizeKeyGivenExactLimit(t *testing.T) {
 }
 
 // TestShouldAcceptMaxSizeValueGivenExactLimit tests edge case at exact value size limit.
-func TestShouldAcceptMaxSizeValueGivenExactLimit(t *testing.T) {
+func TestShouldAcceptMaxSizeValueGivenExactLimitWhenValidationRuns(t *testing.T) {
 	// Arrange
 	txID := uint64(20202)
 	route := "kv://acme/app/users"
@@ -378,7 +378,7 @@ func TestShouldAcceptMaxSizeValueGivenExactLimit(t *testing.T) {
 }
 
 // TestShouldRejectEmptyKeyGivenZeroLengthKey tests that empty keys are rejected.
-func TestShouldRejectEmptyKeyGivenZeroLengthKey(t *testing.T) {
+func TestShouldRejectEmptyKeyGivenZeroLengthKeyWhenValidationRuns(t *testing.T) {
 	// Arrange
 	txID := uint64(30303)
 	route := "kv://acme/app/users"
@@ -393,7 +393,7 @@ func TestShouldRejectEmptyKeyGivenZeroLengthKey(t *testing.T) {
 }
 
 // TestShouldEncodeEmptyValueGivenZeroLengthValue tests empty value handling (allowed).
-func TestShouldEncodeEmptyValueGivenZeroLengthValue(t *testing.T) {
+func TestShouldEncodeEmptyValueGivenZeroLengthValueWhenPutPayloadWritten(t *testing.T) {
 	// Arrange
 	txID := uint64(40404)
 	route := "kv://acme/app/users"

@@ -9,7 +9,7 @@ import (
 )
 
 // TestShouldMapStreamError tests error message mapping.
-func TestShouldMapStreamError(t *testing.T) {
+func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testing.T) {
 	t.Run("map stream not found error", func(t *testing.T) {
 		// Arrange
 		errMsg := "stream not found"
@@ -79,7 +79,7 @@ func TestShouldMapStreamError(t *testing.T) {
 }
 
 // TestShouldDefineStreamOpcodes tests that Stream opcodes are properly defined.
-func TestShouldDefineStreamOpcodes(t *testing.T) {
+func TestShouldDefineStreamOpcodesGivenConstantsWhenRead(t *testing.T) {
 	t.Run("begin opcode", func(t *testing.T) {
 		assert.Equal(t, uint16(600), StreamBegin)
 	})
@@ -139,7 +139,7 @@ func TestShouldDefineStreamOpcodes(t *testing.T) {
 }
 
 // TestShouldDefineStreamErrors tests that Stream error variables are defined.
-func TestShouldDefineStreamErrors(t *testing.T) {
+func TestShouldDefineStreamErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("stream not found error", func(t *testing.T) {
 		assert.NotNil(t, ErrStreamNotFound)
 		assert.Equal(t, "stream not found", ErrStreamNotFound.Error())
@@ -157,7 +157,7 @@ func TestShouldDefineStreamErrors(t *testing.T) {
 }
 
 // TestShouldDefineStreamTransactionModes tests transaction mode constants.
-func TestShouldDefineStreamTransactionModes(t *testing.T) {
+func TestShouldDefineStreamTransactionModesGivenConstantsWhenRead(t *testing.T) {
 	t.Run("stream has begin operation", func(t *testing.T) {
 		// Stream should support transaction-like operations
 		assert.Greater(t, StreamBegin, uint16(0))
@@ -177,7 +177,7 @@ func TestShouldDefineStreamTransactionModes(t *testing.T) {
 }
 
 // TestShouldEncodeStreamBegin tests STREAM BEGIN encoding.
-func TestShouldEncodeStreamBegin(t *testing.T) {
+func TestShouldEncodeStreamBeginGivenRouteAndOffsetWhenPayloadWritten(t *testing.T) {
 	t.Run("without ingest metadata", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/logs/app"
@@ -233,7 +233,7 @@ func TestShouldEncodeStreamBegin(t *testing.T) {
 }
 
 // TestShouldEncodeStreamAppend tests STREAM APPEND encoding.
-func TestShouldEncodeStreamAppend(t *testing.T) {
+func TestShouldEncodeStreamAppendGivenSessionAndBodyWhenPayloadWritten(t *testing.T) {
 	t.Run("without metadata", func(t *testing.T) {
 		// Arrange
 		sessionID := uint64(123)
@@ -284,7 +284,7 @@ func TestShouldEncodeStreamAppend(t *testing.T) {
 }
 
 // TestShouldEncodeStreamCommit tests STREAM COMMIT encoding.
-func TestShouldEncodeStreamCommit(t *testing.T) {
+func TestShouldEncodeStreamCommitGivenSessionAndModeWhenPayloadWritten(t *testing.T) {
 	t.Run("buffered mode", func(t *testing.T) {
 		// Arrange
 		sessionID := uint64(999)
@@ -304,7 +304,7 @@ func TestShouldEncodeStreamCommit(t *testing.T) {
 }
 
 // TestShouldEncodeStreamRollback tests STREAM ROLLBACK encoding.
-func TestShouldEncodeStreamRollback(t *testing.T) {
+func TestShouldEncodeStreamRollbackGivenSessionWhenPayloadWritten(t *testing.T) {
 	t.Run("valid rollback", func(t *testing.T) {
 		// Arrange
 		sessionID := uint64(456)
@@ -321,7 +321,7 @@ func TestShouldEncodeStreamRollback(t *testing.T) {
 }
 
 // TestShouldEncodeStreamRead tests STREAM READ encoding.
-func TestShouldEncodeStreamRead(t *testing.T) {
+func TestShouldEncodeStreamReadGivenBoundsWhenPayloadWritten(t *testing.T) {
 	t.Run("without max bytes", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/logs/app"
@@ -379,7 +379,7 @@ func TestShouldEncodeStreamRead(t *testing.T) {
 }
 
 // TestShouldEncodeStreamLast tests STREAM LAST encoding.
-func TestShouldEncodeStreamLast(t *testing.T) {
+func TestShouldEncodeStreamLastGivenRouteWhenPayloadWritten(t *testing.T) {
 	t.Run("valid route", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/logs/app"
@@ -396,7 +396,7 @@ func TestShouldEncodeStreamLast(t *testing.T) {
 }
 
 // TestShouldEncodeStreamGetMetadata tests STREAM GET_METADATA encoding.
-func TestShouldEncodeStreamGetMetadata(t *testing.T) {
+func TestShouldEncodeStreamGetMetadataGivenRouteWhenPayloadWritten(t *testing.T) {
 	t.Run("valid route", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/metadata"
@@ -413,7 +413,7 @@ func TestShouldEncodeStreamGetMetadata(t *testing.T) {
 }
 
 // TestShouldEncodeStreamSubscribe tests STREAM SUBSCRIBE encoding.
-func TestShouldEncodeStreamSubscribe(t *testing.T) {
+func TestShouldEncodeStreamSubscribeGivenPatternWhenPayloadWritten(t *testing.T) {
 	t.Run("valid route and offset", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/sub"
@@ -435,7 +435,7 @@ func TestShouldEncodeStreamSubscribe(t *testing.T) {
 }
 
 // TestShouldEncodeStreamUnsubscribe tests STREAM UNSUBSCRIBE encoding.
-func TestShouldEncodeStreamUnsubscribe(t *testing.T) {
+func TestShouldEncodeStreamUnsubscribeGivenPatternWhenPayloadWritten(t *testing.T) {
 	t.Run("valid route", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/unsub"

@@ -9,7 +9,7 @@ import (
 )
 
 // TestShouldEncodeEnqueueWithoutDelay tests ENQUEUE encoding without delay.
-func TestShouldEncodeEnqueueWithoutDelay(t *testing.T) {
+func TestShouldEncodeEnqueueWithoutDelayGivenImmediateMessageWhenEncodeEnqueueCalled(t *testing.T) {
 	t.Run("simple message", func(t *testing.T) {
 		// Arrange
 		route := "queue://acme/app/tasks"
@@ -78,7 +78,7 @@ func TestShouldEncodeEnqueueWithoutDelay(t *testing.T) {
 }
 
 // TestShouldEncodeEnqueueWithDelay tests ENQUEUE encoding with delay.
-func TestShouldEncodeEnqueueWithDelay(t *testing.T) {
+func TestShouldEncodeEnqueueWithDelayGivenDelayedMessageWhenEncodeEnqueueCalled(t *testing.T) {
 	t.Run("with delay seconds", func(t *testing.T) {
 		// Arrange
 		route := "queue://acme/app/tasks"
@@ -111,7 +111,7 @@ func TestShouldEncodeEnqueueWithDelay(t *testing.T) {
 }
 
 // TestShouldEncodeReserveWithBatchAndWait tests RESERVE encoding with all optional fields.
-func TestShouldEncodeReserveWithBatchAndWait(t *testing.T) {
+func TestShouldEncodeReserveWithBatchAndWaitGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 	t.Run("full reserve request", func(t *testing.T) {
 		// Arrange
 		route := "queue://acme/app/tasks"
@@ -163,7 +163,7 @@ func TestShouldEncodeReserveWithBatchAndWait(t *testing.T) {
 }
 
 // TestShouldParseQueueResponse tests response parsing.
-func TestShouldParseQueueResponse(t *testing.T) {
+func TestShouldParseQueueResponseGivenBrokerPayloadWhenParseQueueResponseCalled(t *testing.T) {
 	t.Run("success response", func(t *testing.T) {
 		// Arrange
 		payload := []byte{0x00, 0x01, 0x02, 0x03} // status=0 + data
@@ -257,7 +257,7 @@ func TestShouldParseQueueResponse(t *testing.T) {
 }
 
 // TestShouldMapQueueError tests error message mapping.
-func TestShouldMapQueueError(t *testing.T) {
+func TestShouldMapQueueErrorGivenBrokerMessageWhenMapQueueErrorCalled(t *testing.T) {
 	t.Run("map invalid token", func(t *testing.T) {
 		// Arrange
 		errMsg := "invalid token provided"
@@ -407,7 +407,7 @@ func BenchmarkParseQueueResponse(b *testing.B) {
 }
 
 // TestShouldEncodeExtendRequest tests EXTEND operation encoding.
-func TestShouldEncodeExtendRequest(t *testing.T) {
+func TestShouldEncodeExtendRequestGivenLeaseFieldsWhenEncodeExtendCalled(t *testing.T) {
 	t.Run("valid extend parameters", func(t *testing.T) {
 		// Arrange
 		route := "queue://acme/jobs"
@@ -444,7 +444,7 @@ func TestShouldEncodeExtendRequest(t *testing.T) {
 }
 
 // TestShouldEncodeCompleteRequest tests COMPLETE operation encoding.
-func TestShouldEncodeCompleteRequest(t *testing.T) {
+func TestShouldEncodeCompleteRequestGivenLeaseFieldsWhenEncodeCompleteCalled(t *testing.T) {
 	t.Run("valid complete parameters", func(t *testing.T) {
 		// Arrange
 		route := "queue://acme/tasks"

@@ -1,6 +1,6 @@
 # Bug Tracking
 
-This directory contains bug reports discovered during cntryl-go SDK development and testing.
+This directory contains bug reports discovered during fitz-go SDK development and testing.
 
 ## Active Bugs
 

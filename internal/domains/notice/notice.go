@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -65,6 +66,8 @@ func NewClient(conn *connection.Connection) Client {
 	}
 	return c
 }
+
+var _ reconnect.DomainRestorer = (*client)(nil)
 
 // initNotifyHandler registers the NOTIFY handler on first use.
 func (c *client) initNotifyHandler() {
@@ -135,56 +138,13 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHa
 	}
 	c.initNotifyHandler()
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeSubscribe, subscribePayloadWriter(pattern))
+	sub, err := c.subscribe(ctx, pattern, handler)
 	if err != nil {
 		if log := c.conn.Logger(); log != nil {
 			log.Error("notice.Subscribe failed", "pattern", pattern, "error", err)
 		}
-		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+		return nil, err
 	}
-
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("notice.Subscribe failed", "pattern", pattern, "error", err)
-		}
-		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapNoticeError(err.Error()))
-	}
-	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("notice.Subscribe failed", "pattern", pattern, "status", "unexpected")
-		}
-		return nil, fmt.Errorf("SUBSCRIBE failed: unexpected status")
-	}
-
-	// Parse optional subscription_id: [u8 has_sub_id][u64 sub_id if has=1]
-	if len(remaining) < 1 {
-		return nil, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
-	}
-	hasSubID := remaining[0]
-	if hasSubID != 1 {
-		return nil, fmt.Errorf("SUBSCRIBE response missing subscription_id")
-	}
-	if len(remaining) < 9 {
-		return nil, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
-	}
-
-	subID, _, err := connection.ReadU64BE(remaining, 1)
-	if err != nil {
-		return nil, fmt.Errorf("parse subscription_id: %w", err)
-	}
-
-	sub := &Subscription{
-		subID:   subID,
-		route:   pattern,
-		client:  c,
-		handler: handler,
-	}
-
-	c.mu.Lock()
-	c.subscriptions[subID] = sub
-	c.mu.Unlock()
-
 	return sub, nil
 }
 
@@ -202,4 +162,77 @@ func (c *client) unsubscribe(sub *Subscription) {
 		return
 	}
 	connection.ParseStandardResponse(resp)
+}
+
+func (c *client) ReplaceConnection(conn *connection.Connection) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.conn = conn
+	if c.initialized {
+		c.conn.RegisterNotifyHandler(protocol.MessageTypeNoticeNotify, c.handleNotify)
+	}
+}
+
+func (c *client) RestoreSubscriptions(ctx context.Context) error {
+	c.mu.RLock()
+	snapshot := make([]*Subscription, 0, len(c.subscriptions))
+	for _, sub := range c.subscriptions {
+		snapshot = append(snapshot, &Subscription{route: sub.route, handler: sub.handler, client: c})
+	}
+	c.mu.RUnlock()
+
+	restored := make(map[uint64]*Subscription, len(snapshot))
+	for _, sub := range snapshot {
+		restoredSub, err := c.subscribe(ctx, sub.route, sub.handler)
+		if err != nil {
+			return err
+		}
+		restored[restoredSub.subID] = restoredSub
+	}
+
+	c.mu.Lock()
+	c.subscriptions = restored
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *client) subscribe(ctx context.Context, pattern string, handler NoticeHandler) (*Subscription, error) {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeSubscribe, subscribePayloadWriter(pattern))
+	if err != nil {
+		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+	}
+
+	success, remaining, err := connection.ParseStandardResponse(resp)
+	if err != nil {
+		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapNoticeError(err.Error()))
+	}
+	if !success {
+		return nil, fmt.Errorf("SUBSCRIBE failed: unexpected status")
+	}
+
+	if len(remaining) < 1 {
+		return nil, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
+	}
+	if remaining[0] != 1 {
+		return nil, fmt.Errorf("SUBSCRIBE response missing subscription_id")
+	}
+	if len(remaining) < 9 {
+		return nil, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
+	}
+
+	subID, _, err := connection.ReadU64BE(remaining, 1)
+	if err != nil {
+		return nil, fmt.Errorf("parse subscription_id: %w", err)
+	}
+
+	sub := &Subscription{
+		subID:   subID,
+		route:   pattern,
+		client:  c,
+		handler: handler,
+	}
+	c.mu.Lock()
+	c.subscriptions[subID] = sub
+	c.mu.Unlock()
+	return sub, nil
 }

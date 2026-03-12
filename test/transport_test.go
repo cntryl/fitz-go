@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/domains/kv"
 	"github.com/cntryl/fitz-go/internal/domains/notice"
 	"github.com/cntryl/fitz-go/internal/domains/rpc"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,6 +53,59 @@ func TestShouldConnectViaWebSocketGivenValidAddressWhenWebSocketTransportUsed(t 
 	// Assert
 	client := f.Client()
 	require.NotNil(t, client, "expected non-nil client after successful WebSocket connection")
+}
+
+func TestShouldAuthenticateGivenValidJWTWhenAuthEnabledBrokerConfigured(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
+		// Arrange
+		f := fixture.NewTestFixture(t, transportType)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Act
+		f.ConnectWithAuthOrSkip(ctx, fixture.AuthModeValidJWT)
+
+		// Assert
+		require.NotNil(t, f.Client())
+	})
+}
+
+func TestShouldRejectExpiredJWTGivenAuthEnabledBrokerConfiguredWhenConnectCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
+		// Arrange
+		f := fixture.NewTestFixture(t, transportType)
+		f.SetAuthMode(fixture.AuthModeExpiredJWT)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Act
+		err := f.Connect(ctx)
+
+		// Assert
+		if err == nil {
+			t.Skip("auth-enabled broker not configured")
+		}
+		require.Error(t, err)
+	})
+}
+
+func TestShouldRejectInvalidSignatureJWTGivenAuthEnabledBrokerConfiguredWhenConnectCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
+		// Arrange
+		f := fixture.NewTestFixture(t, transportType)
+		f.SetAuthMode(fixture.AuthModeInvalidSignature)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Act
+		err := f.Connect(ctx)
+
+		// Assert
+		if err == nil {
+			t.Skip("auth-enabled broker not configured")
+		}
+		require.Error(t, err)
+	})
 }
 
 // TestShouldProduceIdenticalBehaviorGivenSameOperationWhenDifferentTransports
@@ -139,6 +194,89 @@ func TestShouldDropSessionStateGivenDisconnectWhenReconnect(t *testing.T) {
 		// Assert — old subscription should NOT be recovered; publish should
 		// not deliver to old handler. We verify the new client is usable.
 		require.NotNil(t, f2.Client())
+	})
+}
+
+// TestShouldNotRecoverNoticeSubscriptionGivenDisconnectWhenReconnectedWithoutResubscribe
+// verifies session-scoped notice subscriptions are not preserved across disconnects.
+func TestShouldNotRecoverNoticeSubscriptionGivenDisconnectWhenReconnectedWithoutResubscribe(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		// Arrange
+		subscriber := fixture.NewTestFixture(t, transport)
+		reconnected := fixture.NewTestFixture(t, transport)
+		publisher := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		subscriber.ConnectOrSkip(ctx)
+		publisher.ConnectOrSkip(ctx)
+
+		route := subscriber.UniqueRoute("notice")
+		received := make(chan struct{}, 2)
+
+		sub, err := subscriber.Client().Notice().Subscribe(ctx, route, func(_ context.Context, _ notice.NoticeMsg) error {
+			received <- struct{}{}
+			return nil
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, publisher.Client().Notice().Publish(ctx, route, []byte("before-disconnect")))
+		select {
+		case <-received:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for initial notice delivery")
+		}
+
+		// Act
+		require.NoError(t, subscriber.Client().Close())
+		sub.Unsubscribe()
+		reconnected.ConnectOrSkip(ctx)
+		require.NoError(t, publisher.Client().Notice().Publish(ctx, route, []byte("after-disconnect")))
+
+		// Assert
+		select {
+		case <-received:
+			t.Fatal("unexpected notice delivery after reconnect without resubscribe")
+		case <-time.After(750 * time.Millisecond):
+		}
+		require.NotNil(t, reconnected.Client())
+	})
+}
+
+func TestShouldRejectNonConnectFrameGivenNewTransportWhenFrameSentBeforeAuthentication(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
+		// Arrange
+		addr, stop, err := fixture.StartBrokerIfNeeded(transportType)
+		if err != nil {
+			t.Skipf("broker not available: %v", err)
+		}
+		t.Cleanup(stop)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var trans transport.Transport
+		switch transportType {
+		case fixture.TransportTCP:
+			trans, err = transport.DialTCP(ctx, addr)
+		case fixture.TransportWebSocket:
+			trans, err = transport.DialWebSocket(ctx, addr)
+		default:
+			t.Fatalf("unsupported transport: %s", transportType)
+		}
+		if err != nil {
+			t.Skipf("broker not available: %v", err)
+		}
+		t.Cleanup(func() { _ = trans.Close() })
+
+		frame := protocol.EncodeFrameOwned(protocol.MessageTypeKvBegin, nil)
+		defer frame.Release()
+
+		// Act
+		require.NoError(t, trans.Write(ctx, frame.Bytes()))
+		_, err = trans.Read(ctx)
+
+		// Assert
+		require.Error(t, err)
 	})
 }
 

@@ -25,47 +25,57 @@ func newTestTCPTransport(conn *testkit.MockTCPConn) *TCPTransport {
 	}
 }
 
-// TestShouldConnectViaTCP tests basic TCP connection establishment.
-func TestShouldConnectViaTCP(t *testing.T) {
-	// This test requires a mock listener or would connect to a real server
-	// For unit test purposes, we verify the constructor doesn't panic
+// TestShouldReturnErrorGivenNoServerWhenDialTCPCalled tests TCP dial failure behavior.
+func TestShouldReturnErrorGivenNoServerWhenDialTCPCalled(t *testing.T) {
+	// Arrange
 	addr := "localhost:9999"
+
+	// Act
 	_, err := DialTCP(context.Background(), addr)
-	// Expected to fail since no server is listening, but should not panic
+
+	// Assert
 	assert.Error(t, err)
 }
 
-// TestShouldWriteFrameWithLengthPrefix tests TCP frame writing.
-func TestShouldWriteFrameWithLengthPrefix(t *testing.T) {
+// TestShouldWriteFrameWithLengthPrefixGivenPayloadWhenWriteCalled tests TCP write framing.
+func TestShouldWriteFrameWithLengthPrefixGivenPayloadWhenWriteCalled(t *testing.T) {
 	t.Run("valid payload", func(t *testing.T) {
-		// Create a mock connection pair
+		// Arrange
 		conn := &testkit.MockTCPConn{
 			Written: make([]byte, 0),
 		}
 		transport := newTestTCPTransport(conn)
 
 		payload := []byte{0x01, 0x02, 0x03}
+
+		// Act
 		err := transport.Write(context.Background(), payload)
 
+		// Assert
 		require.NoError(t, err)
 		require.Greater(t, len(conn.Written), 4) // At least 4 bytes for length prefix
 	})
 
 	t.Run("empty payload", func(t *testing.T) {
+		// Arrange
 		conn := &testkit.MockTCPConn{
 			Written: make([]byte, 0),
 		}
 		transport := newTestTCPTransport(conn)
 
 		payload := []byte{}
+
+		// Act
 		err := transport.Write(context.Background(), payload)
 
+		// Assert
 		require.NoError(t, err)
 	})
 }
 
-// TestShouldTimeoutReadGivenContext tests write timeout.
-func TestShouldTimeoutWriteGivenContext(t *testing.T) {
+// TestShouldTimeoutWriteGivenShortDeadlineWhenWriteCalled tests write timeout handling.
+func TestShouldTimeoutWriteGivenShortDeadlineWhenWriteCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockTCPConn{
 		WriteDelay: 100 * time.Millisecond,
 		Written:    make([]byte, 0),
@@ -75,45 +85,52 @@ func TestShouldTimeoutWriteGivenContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
+	// Act
 	err := transport.Write(ctx, []byte{0x01})
 
+	// Assert
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded))
 }
 
-// TestShouldReadFrameWithLengthPrefix tests TCP frame reading.
-func TestShouldReadFrameWithLengthPrefix(t *testing.T) {
+// TestShouldReadFrameWithLengthPrefixGivenFramedPayloadWhenReadCalled tests TCP read framing.
+func TestShouldReadFrameWithLengthPrefixGivenFramedPayloadWhenReadCalled(t *testing.T) {
 	t.Run("valid prefixed data", func(t *testing.T) {
-		// Prepare frame: [0x00 0x00 0x00 0x05][0x01 0x02 0x03 0x04 0x05]
+		// Arrange
 		frame := []byte{0x00, 0x00, 0x00, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}
 		conn := &testkit.MockTCPConn{
 			ToRead: frame,
 		}
 		transport := newTestTCPTransport(conn)
 
+		// Act
 		data, err := transport.Read(context.Background())
 
+		// Assert
 		require.NoError(t, err)
 		assert.Equal(t, []byte{0x01, 0x02, 0x03, 0x04, 0x05}, data)
 	})
 
 	t.Run("empty payload", func(t *testing.T) {
-		// Prepare frame: [0x00 0x00 0x00 0x00]
+		// Arrange
 		frame := []byte{0x00, 0x00, 0x00, 0x00}
 		conn := &testkit.MockTCPConn{
 			ToRead: frame,
 		}
 		transport := newTestTCPTransport(conn)
 
+		// Act
 		data, err := transport.Read(context.Background())
 
+		// Assert
 		require.NoError(t, err)
 		assert.Equal(t, []byte{}, data)
 	})
 }
 
-// TestShouldTimeoutReadGivenDeadline tests read timeout.
-func TestShouldTimeoutReadGivenDeadline(t *testing.T) {
+// TestShouldTimeoutReadGivenShortDeadlineWhenReadCalled tests read timeout handling.
+func TestShouldTimeoutReadGivenShortDeadlineWhenReadCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockTCPConn{
 		Blocked: true, // Block forever
 	}
@@ -122,45 +139,56 @@ func TestShouldTimeoutReadGivenDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
+	// Act
 	_, err := transport.Read(ctx)
 
+	// Assert
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded))
 }
 
-// TestShouldCloseGracefully tests transport close.
-func TestShouldCloseGracefully(t *testing.T) {
+// TestShouldCloseGracefullyGivenOpenTransportWhenCloseCalled tests TCP close behavior.
+func TestShouldCloseGracefullyGivenOpenTransportWhenCloseCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockTCPConn{}
 	transport := newTestTCPTransport(conn)
 
+	// Act
 	err := transport.Close()
 
+	// Assert
 	require.NoError(t, err)
 	assert.True(t, conn.Closed)
 }
 
-// TestShouldReturnRemoteAddr tests remote address retrieval.
-func TestShouldReturnRemoteAddr(t *testing.T) {
+// TestShouldReturnRemoteAddrGivenTransportWhenRemoteAddrCalled tests remote address reporting.
+func TestShouldReturnRemoteAddrGivenTransportWhenRemoteAddrCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockTCPConn{
 		RemoteAddrString: "127.0.0.1:4091",
 	}
 	transport := newTestTCPTransport(conn)
 
+	// Act
 	addr := transport.RemoteAddr()
 
+	// Assert
 	assert.Equal(t, "127.0.0.1:4091", addr)
 }
 
-// TestShouldRejectContextCancelled tests context cancellation handling.
-func TestShouldRejectContextCancelled(t *testing.T) {
+// TestShouldRejectWriteGivenCanceledContextWhenWriteCalled tests context cancellation handling.
+func TestShouldRejectWriteGivenCanceledContextWhenWriteCalled(t *testing.T) {
+	// Arrange
 	conn := &testkit.MockTCPConn{}
 	transport := newTestTCPTransport(conn)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel before write
 
+	// Act
 	err := transport.Write(ctx, []byte{0x01})
 
+	// Assert
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, context.Canceled))
 }

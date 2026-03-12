@@ -10,7 +10,7 @@ import (
 )
 
 // TestShouldMapRPCError tests error message mapping.
-func TestShouldMapRPCError(t *testing.T) {
+func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) {
 	t.Run("map no workers error", func(t *testing.T) {
 		// Arrange
 		errMsg := "no workers available for request"
@@ -70,7 +70,7 @@ func TestShouldMapRPCError(t *testing.T) {
 }
 
 // TestShouldDefineRPCOpcodes tests that RPC opcodes are properly defined.
-func TestShouldDefineRPCOpcodes(t *testing.T) {
+func TestShouldDefineRPCOpcodesGivenConstantsWhenRead(t *testing.T) {
 	t.Run("subscribe worker opcode", func(t *testing.T) {
 		assert.Equal(t, uint16(300), RPCSubscribeWorker)
 	})
@@ -107,7 +107,7 @@ func TestShouldDefineRPCOpcodes(t *testing.T) {
 }
 
 // TestShouldDefineRPCErrors tests that RPC error variables are defined.
-func TestShouldDefineRPCErrors(t *testing.T) {
+func TestShouldDefineRPCErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("no workers error defined", func(t *testing.T) {
 		assert.NotNil(t, ErrNoWorkers)
 		assert.Equal(t, "no workers available", ErrNoWorkers.Error())
@@ -120,7 +120,7 @@ func TestShouldDefineRPCErrors(t *testing.T) {
 }
 
 // TestShouldEncodeRPCSubscribeWorker tests RPC SUBSCRIBE_WORKER encoding.
-func TestShouldEncodeRPCSubscribeWorker(t *testing.T) {
+func TestShouldEncodeRPCSubscribeWorkerGivenWorkerRouteWhenEncodeRPCSubscribeWorkerCalled(t *testing.T) {
 	t.Run("valid worker route", func(t *testing.T) {
 		// Arrange
 		route := "rpc://acme/jobs/process"
@@ -160,7 +160,7 @@ func TestShouldEncodeRPCSubscribeWorker(t *testing.T) {
 }
 
 // TestShouldEncodeRPCUnsubscribeWorker tests RPC UNSUBSCRIBE_WORKER encoding.
-func TestShouldEncodeRPCUnsubscribeWorker(t *testing.T) {
+func TestShouldEncodeRPCUnsubscribeWorkerGivenWorkerRouteWhenEncodeRPCUnsubscribeWorkerCalled(t *testing.T) {
 	t.Run("valid worker route", func(t *testing.T) {
 		// Arrange
 		route := "rpc://acme/tasks/handler"
@@ -185,7 +185,7 @@ func TestShouldEncodeRPCUnsubscribeWorker(t *testing.T) {
 }
 
 // TestShouldEncodeRPCRequest tests RPC REQUEST encoding.
-func TestShouldEncodeRPCRequest(t *testing.T) {
+func TestShouldEncodeRPCRequestGivenCorrelationAndBodyWhenEncodeRPCRequestCalled(t *testing.T) {
 	t.Run("valid request with all fields", func(t *testing.T) {
 		// Arrange
 		var correlationID [16]byte
@@ -248,7 +248,7 @@ func TestShouldEncodeRPCRequest(t *testing.T) {
 }
 
 // TestShouldEncodeRPCResponse tests RPC RESPONSE encoding.
-func TestShouldEncodeRPCResponse(t *testing.T) {
+func TestShouldEncodeRPCResponseGivenCorrelationAndBodyWhenEncodeRPCResponseCalled(t *testing.T) {
 	t.Run("valid response not stream end", func(t *testing.T) {
 		// Arrange
 		var correlationID [16]byte
