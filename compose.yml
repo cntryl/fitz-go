@@ -31,7 +31,6 @@ services:
     restart: unless-stopped
     healthcheck:
       disable: true
-
   fitz-anon:
     build:
       context: ../fitz
