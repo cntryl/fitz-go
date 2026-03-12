@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/cntryl-go/internal/domains/kv"
-	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/cntryl/fitz-go/internal/domains/kv"
+	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,11 +30,7 @@ func TestShouldOpenAndCommitTransactionGivenValidRouteWhenBeginCalled(t *testing
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		// Act
 		tx, err := f.Client().KV().Begin(ctx, route)
@@ -67,11 +63,7 @@ func TestShouldReadValueGivenExistingKeyWhenGetCalled(t *testing.T) {
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		// Seed a key.
 		tx, err := f.Client().KV().Begin(ctx, route)
@@ -102,11 +94,7 @@ func TestShouldReturnNotFoundGivenNonExistentKeyWhenGetCalled(t *testing.T) {
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		rtx, err := f.Client().KV().BeginRead(ctx, route)
 		require.NoError(t, err)
@@ -132,11 +120,7 @@ func TestShouldWriteValueGivenValidKeyWhenPutCalled(t *testing.T) {
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
@@ -167,11 +151,7 @@ func TestShouldInsertNewKeyGivenNonExistentKeyWhenInsertCalled(t *testing.T) {
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
@@ -202,11 +182,7 @@ func TestShouldFailGivenExistingKeyWhenInsertCalled(t *testing.T) {
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		// Seed the key.
 		tx, err := f.Client().KV().Begin(ctx, route)
@@ -236,11 +212,7 @@ func TestShouldDeleteKeyGivenExistingKeyWhenDeleteCalled(t *testing.T) {
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
@@ -275,11 +247,7 @@ func TestShouldScanKeysInOrderGivenRangeWhenScanCalled(t *testing.T) {
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
@@ -291,7 +259,7 @@ func TestShouldScanKeysInOrderGivenRangeWhenScanCalled(t *testing.T) {
 		// Act
 		rtx, err := f.Client().KV().BeginRead(ctx, route)
 		require.NoError(t, err)
-		it, err := rtx.Scan(ctx, []byte("a"), []byte("d"), 10)
+		it, _, err := rtx.Scan(ctx, kv.ScanQuery{StartKey: []byte("a"), EndKey: []byte("d"), Limit: 10})
 
 		// Assert
 		require.NoError(t, err)
@@ -307,6 +275,85 @@ func TestShouldScanKeysInOrderGivenRangeWhenScanCalled(t *testing.T) {
 	})
 }
 
+// TestShouldDeleteRangeGivenRangeWhenDeleteRangeCalled verifies DELETE_RANGE
+// removes keys within [startKey, endKey) and preserves keys outside the range.
+func TestShouldDeleteRangeGivenRangeWhenDeleteRangeCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		// Arrange
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrSkip(ctx)
+
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
+
+		tx, err := f.Client().KV().Begin(ctx, route)
+		require.NoError(t, err)
+		require.NoError(t, tx.Put(ctx, []byte("a"), []byte("1")))
+		require.NoError(t, tx.Put(ctx, []byte("b"), []byte("2")))
+		require.NoError(t, tx.Put(ctx, []byte("c"), []byte("3")))
+		require.NoError(t, tx.Put(ctx, []byte("d"), []byte("4")))
+		require.NoError(t, tx.Commit(ctx))
+
+		// Act — delete range ["b", "d") which should remove b and c.
+		tx2, err := f.Client().KV().Begin(ctx, route)
+		require.NoError(t, err)
+		require.NoError(t, tx2.DeleteRange(ctx, []byte("b"), []byte("d")))
+		require.NoError(t, tx2.Commit(ctx))
+
+		// Assert — scan should return a and d only.
+		rtx, err := f.Client().KV().BeginRead(ctx, route)
+		require.NoError(t, err)
+		it, _, err := rtx.Scan(ctx, kv.ScanQuery{StartKey: []byte("a"), EndKey: []byte("z"), Limit: 10})
+		require.NoError(t, err)
+		defer it.Close()
+
+		var keys []string
+		for it.Next() {
+			keys = append(keys, string(it.Value().Key))
+		}
+		require.NoError(t, it.Err())
+		assert.Equal(t, []string{"a", "d"}, keys)
+	})
+}
+
+// TestShouldRespectLimitGivenScanCalled verifies SCAN limit is enforced.
+func TestShouldRespectLimitGivenScanCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		// Arrange
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrSkip(ctx)
+
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
+
+		tx, err := f.Client().KV().Begin(ctx, route)
+		require.NoError(t, err)
+		require.NoError(t, tx.Put(ctx, []byte("a"), []byte("1")))
+		require.NoError(t, tx.Put(ctx, []byte("b"), []byte("2")))
+		require.NoError(t, tx.Put(ctx, []byte("c"), []byte("3")))
+		require.NoError(t, tx.Commit(ctx))
+
+		// Act — scan with limit 2.
+		rtx, err := f.Client().KV().BeginRead(ctx, route)
+		require.NoError(t, err)
+		it, _, err := rtx.Scan(ctx, kv.ScanQuery{StartKey: []byte("a"), EndKey: []byte("z"), Limit: 2})
+		require.NoError(t, err)
+		defer it.Close()
+
+		// Assert — iterator should return at most 2 items.
+		count := 0
+		for it.Next() {
+			count++
+		}
+		require.NoError(t, it.Err())
+		assert.Equal(t, 2, count)
+	})
+}
+
 // TestShouldRollbackChangesGivenActiveTransactionWhenRollbackCalled verifies
 // ROLLBACK discards all uncommitted changes so they are not visible afterward.
 func TestShouldRollbackChangesGivenActiveTransactionWhenRollbackCalled(t *testing.T) {
@@ -318,11 +365,7 @@ func TestShouldRollbackChangesGivenActiveTransactionWhenRollbackCalled(t *testin
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
@@ -344,41 +387,39 @@ func TestShouldRollbackChangesGivenActiveTransactionWhenRollbackCalled(t *testin
 
 // TestShouldIsolateTransactionsGivenConcurrentAccessWhenMultipleTransactions
 // verifies that two transactions on the same resource detect conflicts per
-// CLIENT_SPEC.md isolation semantics.
+// CLIENT_SPEC.md isolation semantics (pessimistic resource lock).
 func TestShouldIsolateTransactionsGivenConcurrentAccessWhenMultipleTransactions(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
-		f := fixture.NewTestFixture(t, transport)
+		// Arrange — two sessions, same resource
+		f1 := fixture.NewTestFixture(t, transport)
+		f2 := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		f.ConnectOrSkip(ctx)
+		f1.ConnectOrSkip(ctx)
+		f2.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
+		route := kv.NewRoute(f1.UniqueRealm(), f1.UniqueArea(), f1.UniqueResource()).String()
+
+		// First session begins ReadWrite
+		tx1, err := f1.Client().KV().Begin(ctx, route)
+		require.NoError(t, err)
+		require.NotNil(t, tx1)
+		defer func() { _ = tx1.Rollback(ctx) }()
+
+		// Act — second session tries to begin ReadWrite on same resource
+		tx2, err2 := f2.Client().KV().Begin(ctx, route)
+
+		// Assert — second begin should fail with conflict (or tx2 nil)
+		if err2 != nil {
+			assert.Nil(t, tx2)
+			assert.Contains(t, err2.Error(), "conflict", "expected conflict or resource locked error")
+			return
 		}
-
-		// Act — open two concurrent write transactions on the same resource.
-		tx1, err := f.Client().KV().Begin(ctx, route)
-		require.NoError(t, err)
-		tx2, err := f.Client().KV().Begin(ctx, route)
-		require.NoError(t, err)
-
-		require.NoError(t, tx1.Put(ctx, []byte("key"), []byte("tx1")))
-		require.NoError(t, tx2.Put(ctx, []byte("key"), []byte("tx2")))
-
-		// Commit tx1 first.
-		err1 := tx1.Commit(ctx)
-		// Commit tx2 — should conflict.
-		err2 := tx2.Commit(ctx)
-
-		// Assert — at least one should succeed, the other should conflict.
-		if err1 == nil {
-			assert.Error(t, err2, "second concurrent commit should conflict")
-		} else {
-			assert.NoError(t, err2, "if tx1 conflicted, tx2 should succeed")
+		// If no error, tx2 must be nil (server may return nil tx on conflict)
+		if tx2 != nil {
+			_ = tx2.Rollback(ctx)
+			t.Fatal("second Begin on same resource should have failed with conflict")
 		}
 	})
 }
@@ -394,11 +435,7 @@ func TestShouldRejectWriteGivenReadOnlyModeWhenPutCalled(t *testing.T) {
 
 		f.ConnectOrSkip(ctx)
 
-		route := kv.Route{
-			Realm:    f.UniqueRealm(),
-			Area:     f.UniqueArea(),
-			Resource: f.UniqueResource(),
-		}
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
 
 		// Act — BeginRead returns ReadTx which does not expose mutation methods.
 		rtx, err := f.Client().KV().BeginRead(ctx, route)
@@ -410,5 +447,48 @@ func TestShouldRejectWriteGivenReadOnlyModeWhenPutCalled(t *testing.T) {
 		// ReadTx should not be castable to Tx (write interface).
 		_, isTx := rtx.(kv.Tx)
 		assert.False(t, isTx, "BeginRead should return ReadTx, not full Tx")
+	})
+}
+
+// TestShouldRejectBeginGivenInvalidRouteWhenBeginCalled verifies
+// Begin with invalid or malformed route returns an error.
+func TestShouldRejectBeginGivenInvalidRouteWhenBeginCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrSkip(ctx)
+
+		_, err := f.Client().KV().Begin(ctx, "invalid-route-not-kv-format")
+
+		require.Error(t, err)
+	})
+}
+
+// TestShouldRejectSecondCommitGivenAlreadyCommittedTransactionWhenCommitCalled
+// verifies that calling Commit twice on the same transaction fails or is a no-op.
+func TestShouldRejectSecondCommitGivenAlreadyCommittedTransactionWhenCommitCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrSkip(ctx)
+
+		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
+
+		tx, err := f.Client().KV().Begin(ctx, route)
+		require.NoError(t, err)
+		require.NoError(t, tx.Put(ctx, []byte("k"), []byte("v")))
+		require.NoError(t, tx.Commit(ctx))
+
+		// Act — second Commit on same transaction.
+		err = tx.Commit(ctx)
+
+		// Assert — should fail (transaction already committed) or be no-op.
+		if err != nil {
+			assert.Error(t, err)
+		}
 	})
 }

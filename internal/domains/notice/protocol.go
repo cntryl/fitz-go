@@ -1,8 +1,12 @@
 package notice
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/cntryl/fitz-go/internal/core/encoding"
 )
 
 // Wire operation codes for Notice domain. Values are message type identifiers.
@@ -14,12 +18,30 @@ const (
 	NoticeNotify         uint16 = 504
 )
 
-// Domain-specific errors.
+// Domain-specific errors. Returned when the server rejects a request or the operation fails.
+//   - ErrNoticeRouteInvalid: publish or subscribe route/pattern is invalid.
+//   - ErrNoticeTimeout: the operation timed out.
+//   - ErrNoticeSendFailed: publish or subscribe request failed.
 var (
 	ErrNoticeRouteInvalid = errors.New("invalid notice route")
 	ErrNoticeTimeout      = errors.New("notice operation timed out")
 	ErrNoticeSendFailed   = errors.New("notice send failed")
 )
+
+// mapNoticeError maps a broker error message to a domain-specific Go error.
+func mapNoticeError(msg string) error {
+	l := strings.ToLower(msg)
+	switch {
+	case strings.Contains(l, "route") && (strings.Contains(l, "invalid") || strings.Contains(l, "bad")):
+		return ErrNoticeRouteInvalid
+	case strings.Contains(l, "timeout") || strings.Contains(l, "timed out"):
+		return ErrNoticeTimeout
+	case strings.Contains(l, "send") || strings.Contains(l, "failed"):
+		return ErrNoticeSendFailed
+	default:
+		return errors.New(msg)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Wire encoding / decoding helpers (custom binary format, not TLV)
@@ -27,8 +49,8 @@ var (
 
 func encodePublish(route string, body []byte) []byte {
 	routeBytes := []byte(route)
-	buf := make([]byte, 0, 8+4+len(routeBytes)+4+len(body))
-	buf = appendU64(buf, 0)
+	totalLen := 4 + len(routeBytes) + 4 + len(body)
+	buf := make([]byte, 0, totalLen)
 	buf = appendU32(buf, uint32(len(routeBytes)))
 	buf = append(buf, routeBytes...)
 	buf = appendU32(buf, uint32(len(body)))
@@ -36,19 +58,31 @@ func encodePublish(route string, body []byte) []byte {
 	return buf
 }
 
+func publishPayloadWriter(route string, body []byte) func(*bytes.Buffer) {
+	return func(buf *bytes.Buffer) {
+		encoding.WriteRoute(buf, route)
+		encoding.WriteBytes(buf, body)
+	}
+}
+
 func encodeSubscribe(route string) []byte {
-	pat := []byte(route)
-	buf := make([]byte, 0, 8+4+len(pat)+8+4)
-	buf = appendU64(buf, 0)
-	buf = appendU32(buf, uint32(len(pat)))
-	buf = append(buf, pat...)
-	buf = appendU64(buf, 0)
-	buf = appendU32(buf, 0)
-	return buf
+	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
+		encoding.WriteRoute(buf, route)
+	})
+}
+
+func subscribePayloadWriter(route string) func(*bytes.Buffer) {
+	return func(buf *bytes.Buffer) {
+		encoding.WriteRoute(buf, route)
+	}
 }
 
 func encodeUnsubscribe(route string) []byte {
 	return encodeSubscribe(route)
+}
+
+func unsubscribePayloadWriter(route string) func(*bytes.Buffer) {
+	return subscribePayloadWriter(route)
 }
 
 func DecodeNotify(body []byte) (string, []byte, bool) {
@@ -64,11 +98,10 @@ func DecodeNotify(body []byte) (string, []byte, bool) {
 }
 
 func decodeFirstRoute(body []byte) (int, string, bool) {
-	if len(body) < 12 {
+	if len(body) < 4 {
 		return 0, "", false
 	}
 	idx := 0
-	idx += 8 // family_id
 	routeLen := readU32(body[idx:])
 	idx += 4
 	if int(idx+int(routeLen)) > len(body) {

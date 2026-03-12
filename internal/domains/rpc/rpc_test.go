@@ -1,350 +1,419 @@
 package rpc
 
 import (
-	"context"
-	"errors"
-	"fmt"
+	"encoding/binary"
 	"testing"
-	"time"
 
-	"github.com/cntryl/cntryl-go/internal/core/transport"
+	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// testNewClient creates an RPC client for testing.
-func testNewClient(mux transport.MuxProvider) Client {
-	return NewClient(mux)
-}
+// TestShouldMapRPCError tests error message mapping.
+func TestShouldMapRPCError(t *testing.T) {
+	t.Run("map no workers error", func(t *testing.T) {
+		// Arrange
+		errMsg := "no workers available for request"
 
-// mockMux implements the muxProvider interface for tests.
-type mockMux struct {
-	sendCh chan transport.Frame
-	inCh   chan transport.Frame
-	ctx    context.Context
-	cb     func()
-}
+		// Act
+		mapped := mapRPCError(errMsg)
 
-func newMockMux() *mockMux {
-	return &mockMux{sendCh: make(chan transport.Frame, 16), inCh: make(chan transport.Frame, 16), ctx: context.Background()}
-}
-
-func (m *mockMux) Send(f transport.Frame) error {
-	m.sendCh <- f
-	return nil
-}
-
-func (m *mockMux) In() <-chan transport.Frame { return m.inCh }
-func (m *mockMux) Ctx() context.Context       { return m.ctx }
-func (m *mockMux) OnReconnect(fn func())      { m.cb = fn }
-
-// ---------------------------------------------------------------------------
-// Helper: build a streaming RESPONSE frame
-// ---------------------------------------------------------------------------
-
-func buildResponseFrame(id, seq uint64, body []byte, streamEnd bool) transport.Frame {
-	enc := transport.NewTLVEncoder()
-	enc.AddUint64(transport.TagID, id)
-	enc.AddUint64(transport.TagSeq, seq)
-	if len(body) > 0 {
-		enc.AddBytes(transport.TagBody, body)
-	}
-	if streamEnd {
-		enc.AddUint8(transport.TagStreamEnd, 1)
-	} else {
-		enc.AddUint8(transport.TagStreamEnd, 0)
-	}
-	return transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelRPC, Body: enc.Encode()}
-}
-
-func buildErrorFrame(id uint64, errMsg string) transport.Frame {
-	enc := transport.NewTLVEncoder()
-	enc.AddUint64(transport.TagID, id)
-	enc.AddString(transport.TagErr, errMsg)
-	return transport.Frame{Type: transport.FrameTypeErr, Channel: transport.ChannelRPC, Body: enc.Encode()}
-}
-
-// ---------------------------------------------------------------------------
-// Call tests
-// ---------------------------------------------------------------------------
-
-func TestShouldReturnSingleResponseGivenCallWhenServerReplies(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-
-	route := "rpc://realm/area/resource"
-	reqBody := []byte("hello")
-	respBody := []byte("world")
-
-	// Act: simulate broker replying with a single-frame streaming response
-	errCh := make(chan error, 1)
-	go func() {
-		f := <-m.sendCh
-		if f.Type != transport.FrameTypeReq {
-			errCh <- fmt.Errorf("expected FrameTypeReq, got %d", f.Type)
-			return
-		}
-		dec, err := transport.NewTLVDecoder(f.Body)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		id, err := dec.GetUint64(transport.TagID)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		// Send single response with stream_end=1
-		m.inCh <- buildResponseFrame(id, 0, respBody, true)
-		errCh <- nil
-	}()
-
-	it, err := c.Call(context.Background(), route, reqBody, time.Second)
-
-	// Assert
-	require.NoError(t, err)
-	require.True(t, it.Next())
-	assert.Equal(t, respBody, it.Value().Body)
-	assert.Equal(t, uint64(0), it.Value().Sequence)
-	assert.False(t, it.Next())
-	assert.NoError(t, it.Err())
-	assert.NoError(t, it.Close())
-	require.NoError(t, <-errCh)
-}
-
-func TestShouldStreamMultipleResponsesGivenCallWhenServerStreams(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-
-	route := "rpc://realm/area/resource"
-
-	errCh := make(chan error, 1)
-	go func() {
-		f := <-m.sendCh
-		dec, err := transport.NewTLVDecoder(f.Body)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		id, err := dec.GetUint64(transport.TagID)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		// Stream 3 frames then end
-		m.inCh <- buildResponseFrame(id, 0, []byte("a"), false)
-		m.inCh <- buildResponseFrame(id, 1, []byte("b"), false)
-		m.inCh <- buildResponseFrame(id, 2, []byte("c"), true)
-		errCh <- nil
-	}()
-
-	// Act
-	it, err := c.Call(context.Background(), route, []byte("go"), time.Second)
-
-	// Assert
-	require.NoError(t, err)
-	var results []string
-	for it.Next() {
-		results = append(results, string(it.Value().Body))
-	}
-	assert.NoError(t, it.Err())
-	assert.Equal(t, []string{"a", "b", "c"}, results)
-	assert.NoError(t, it.Close())
-	require.NoError(t, <-errCh)
-}
-
-func TestShouldReturnErrorGivenCallWhenServerSendsErr(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-
-	route := "rpc://realm/area/resource"
-	serverErr := "boom"
-
-	errCh := make(chan error, 1)
-	go func() {
-		f := <-m.sendCh
-		dec, err := transport.NewTLVDecoder(f.Body)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		id, err := dec.GetUint64(transport.TagID)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		m.inCh <- buildErrorFrame(id, serverErr)
-		errCh <- nil
-	}()
-
-	// Act
-	it, err := c.Call(context.Background(), route, []byte("hello"), time.Second)
-
-	// Assert
-	require.NoError(t, err)
-	assert.False(t, it.Next())
-	require.Error(t, it.Err())
-	assert.Contains(t, it.Err().Error(), serverErr)
-	assert.NoError(t, it.Close())
-	require.NoError(t, <-errCh)
-}
-
-func TestShouldReturnTimeoutGivenCallWhenNoResponse(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-
-	// Act — don't reply
-	it, err := c.Call(context.Background(), "rpc://realm/area/resource", []byte("x"), 50*time.Millisecond)
-
-	// Assert
-	require.NoError(t, err)
-	assert.False(t, it.Next())
-	require.Error(t, it.Err())
-	assert.ErrorIs(t, it.Err(), context.DeadlineExceeded)
-	assert.NoError(t, it.Close())
-}
-
-// ---------------------------------------------------------------------------
-// Subscribe (worker) tests — handler now uses ResponseWriter
-// ---------------------------------------------------------------------------
-
-func TestShouldDispatchToWorkerGivenSubscribe(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-
-	route := "rpc://realm/area/resource"
-	reqBody := []byte("ping")
-	respBody := []byte("pong")
-
-	// Register a handler that sends one response via the writer
-	sub, err := c.Subscribe(context.Background(), route, func(ctx context.Context, r InboundRequest, w ResponseWriter) error {
-		return w.Send(respBody)
+		// Assert
+		assert.Equal(t, ErrNoWorkers, mapped)
 	})
-	require.NoError(t, err)
 
-	// drain the subscribe frame sent by Subscribe
-	<-m.sendCh
+	t.Run("map no workers case insensitive", func(t *testing.T) {
+		// Arrange
+		errMsg := "NO WORKERS AVAILABLE"
 
-	// send a request frame
-	enc := transport.NewTLVEncoder()
-	enc.AddUint64(transport.TagID, 42)
-	enc.AddString(transport.TagRoute, route)
-	enc.AddBytes(transport.TagBody, reqBody)
-	m.inCh <- transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()}
+		// Act
+		mapped := mapRPCError(errMsg)
 
-	// Expect two frames: the streamed body (seq=0, stream_end=0) + end frame (stream_end=1)
-	var frames []transport.Frame
-	deadline := time.After(time.Second)
-	for i := 0; i < 2; i++ {
-		select {
-		case f := <-m.sendCh:
-			frames = append(frames, f)
-		case <-deadline:
-			t.Fatalf("timed out waiting for response frame %d", i)
-		}
-	}
+		// Assert
+		assert.Equal(t, ErrNoWorkers, mapped)
+	})
 
-	// First frame: body
-	dec, err := transport.NewTLVDecoder(frames[0].Body)
-	require.NoError(t, err)
-	id, _ := dec.GetUint64(transport.TagID)
-	assert.Equal(t, uint64(42), id)
-	assert.Equal(t, respBody, dec.GetBytes(transport.TagBody))
-	seq, _ := dec.GetUint64(transport.TagSeq)
-	assert.Equal(t, uint64(0), seq)
+	t.Run("unknown error returns wrapped message", func(t *testing.T) {
+		// Arrange
+		errMsg := "unexpected error condition"
 
-	// Second frame: stream_end=1
-	dec2, err := transport.NewTLVDecoder(frames[1].Body)
-	require.NoError(t, err)
-	endBytes := dec2.GetBytes(transport.TagStreamEnd)
-	require.Len(t, endBytes, 1)
-	assert.Equal(t, uint8(1), endBytes[0])
+		// Act
+		mapped := mapRPCError(errMsg)
 
-	// Unsubscribe
-	sub.Unsubscribe()
+		// Assert
+		assert.NotNil(t, mapped)
+		assert.Equal(t, errMsg, mapped.Error())
+	})
+
+	t.Run("empty error message", func(t *testing.T) {
+		// Arrange
+		errMsg := ""
+
+		// Act
+		mapped := mapRPCError(errMsg)
+
+		// Assert
+		assert.NotNil(t, mapped)
+	})
+
+	t.Run("timeout related error", func(t *testing.T) {
+		// Arrange
+		errMsg := "rpc operation timed out"
+
+		// Act
+		mapped := mapRPCError(errMsg)
+
+		// Assert
+		// Should return wrapped as unknown error
+		assert.Equal(t, "rpc operation timed out", mapped.Error())
+	})
 }
 
-func TestShouldStreamMultipleFramesGivenSubscribedWorkerWhenHandlerCallsSendMultipleTimes(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-
-	route := "rpc://realm/area/resource"
-
-	// Handler streams 3 chunks
-	_, err := c.Subscribe(context.Background(), route, func(ctx context.Context, r InboundRequest, w ResponseWriter) error {
-		_ = w.Send([]byte("chunk1"))
-		_ = w.Send([]byte("chunk2"))
-		_ = w.Send([]byte("chunk3"))
-		return nil
+// TestShouldDefineRPCOpcodes tests that RPC opcodes are properly defined.
+func TestShouldDefineRPCOpcodes(t *testing.T) {
+	t.Run("subscribe worker opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(300), RPCSubscribeWorker)
 	})
-	require.NoError(t, err)
-	<-m.sendCh // drain subscribe
 
-	// Act
-	enc := transport.NewTLVEncoder()
-	enc.AddUint64(transport.TagID, 99)
-	enc.AddString(transport.TagRoute, route)
-	enc.AddBytes(transport.TagBody, []byte("go"))
-	m.inCh <- transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()}
+	t.Run("unsubscribe worker opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(301), RPCUnsubscribeWorker)
+	})
 
-	// Assert: 3 data frames + 1 end frame = 4 total
-	var frames []transport.Frame
-	deadline := time.After(time.Second)
-	for i := 0; i < 4; i++ {
-		select {
-		case f := <-m.sendCh:
-			frames = append(frames, f)
-		case <-deadline:
-			t.Fatalf("timed out waiting for frame %d", i)
-		}
-	}
+	t.Run("request opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(302), RPCRequest)
+	})
 
-	// Verify sequence numbers are 0, 1, 2
-	for i := 0; i < 3; i++ {
-		dec, _ := transport.NewTLVDecoder(frames[i].Body)
-		seq, _ := dec.GetUint64(transport.TagSeq)
-		assert.Equal(t, uint64(i), seq)
-	}
+	t.Run("response opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(303), RPCResponse)
+	})
 
-	// Last frame is stream_end=1
-	dec, _ := transport.NewTLVDecoder(frames[3].Body)
-	endBytes := dec.GetBytes(transport.TagStreamEnd)
-	require.Len(t, endBytes, 1)
-	assert.Equal(t, uint8(1), endBytes[0])
+	t.Run("ack opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(304), RPCAck)
+	})
+
+	t.Run("opcodes are sequential", func(t *testing.T) {
+		// Verify opcodes follow expected numbering
+		assert.Equal(t, RPCSubscribeWorker+1, RPCUnsubscribeWorker)
+		assert.Equal(t, RPCUnsubscribeWorker+1, RPCRequest)
+		assert.Equal(t, RPCRequest+1, RPCResponse)
+		assert.Equal(t, RPCResponse+1, RPCAck)
+	})
+
+	t.Run("all opcodes in 300 range", func(t *testing.T) {
+		// All RPC opcodes should be in the 300-304 range per CLIENT_SPEC.md
+		assert.GreaterOrEqual(t, RPCSubscribeWorker, uint16(300))
+		assert.LessOrEqual(t, RPCAck, uint16(304))
+	})
 }
 
-func TestShouldSendErrorFrameGivenSubscribedWorkerWhenHandlerReturnsError(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-
-	route := "rpc://realm/area/resource"
-	_, err := c.Subscribe(context.Background(), route, func(ctx context.Context, r InboundRequest, w ResponseWriter) error {
-		return errors.New("handler failed")
+// TestShouldDefineRPCErrors tests that RPC error variables are defined.
+func TestShouldDefineRPCErrors(t *testing.T) {
+	t.Run("no workers error defined", func(t *testing.T) {
+		assert.NotNil(t, ErrNoWorkers)
+		assert.Equal(t, "no workers available", ErrNoWorkers.Error())
 	})
-	require.NoError(t, err)
-	<-m.sendCh // drain subscribe
 
-	// Act
-	enc := transport.NewTLVEncoder()
-	enc.AddUint64(transport.TagID, 77)
-	enc.AddString(transport.TagRoute, route)
-	enc.AddBytes(transport.TagBody, []byte("x"))
-	m.inCh <- transport.Frame{Type: transport.FrameTypeReq, Channel: transport.ChannelRPC, Body: enc.Encode()}
+	t.Run("rpc timeout error defined", func(t *testing.T) {
+		assert.NotNil(t, ErrRPCTimeout)
+		assert.Equal(t, "rpc timeout", ErrRPCTimeout.Error())
+	})
+}
 
-	// Assert: error frame
-	select {
-	case f := <-m.sendCh:
-		require.Equal(t, transport.FrameTypeErr, f.Type)
-		dec, _ := transport.NewTLVDecoder(f.Body)
-		assert.Contains(t, dec.GetString(transport.TagErr), "handler failed")
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for error frame")
+// TestShouldEncodeRPCSubscribeWorker tests RPC SUBSCRIBE_WORKER encoding.
+func TestShouldEncodeRPCSubscribeWorker(t *testing.T) {
+	t.Run("valid worker route", func(t *testing.T) {
+		// Arrange
+		route := "rpc://acme/jobs/process"
+
+		// Act
+		payload, err := EncodeRPCSubscribeWorker(route)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), 4)
+		// Verify route length prefix
+		routeLen := binary.BigEndian.Uint32(payload[0:4])
+		assert.Equal(t, uint32(len(route)), routeLen)
+	})
+
+	t.Run("empty route", func(t *testing.T) {
+		// Arrange & Act
+		payload, err := EncodeRPCSubscribeWorker("")
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+	})
+
+	t.Run("complex route", func(t *testing.T) {
+		// Arrange
+		route := "rpc://org.example.com/services/worker-pool/v2"
+
+		// Act
+		payload, err := EncodeRPCSubscribeWorker(route)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+	})
+}
+
+// TestShouldEncodeRPCUnsubscribeWorker tests RPC UNSUBSCRIBE_WORKER encoding.
+func TestShouldEncodeRPCUnsubscribeWorker(t *testing.T) {
+	t.Run("valid worker route", func(t *testing.T) {
+		// Arrange
+		route := "rpc://acme/tasks/handler"
+
+		// Act
+		payload, err := EncodeRPCUnsubscribeWorker(route)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), 4)
+	})
+
+	t.Run("unsubscribe empty route", func(t *testing.T) {
+		// Arrange & Act
+		payload, err := EncodeRPCUnsubscribeWorker("")
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+	})
+}
+
+// TestShouldEncodeRPCRequest tests RPC REQUEST encoding.
+func TestShouldEncodeRPCRequest(t *testing.T) {
+	t.Run("valid request with all fields", func(t *testing.T) {
+		// Arrange
+		var correlationID [16]byte
+		for i := range correlationID {
+			correlationID[i] = byte(i)
+		}
+		route := "rpc://acme/calculate"
+		replyRoute := "rpc://acme/responses"
+		body := []byte("test body")
+
+		// Act
+		payload, err := EncodeRPCRequest(correlationID, route, replyRoute, body)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), 20) // correlation_id(4+16) + minimal route/body
+	})
+
+	t.Run("request with empty reply route", func(t *testing.T) {
+		// Arrange
+		var correlationID [16]byte
+		route := "rpc://test/endpoint"
+
+		// Act
+		payload, err := EncodeRPCRequest(correlationID, route, "", []byte("data"))
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+	})
+
+	t.Run("request with empty body", func(t *testing.T) {
+		// Arrange
+		var correlationID [16]byte
+		route := "rpc://test"
+
+		// Act
+		payload, err := EncodeRPCRequest(correlationID, route, "", []byte{})
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+	})
+
+	t.Run("request with large body", func(t *testing.T) {
+		// Arrange
+		var correlationID [16]byte
+		route := "rpc://large"
+		body := make([]byte, 10000)
+
+		// Act
+		payload, err := EncodeRPCRequest(correlationID, route, "", body)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), 10000)
+	})
+}
+
+// TestShouldEncodeRPCResponse tests RPC RESPONSE encoding.
+func TestShouldEncodeRPCResponse(t *testing.T) {
+	t.Run("valid response not stream end", func(t *testing.T) {
+		// Arrange
+		var correlationID [16]byte
+		correlationID[0] = 0xAB
+		sequence := uint64(42)
+		body := []byte("response data")
+
+		// Act
+		payload, err := EncodeRPCResponse(correlationID, sequence, body, false)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), 20)
+		// Last byte should be 0 (stream_end = false)
+		assert.Equal(t, byte(0), payload[len(payload)-1])
+	})
+
+	t.Run("response with stream end", func(t *testing.T) {
+		// Arrange
+		var correlationID [16]byte
+		sequence := uint64(100)
+		body := []byte("final response")
+
+		// Act
+		payload, err := EncodeRPCResponse(correlationID, sequence, body, true)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		// Last byte should be 1 (stream_end = true)
+		assert.Equal(t, byte(1), payload[len(payload)-1])
+	})
+
+	t.Run("response with empty body", func(t *testing.T) {
+		// Arrange
+		var correlationID [16]byte
+		sequence := uint64(0)
+
+		// Act
+		payload, err := EncodeRPCResponse(correlationID, sequence, []byte{}, false)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+	})
+
+	t.Run("response with nil body", func(t *testing.T) {
+		// Arrange
+		var correlationID [16]byte
+		sequence := uint64(5)
+
+		// Act
+		payload, err := EncodeRPCResponse(correlationID, sequence, nil, true)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		// Should encode empty body
+	})
+
+	t.Run("response with max sequence", func(t *testing.T) {
+		// Arrange
+		var correlationID [16]byte
+		sequence := uint64(0xFFFFFFFFFFFFFFFF)
+
+		// Act
+		payload, err := EncodeRPCResponse(correlationID, sequence, []byte("data"), false)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+	})
+}
+
+// Benchmarks
+
+func BenchmarkEncodeRPCSubscribeWorker(b *testing.B) {
+	b.Run("short route", func(b *testing.B) {
+		route := "rpc://a/b"
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _ = EncodeRPCSubscribeWorker(route)
+		}
+	})
+
+	b.Run("long route", func(b *testing.B) {
+		route := "rpc://organization.example.com/services/worker-pool/specialized-handler/v2"
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _ = EncodeRPCSubscribeWorker(route)
+		}
+	})
+}
+
+func BenchmarkEncodeRPCUnsubscribeWorker(b *testing.B) {
+	route := "rpc://acme/workers/handler"
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = EncodeRPCUnsubscribeWorker(route)
+	}
+}
+
+func BenchmarkEncodeRPCRequest(b *testing.B) {
+	b.Run("small body", func(b *testing.B) {
+		var correlationID [16]byte
+		route := "rpc://acme/calculate"
+		body := []byte("test data")
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _ = EncodeRPCRequest(correlationID, route, "", body)
+		}
+	})
+
+	b.Run("large body", func(b *testing.B) {
+		var correlationID [16]byte
+		route := "rpc://acme/process"
+		body := make([]byte, 10000)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _ = EncodeRPCRequest(correlationID, route, "", body)
+		}
+	})
+}
+
+func BenchmarkEncodeRPCResponse(b *testing.B) {
+	b.Run("not stream end", func(b *testing.B) {
+		var correlationID [16]byte
+		body := []byte("response data here")
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _ = EncodeRPCResponse(correlationID, 42, body, false)
+		}
+	})
+
+	b.Run("stream end", func(b *testing.B) {
+		var correlationID [16]byte
+		body := []byte("final response")
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _ = EncodeRPCResponse(correlationID, 100, body, true)
+		}
+	})
+}
+
+func BenchmarkParseRpcAckResponse(b *testing.B) {
+	// [status=0] (ack only)
+	payload := []byte{0}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = connection.ParseStandardResponse(payload)
 	}
 }

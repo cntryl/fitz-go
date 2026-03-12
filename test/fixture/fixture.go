@@ -3,13 +3,26 @@ package fixture
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
-	fitz "github.com/cntryl/cntryl-go"
-	"github.com/cntryl/cntryl-go/internal/core/client"
-	"github.com/cntryl/cntryl-go/internal/core/types"
+	fitz "github.com/cntryl/fitz-go/fitz"
+	"github.com/cntryl/fitz-go/internal/core/client"
+	"github.com/cntryl/fitz-go/internal/core/types"
 )
+
+// Environment variables for broker configuration.
+// Set these in CI/CD environments or when testing against remote brokers.
+const (
+	// EnvBrokerTCPAddr specifies the TCP broker address (default: localhost:4091)
+	EnvBrokerTCPAddr = "FITZ_BROKER_TCP_ADDR"
+	// EnvBrokerWSAddr specifies the WebSocket broker address (default: ws://localhost:4090/ws)
+	EnvBrokerWSAddr = "FITZ_BROKER_WS_ADDR"
+)
+
+// Note: Integration tests require a running Fitz broker.
+// Set FITZ_BROKER_TCP_ADDR and FITZ_BROKER_WS_ADDR environment variables to override defaults.
 
 // TestFixture manages broker connections and test lifecycle for integration tests.
 // It supports both TCP and WebSocket transports to verify protocol equivalence.
@@ -22,18 +35,25 @@ type TestFixture struct {
 }
 
 // NewTestFixture creates a test fixture with the specified transport.
-// Broker addresses are hardcoded to localhost (TCP: localhost:4091, WS: ws://localhost:4090/ws).
+// Broker addresses can be configured via environment variables or use localhost defaults.
+// Use FITZ_BROKER_TCP_ADDR (default: localhost:4091) and FITZ_BROKER_WS_ADDR (default: ws://localhost:4090/ws).
 // Auth is disabled; an empty token is always sent.
 func NewTestFixture(t *testing.T, transport TransportType) *TestFixture {
 	t.Helper()
 
-	// Hardcoded broker addresses for localhost development
+	// Get broker addresses from environment or use localhost defaults
 	var brokerAddr string
 	switch transport {
 	case TransportTCP:
-		brokerAddr = "localhost:4091"
+		brokerAddr = os.Getenv(EnvBrokerTCPAddr)
+		if brokerAddr == "" {
+			brokerAddr = "localhost:4091"
+		}
 	case TransportWebSocket:
-		brokerAddr = "ws://localhost:4090/ws"
+		brokerAddr = os.Getenv(EnvBrokerWSAddr)
+		if brokerAddr == "" {
+			brokerAddr = "ws://localhost:4090/ws"
+		}
 	default:
 		t.Fatalf("unsupported transport type: %s", transport)
 	}
@@ -63,23 +83,31 @@ func (f *TestFixture) Connect(ctx context.Context) error {
 	return f.client.Connect(ctx)
 }
 
-// SetBrokerAddr overrides the fixture broker address (useful for simulators).
+// SetBrokerAddr overrides the fixture broker address.
 func (f *TestFixture) SetBrokerAddr(addr string) {
 	f.brokerAddr = addr
 }
 
-// StartBrokerIfNeeded returns the hardcoded localhost broker address for the
-// requested transport (TCP: localhost:4091, WS: ws://localhost:4090/ws).
-// For unknown transports it falls back to the in-process simulator.
+// StartBrokerIfNeeded returns the broker address for the requested transport.
+// Addresses can be configured via environment variables (FITZ_BROKER_TCP_ADDR, FITZ_BROKER_WS_ADDR)
+// or default to localhost (TCP: localhost:4091, WS: ws://localhost:4090/ws).
+// Only TCP and WebSocket are supported; unknown transports return an error.
 func StartBrokerIfNeeded(transport TransportType) (addr string, stop func(), err error) {
-	// Hardcoded localhost broker addresses
 	switch transport {
 	case TransportTCP:
-		return "localhost:4091", func() {}, nil
+		addr = os.Getenv(EnvBrokerTCPAddr)
+		if addr == "" {
+			addr = "localhost:4091"
+		}
+		return addr, func() {}, nil
 	case TransportWebSocket:
-		return "ws://localhost:4090/ws", func() {}, nil
+		addr = os.Getenv(EnvBrokerWSAddr)
+		if addr == "" {
+			addr = "ws://localhost:4090/ws"
+		}
+		return addr, func() {}, nil
 	default:
-		return StartSimBroker(string(transport))
+		return "", nil, fmt.Errorf("unsupported transport: %s", transport)
 	}
 }
 
@@ -146,5 +174,11 @@ func (f *TestFixture) UniqueResource() string {
 
 // UniqueRoute generates a unique route string for the given domain scheme.
 func (f *TestFixture) UniqueRoute(scheme string) string {
-	return fmt.Sprintf("%s://%s/%s/%s", scheme, f.UniqueRealm(), f.UniqueArea(), f.UniqueResource())
+	realm := f.UniqueRealm()
+	area := f.UniqueArea()
+	resource := f.UniqueResource()
+	if scheme == "schedule" {
+		return fmt.Sprintf("%s://%s/%s/%s/%s", scheme, realm, area, resource, "run")
+	}
+	return fmt.Sprintf("%s://%s/%s/%s", scheme, realm, area, resource)
 }

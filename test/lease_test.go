@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/cntryl-go/internal/domains/lease"
-	"github.com/cntryl/cntryl-go/test/fixture"
+	"github.com/cntryl/fitz-go/internal/domains/lease"
+	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,13 +32,13 @@ func TestShouldAcquireLeaseGivenAvailableLeaseWhenAcquireCalled(t *testing.T) {
 		route := f.UniqueRoute("lease")
 
 		// Act
-		token, expiresAt, held, err := f.Client().Lease().Acquire(ctx, route, 30)
+		l, err := f.Client().Lease().Acquire(ctx, route, 30)
 
 		// Assert
 		require.NoError(t, err)
-		assert.True(t, held, "lease should be granted when free")
-		assert.NotEmpty(t, token, "token should be non-empty on successful acquire")
-		assert.Greater(t, expiresAt, time.Now().Unix()-1, "expiresAt should be in the future")
+		require.NotNil(t, l, "lease should be granted when free")
+		assert.NotEmpty(t, l.Token, "token should be non-empty on successful acquire")
+		assert.Greater(t, l.ExpiresAt, time.Now().Unix()-1, "ExpiresAt should be in the future")
 	})
 }
 
@@ -46,7 +46,7 @@ func TestShouldAcquireLeaseGivenAvailableLeaseWhenAcquireCalled(t *testing.T) {
 // ACQUIRE operation fails when lease is already held by a different owner.
 func TestShouldRejectAcquireGivenHeldLeaseWhenAcquireCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange — two independent clients to simulate different owners.
+		// Arrange — two sessions, same lease route
 		f1 := fixture.NewTestFixture(t, transport)
 		f2 := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -54,24 +54,21 @@ func TestShouldRejectAcquireGivenHeldLeaseWhenAcquireCalled(t *testing.T) {
 
 		f1.ConnectOrSkip(ctx)
 		f2.ConnectOrSkip(ctx)
-
 		route := f1.UniqueRoute("lease")
 
-		// First client acquires.
-		token, _, held, err := f1.Client().Lease().Acquire(ctx, route, 30)
+		// First session acquires
+		_, err := f1.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
-		require.True(t, held)
-		require.NotEmpty(t, token)
 
-		// Act — second client attempts the same lease.
-		_, _, held2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
+		// Act — second session tries to acquire same lease
+		l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
 
-		// Assert — should either error with ErrLeaseHeld or return held=false.
+		// Assert — should fail or not be granted
 		if err2 != nil {
 			assert.ErrorIs(t, err2, lease.ErrLeaseHeld)
-		} else {
-			assert.False(t, held2, "second acquire should not be granted")
+			return
 		}
+		assert.Nil(t, l2, "second acquire should not be granted when lease held by another session")
 	})
 }
 
@@ -87,16 +84,16 @@ func TestShouldExtendTTLGivenValidTokenWhenRenewCalled(t *testing.T) {
 		f.ConnectOrSkip(ctx)
 		route := f.UniqueRoute("lease")
 
-		token, _, held, err := f.Client().Lease().Acquire(ctx, route, 10)
+		l, err := f.Client().Lease().Acquire(ctx, route, 10)
 		require.NoError(t, err)
-		require.True(t, held)
+		require.NotNil(t, l)
 
 		// Act
-		newExpiry, err := f.Client().Lease().Renew(ctx, route, token, 60)
+		newExpiry, err := l.Extend(ctx, 60)
 
 		// Assert
 		require.NoError(t, err)
-		assert.Greater(t, newExpiry, time.Now().Unix(), "renewed expiry should be in the future")
+		assert.Greater(t, newExpiry, time.Now().Unix(), "extended expiry should be in the future")
 	})
 }
 
@@ -112,15 +109,15 @@ func TestShouldRejectRenewGivenInvalidTokenWhenTokenMismatch(t *testing.T) {
 		f.ConnectOrSkip(ctx)
 		route := f.UniqueRoute("lease")
 
-		_, _, held, err := f.Client().Lease().Acquire(ctx, route, 30)
+		l, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
-		require.True(t, held)
+		require.NotNil(t, l)
 
-		// Act — renew with a fabricated (wrong) token.
-		_, err = f.Client().Lease().Renew(ctx, route, []byte("wrong-token"), 60)
+		// Act — extend with a fabricated (wrong) token.
+		_, err = l.ExtendWithToken(ctx, []byte("wrong-token"), 60)
 
 		// Assert
-		require.Error(t, err, "renew with invalid token should fail")
+		require.Error(t, err, "extend with invalid token should fail")
 	})
 }
 
@@ -136,21 +133,21 @@ func TestShouldReleaseLeaseGivenValidTokenWhenReleaseCalled(t *testing.T) {
 		f.ConnectOrSkip(ctx)
 		route := f.UniqueRoute("lease")
 
-		token, _, held, err := f.Client().Lease().Acquire(ctx, route, 30)
+		l, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
-		require.True(t, held)
+		require.NotNil(t, l)
 
 		// Act
-		err = f.Client().Lease().Release(ctx, route, token)
+		err = l.Release(ctx)
 
 		// Assert
 		require.NoError(t, err)
 
 		// Re-acquire should succeed after release.
-		token2, _, held2, err2 := f.Client().Lease().Acquire(ctx, route, 30)
+		l2, err2 := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err2)
-		assert.True(t, held2, "lease should be acquirable after release")
-		assert.NotEmpty(t, token2)
+		require.NotNil(t, l2, "lease should be acquirable after release")
+		assert.NotEmpty(t, l2.Token)
 	})
 }
 
@@ -166,12 +163,12 @@ func TestShouldRejectReleaseGivenInvalidTokenWhenTokenMismatch(t *testing.T) {
 		f.ConnectOrSkip(ctx)
 		route := f.UniqueRoute("lease")
 
-		_, _, held, err := f.Client().Lease().Acquire(ctx, route, 30)
+		l, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
-		require.True(t, held)
+		require.NotNil(t, l)
 
 		// Act — release with wrong token.
-		err = f.Client().Lease().Release(ctx, route, []byte("wrong-token"))
+		err = l.ReleaseWithToken(ctx, []byte("wrong-token"))
 
 		// Assert
 		require.Error(t, err, "release with invalid token should fail")
@@ -190,21 +187,21 @@ func TestShouldExpireLeaseGivenTTLElapsedWhenNoRenew(t *testing.T) {
 		f.ConnectOrSkip(ctx)
 		route := f.UniqueRoute("lease")
 
-		token, _, held, err := f.Client().Lease().Acquire(ctx, route, 2)
+		l, err := f.Client().Lease().Acquire(ctx, route, 2)
 		require.NoError(t, err)
-		require.True(t, held)
-		require.NotEmpty(t, token)
+		require.NotNil(t, l)
+		require.NotEmpty(t, l.Token)
 
 		// Wait for TTL to expire.
 		time.Sleep(3 * time.Second)
 
 		// Act — re-acquire after expiry should succeed.
-		token2, _, held2, err2 := f.Client().Lease().Acquire(ctx, route, 30)
+		l2, err2 := f.Client().Lease().Acquire(ctx, route, 30)
 
 		// Assert
 		require.NoError(t, err2)
-		assert.True(t, held2, "expired lease should be re-acquirable")
-		assert.NotEmpty(t, token2)
+		require.NotNil(t, l2, "expired lease should be re-acquirable")
+		assert.NotEmpty(t, l2.Token)
 	})
 }
 
@@ -220,9 +217,9 @@ func TestShouldQueryLeaseStatusGivenExistingLeaseWhenQueryCalled(t *testing.T) {
 		f.ConnectOrSkip(ctx)
 		route := f.UniqueRoute("lease")
 
-		_, _, held, err := f.Client().Lease().Acquire(ctx, route, 30)
+		l, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
-		require.True(t, held)
+		require.NotNil(t, l)
 
 		// Act
 		info, err := f.Client().Lease().Query(ctx, route)
@@ -231,7 +228,43 @@ func TestShouldQueryLeaseStatusGivenExistingLeaseWhenQueryCalled(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, info)
 		assert.True(t, info.Held, "query should report lease as held")
-		assert.NotEmpty(t, info.Token, "query should return the lease token")
-		assert.Greater(t, info.TTL, uint32(0), "query should return remaining TTL")
+		// Per CLIENT_SPEC QUERY response: server returns owner_id, ttl_remaining_secs, pending_waiters (not token)
+		assert.True(t, info.TTLRemainingSecs > 0 || info.OwnerID != "" || len(info.Token) > 0, "query should return holder info")
+	})
+}
+
+// TestShouldNotifyGivenSubscriptionWhenLeaseReleased verifies Subscribe delivers
+// change notifications on release for matching routes.
+func TestShouldNotifyGivenSubscriptionWhenLeaseReleased(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		// Arrange
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrSkip(ctx)
+		route := f.UniqueRoute("lease")
+		notifications := make(chan lease.ChangeNotification, 1)
+
+		sub, err := f.Client().Lease().Subscribe(ctx, route, func(_ context.Context, notif lease.ChangeNotification) error {
+			notifications <- notif
+			return nil
+		})
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+
+		l, err := f.Client().Lease().Acquire(ctx, route, 30)
+		require.NoError(t, err)
+
+		// Act
+		require.NoError(t, l.Release(ctx))
+
+		// Assert
+		select {
+		case notif := <-notifications:
+			assert.Equal(t, route, notif.Route)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for lease change notification")
+		}
 	})
 }

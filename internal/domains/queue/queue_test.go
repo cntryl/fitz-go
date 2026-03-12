@@ -1,174 +1,512 @@
 package queue
 
 import (
-	"context"
 	"encoding/binary"
-	"errors"
 	"testing"
 
-	"github.com/cntryl/cntryl-go/internal/core/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// mockMux is a minimal mux provider for unit testing the queue client.
-type mockMux struct {
-	in      chan transport.Frame
-	sent    []transport.Frame
-	sendErr error
+// TestShouldEncodeEnqueueWithoutDelay tests ENQUEUE encoding without delay.
+func TestShouldEncodeEnqueueWithoutDelay(t *testing.T) {
+	t.Run("simple message", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/app/tasks"
+		body := []byte("task data")
+		delaySeconds := uint64(0)
+
+		// Act
+		payload := EncodeEnqueue(route, body, delaySeconds)
+
+		// Assert
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), len(route)+len(body)+8)
+
+		// Verify structure: [route_len][route][body_len][body][has_delay]
+		offset := 0
+		routeLen := binary.BigEndian.Uint32(payload[offset : offset+4])
+		assert.Equal(t, uint32(len(route)), routeLen)
+
+		offset += 4
+		actualRoute := string(payload[offset : offset+int(routeLen)])
+		assert.Equal(t, route, actualRoute)
+
+		offset += int(routeLen)
+		bodyLen := binary.BigEndian.Uint32(payload[offset : offset+4])
+		assert.Equal(t, uint32(len(body)), bodyLen)
+
+		offset += 4
+		actualBody := payload[offset : offset+int(bodyLen)]
+		assert.Equal(t, body, actualBody)
+
+		offset += int(bodyLen)
+		hasDelay := payload[offset]
+		assert.Equal(t, uint8(0), hasDelay)
+	})
+
+	t.Run("empty body", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/app/events"
+		body := []byte{}
+
+		// Act
+		payload := EncodeEnqueue(route, body, 0)
+
+		// Assert
+		require.NotNil(t, payload)
+		// Minimum payload size: route_len(4) + route + body_len(4) + has_delay(1)
+		minExpectedSize := 4 + len(route) + 4 + 1
+		require.GreaterOrEqual(t, len(payload), minExpectedSize)
+	})
+
+	t.Run("large body", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/app/tasks"
+		body := make([]byte, 65536) // 64KB
+		for i := range body {
+			body[i] = byte((i + 42) % 256)
+		}
+
+		// Act
+		payload := EncodeEnqueue(route, body, 0)
+
+		// Assert
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), len(body))
+	})
 }
 
-func newMockMux() *mockMux { return &mockMux{in: make(chan transport.Frame, 16)} }
-func (m *mockMux) Send(f transport.Frame) error {
-	if m.sendErr != nil {
-		return m.sendErr
-	}
-	m.sent = append(m.sent, f)
-	return nil
-}
-func (m *mockMux) In() <-chan transport.Frame { return m.in }
-func (m *mockMux) Ctx() context.Context       { return context.Background() }
-func (m *mockMux) OnReconnect(cb func())      {}
+// TestShouldEncodeEnqueueWithDelay tests ENQUEUE encoding with delay.
+func TestShouldEncodeEnqueueWithDelay(t *testing.T) {
+	t.Run("with delay seconds", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/app/tasks"
+		body := []byte("delayed task")
+		delaySeconds := uint64(3600) // 1 hour
 
-func resp(body []byte) transport.Frame {
-	return transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelQueue, Body: body}
-}
-func errFrame(msg string) transport.Frame {
-	enc := transport.NewTLVEncoder()
-	enc.AddString(transport.TagErr, msg)
-	return transport.Frame{Type: transport.FrameTypeErr, Channel: transport.ChannelQueue, Body: enc.Encode()}
-}
+		// Act
+		payload := EncodeEnqueue(route, body, delaySeconds)
 
-func makeIDTLV(id uint64) []byte {
-	e := transport.NewTLVEncoder()
-	e.AddUint64(transport.TagID, id)
-	return e.Encode()
-}
+		// Assert
+		require.NotNil(t, payload)
+		// With delay, payload should be larger: route_len(4) + route + body_len(4) + body + has_delay(1) + delay_seconds(8)
+		minSize := 4 + len(route) + 4 + len(body) + 1 + 8
+		require.GreaterOrEqual(t, len(payload), minSize)
+	})
 
-func TestShouldReturnIDGivenEnqueueRespWhenEnqueueCalled(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := NewClient(m)
-	enc := transport.NewTLVEncoder()
-	enc.AddUint64(transport.TagID, 999)
-	m.in <- resp(enc.Encode())
+	t.Run("max delay", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/app/tasks"
+		body := []byte("data")
+		maxDelay := uint64(0xFFFFFFFFFFFFFFFF)
 
-	// Act
-	id, err := c.Enqueue(context.Background(), "queue://r/a/q", []byte("hi"))
+		// Act
+		payload := EncodeEnqueue(route, body, maxDelay)
 
-	// Assert
-	require.NoError(t, err)
-	assert.Equal(t, "999", id)
+		// Assert
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), 8) // Must have delay bytes
+	})
 }
 
-func TestShouldReturnItemsGivenReserveRespWhenReserveCalled(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := NewClient(m)
-	// Build binary counted-repeat response per spec:
-	// [u8 status=0][u32 BE lease_count=2]
-	// [u64 msg_id][u64 lease_token][u32 body_len][body bytes] × 2
-	body := make([]byte, 0, 64)
-	body = append(body, 0)                          // status = 0 (success)
-	body = binary.BigEndian.AppendUint32(body, 2)   // lease_count = 2
-	body = binary.BigEndian.AppendUint64(body, 1)   // message_id #1
-	body = binary.BigEndian.AppendUint64(body, 111) // lease_token #1
-	body = binary.BigEndian.AppendUint32(body, 3)   // body_len #1
-	body = append(body, []byte("one")...)           // body #1
-	body = binary.BigEndian.AppendUint64(body, 2)   // message_id #2
-	body = binary.BigEndian.AppendUint64(body, 222) // lease_token #2
-	body = binary.BigEndian.AppendUint32(body, 3)   // body_len #2
-	body = append(body, []byte("two")...)           // body #2
-	m.in <- resp(body)
+// TestShouldEncodeReserveWithBatchAndWait tests RESERVE encoding with all optional fields.
+func TestShouldEncodeReserveWithBatchAndWait(t *testing.T) {
+	t.Run("full reserve request", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/app/tasks"
+		leaseSeconds := uint64(30)
+		batchSize := uint32(10)
+		waitSeconds := uint64(5)
 
-	// Act
-	items, err := c.Reserve(context.Background(), "queue://r/a/q", 30, 2)
+		// Act
+		payload := EncodeReserve(route, leaseSeconds, batchSize, waitSeconds)
 
-	// Assert
-	require.NoError(t, err)
-	require.Len(t, items, 2)
-	assert.Equal(t, "1", items[0].ID)
-	assert.Equal(t, []byte("one"), items[0].Body)
-	assert.Equal(t, uint64(111), items[0].Token)
-	assert.Equal(t, "2", items[1].ID)
+		// Assert
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), 0)
+
+		// Verify it contains all required fields
+		offset := 0
+		routeLen := binary.BigEndian.Uint32(payload[offset : offset+4])
+		assert.Equal(t, uint32(len(route)), routeLen)
+
+		offset += 4
+		offset += int(routeLen)
+		actualLease := binary.BigEndian.Uint64(payload[offset : offset+8])
+		assert.Equal(t, leaseSeconds, actualLease)
+	})
+
+	t.Run("reserve without batch or wait", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/app/items"
+		leaseSeconds := uint64(60)
+
+		// Act
+		payload := EncodeReserve(route, leaseSeconds, 0, 0)
+
+		// Assert
+		require.NotNil(t, payload)
+	})
+
+	t.Run("reserve with zero lease", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/app/work"
+		leaseSeconds := uint64(0)
+
+		// Act
+		payload := EncodeReserve(route, leaseSeconds, 1, 0)
+
+		// Assert
+		require.NotNil(t, payload)
+	})
 }
 
-func TestShouldSucceedGivenRespWhenExtendCalled(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := NewClient(m)
-	m.in <- resp([]byte{0})
+// TestShouldParseQueueResponse tests response parsing.
+func TestShouldParseQueueResponse(t *testing.T) {
+	t.Run("success response", func(t *testing.T) {
+		// Arrange
+		payload := []byte{0x00, 0x01, 0x02, 0x03} // status=0 + data
 
-	// Act
-	err := c.Extend(context.Background(), "queue://r/a/q", "1", 111, 60)
+		// Act
+		success, data, err := parseQueueResponse(payload)
 
-	// Assert
-	require.NoError(t, err)
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, success)
+		assert.Equal(t, []byte{0x01, 0x02, 0x03}, data)
+	})
+
+	t.Run("error with code - invalid token", func(t *testing.T) {
+		// Arrange
+		payload := []byte{0x01, queueErrCodeInvalidToken}
+
+		// Act
+		success, _, err := parseQueueResponse(payload)
+
+		// Assert
+		assert.False(t, success)
+		assert.Equal(t, ErrInvalidToken, err)
+	})
+
+	t.Run("error with code - lease expired", func(t *testing.T) {
+		// Arrange
+		payload := []byte{0x01, queueErrCodeLeaseExpired}
+
+		// Act
+		success, _, err := parseQueueResponse(payload)
+
+		// Assert
+		assert.False(t, success)
+		assert.Equal(t, ErrLeaseExpiredQ, err)
+	})
+
+	t.Run("error with code - not found", func(t *testing.T) {
+		// Arrange
+		payload := []byte{0x01, queueErrCodeNotFound}
+
+		// Act
+		success, _, err := parseQueueResponse(payload)
+
+		// Assert
+		assert.False(t, success)
+		assert.Equal(t, ErrMessageNotFound, err)
+	})
+
+	t.Run("error with code - queue not found", func(t *testing.T) {
+		// Arrange
+		payload := []byte{0x01, queueErrCodeQueueNotFound}
+
+		// Act
+		success, _, err := parseQueueResponse(payload)
+
+		// Assert
+		assert.False(t, success)
+		assert.Equal(t, ErrQueueNotFound, err)
+	})
+
+	t.Run("error with message", func(t *testing.T) {
+		// Arrange — string error path is mapped to sentinels
+		errMsg := "queue is full"
+		msgBytes := []byte(errMsg)
+		payload := make([]byte, 5+len(msgBytes))
+		payload[0] = 0x01
+		binary.BigEndian.PutUint32(payload[1:5], uint32(len(msgBytes)))
+		copy(payload[5:], msgBytes)
+
+		// Act
+		success, _, err := parseQueueResponse(payload)
+
+		// Assert
+		assert.False(t, success)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrQueueFull)
+	})
+
+	t.Run("error response too short", func(t *testing.T) {
+		// Arrange
+		payload := []byte{}
+
+		// Act
+		success, _, err := parseQueueResponse(payload)
+
+		// Assert
+		assert.False(t, success)
+		require.Error(t, err)
+	})
 }
 
-func TestShouldReturnInvalidTokenGivenErrorWhenExtendCalled(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := NewClient(m)
-	m.in <- errFrame("invalid token")
+// TestShouldMapQueueError tests error message mapping.
+func TestShouldMapQueueError(t *testing.T) {
+	t.Run("map invalid token", func(t *testing.T) {
+		// Arrange
+		errMsg := "invalid token provided"
 
-	// Act
-	err := c.Extend(context.Background(), "queue://r/a/q", "1", 111, 60)
+		// Act
+		mapped := mapQueueError(errMsg)
 
-	// Assert
-	require.ErrorIs(t, err, ErrInvalidToken)
+		// Assert
+		assert.Equal(t, ErrInvalidToken, mapped)
+	})
+
+	t.Run("map lease expired", func(t *testing.T) {
+		// Arrange
+		errMsg := "lease has expired"
+
+		// Act
+		mapped := mapQueueError(errMsg)
+
+		// Assert
+		assert.Equal(t, ErrLeaseExpiredQ, mapped)
+	})
+
+	t.Run("map message not found", func(t *testing.T) {
+		// Arrange
+		errMsg := "message not found"
+
+		// Act
+		mapped := mapQueueError(errMsg)
+
+		// Assert
+		assert.Equal(t, ErrMessageNotFound, mapped)
+	})
+
+	t.Run("map queue not found", func(t *testing.T) {
+		// Arrange
+		errMsg := "queue not found in realm"
+
+		// Act
+		mapped := mapQueueError(errMsg)
+
+		// Assert
+		assert.Equal(t, ErrQueueNotFound, mapped)
+	})
+
+	t.Run("map queue full", func(t *testing.T) {
+		// Arrange
+		errMsg := "queue is full"
+
+		// Act
+		mapped := mapQueueError(errMsg)
+
+		// Assert
+		assert.Equal(t, ErrQueueFull, mapped)
+	})
+
+	t.Run("unknown error returns wrapped message", func(t *testing.T) {
+		// Arrange
+		errMsg := "unknown error condition"
+
+		// Act
+		mapped := mapQueueError(errMsg)
+
+		// Assert
+		require.NotNil(t, mapped)
+		assert.Equal(t, errMsg, mapped.Error())
+	})
 }
 
-func TestShouldSucceedGivenRespWhenCompleteCalled(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := NewClient(m)
-	m.in <- resp([]byte{0})
+// Benchmarks
 
-	// Act
-	err := c.Complete(context.Background(), "queue://r/a/q", "1", 111)
+func BenchmarkEncodeEnqueue(b *testing.B) {
+	b.Run("small message", func(b *testing.B) {
+		route := "queue://acme/app/tasks"
+		body := []byte("task data")
 
-	// Assert
-	require.NoError(t, err)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = EncodeEnqueue(route, body, 0)
+		}
+	})
+
+	b.Run("large message", func(b *testing.B) {
+		route := "queue://acme/app/tasks"
+		body := make([]byte, 65536)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = EncodeEnqueue(route, body, 0)
+		}
+	})
+
+	b.Run("with delay", func(b *testing.B) {
+		route := "queue://acme/app/tasks"
+		body := []byte("delayed task")
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = EncodeEnqueue(route, body, 3600)
+		}
+	})
 }
 
-func TestShouldReturnMessageNotFoundGivenErrorWhenCompleteCalled(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := NewClient(m)
-	m.in <- errFrame("message not found")
+func BenchmarkEncodeReserve(b *testing.B) {
+	b.Run("full reserve", func(b *testing.B) {
+		route := "queue://acme/app/tasks"
 
-	// Act
-	err := c.Complete(context.Background(), "queue://r/a/q", "1", 111)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = EncodeReserve(route, 30, 10, 5)
+		}
+	})
 
-	// Assert
-	require.ErrorIs(t, err, ErrMessageNotFound)
+	b.Run("minimal reserve", func(b *testing.B) {
+		route := "queue://acme/app/tasks"
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = EncodeReserve(route, 30, 0, 0)
+		}
+	})
 }
 
-func TestShouldReturnSendErrorGivenMuxFailureWhenEnqueueCalled(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	m.sendErr = errors.New("no connection")
-	c := NewClient(m)
+func BenchmarkParseQueueResponse(b *testing.B) {
+	successPayload := []byte{0x00, 0x01, 0x02, 0x03}
+	errorPayload := []byte{0x01, queueErrCodeInvalidToken}
 
-	// Act
-	_, err := c.Enqueue(context.Background(), "queue://r/a/q", []byte("x"))
+	b.Run("success response", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _, _ = parseQueueResponse(successPayload)
+		}
+	})
 
-	// Assert
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "send:")
+	b.Run("error response", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _, _ = parseQueueResponse(errorPayload)
+		}
+	})
 }
 
-func TestShouldReturnContextErrorGivenCancelledContextWhenReserveCalled(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := NewClient(m)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+// TestShouldEncodeExtendRequest tests EXTEND operation encoding.
+func TestShouldEncodeExtendRequest(t *testing.T) {
+	t.Run("valid extend parameters", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/jobs"
+		messageID := uint64(12345)
+		leaseToken := uint64(0xABCDEF123456)
+		leaseSeconds := uint64(60)
 
-	// Act
-	_, err := c.Reserve(ctx, "queue://r/a/q", 30, 1)
+		// Act
+		payload, err := EncodeExtend(route, messageID, leaseToken, leaseSeconds)
 
-	// Assert
-	require.Error(t, err)
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), 4)
+	})
+
+	t.Run("zero message id", func(t *testing.T) {
+		// Arrange & Act
+		payload, err := EncodeExtend("route", 0, 999, 30)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+	})
+
+	t.Run("max lease seconds", func(t *testing.T) {
+		// Arrange & Act
+		payload, err := EncodeExtend("route", 1, 2, 0xFFFFFFFFFFFFFFFF)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+	})
+}
+
+// TestShouldEncodeCompleteRequest tests COMPLETE operation encoding.
+func TestShouldEncodeCompleteRequest(t *testing.T) {
+	t.Run("valid complete parameters", func(t *testing.T) {
+		// Arrange
+		route := "queue://acme/tasks"
+		messageID := uint64(67890)
+		leaseToken := uint64(0xFEDCBA987654)
+
+		// Act
+		payload, err := EncodeComplete(route, messageID, leaseToken)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		require.Greater(t, len(payload), 4)
+	})
+
+	t.Run("empty route", func(t *testing.T) {
+		// Arrange & Act
+		payload, err := EncodeComplete("", 123, 456)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		// Empty route is valid (encoded as 0-length string)
+	})
+
+	t.Run("zero token", func(t *testing.T) {
+		// Arrange & Act
+		payload, err := EncodeComplete("queue://test", 100, 0)
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, payload)
+		// Zero token encodes successfully (validation is server-side)
+	})
+}
+
+// Benchmarks for new encoding functions
+
+func BenchmarkEncodeExtend(b *testing.B) {
+	b.Run("standard", func(b *testing.B) {
+		route := "queue://acme/jobs/processing"
+		messageID := uint64(12345)
+		token := uint64(0xABCDEF123456)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _ = EncodeExtend(route, messageID, token, 30)
+		}
+	})
+}
+
+func BenchmarkEncodeComplete(b *testing.B) {
+	b.Run("standard", func(b *testing.B) {
+		route := "queue://acme/tasks/completed"
+		messageID := uint64(67890)
+		token := uint64(0xFEDCBA987654)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _ = EncodeComplete(route, messageID, token)
+		}
+	})
 }

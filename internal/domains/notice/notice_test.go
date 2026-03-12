@@ -1,290 +1,290 @@
 package notice
 
 import (
-	"context"
+	"encoding/binary"
 	"testing"
-	"time"
 
-	"github.com/cntryl/cntryl-go/internal/core/transport"
+	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// mockMux is a minimal mux provider that allows pushing inbound frames.
-type mockMux struct {
-	in  chan transport.Frame
-	ctx context.Context
-	// capture outbound frames for inspection if needed
-	sent []transport.Frame
-	cbs  []func()
-	// autoAck controls whether Send enqueues a success response
-	autoAck bool
-}
+// TestShouldDecodeNotify tests notification message decoding.
+func TestShouldDecodeNotify(t *testing.T) {
+	t.Run("simple notification", func(t *testing.T) {
+		// Arrange - construct a notification payload
+		// Format: [route_len(4)][route][payload_len(4)][payload]
+		route := "notice://acme/app/events/published"
+		payload := []byte("user_updated")
 
-func newMockMux() *mockMux {
-	return &mockMux{in: make(chan transport.Frame, 16), ctx: context.Background(), autoAck: true}
-}
+		encoded := encodePublish(route, payload)
 
-func (m *mockMux) Send(f transport.Frame) error {
-	m.sent = append(m.sent, f)
-	// auto-ack notice requests so Subscribe/Unsubscribe/Publish can proceed
-	if m.autoAck && f.Type == transport.FrameTypeReq {
-		// Extract opcode from TLV body to check if it's a notice operation
-		dec, err := transport.NewTLVDecoder(f.Body)
-		if err != nil {
-			return err
-		}
-		opCode, err := dec.GetOp()
-		if err != nil {
-			return err
-		}
-		if opCode == NoticeSubscribe || opCode == NoticeUnsubscribe || opCode == NoticeUnsubscribeAll || opCode == NoticePublish {
-			// Create success response: TLV with opcode + binary status byte
-			// Response format: TLV[TagOp] + status(0=success)
-			encResp := transport.NewTLVEncoder()
-			encResp.AddOp(opCode)
-			// Add status as raw bytes: 0x00 = success
-			encResp.AddBytes(0x40, []byte{0})
-			m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: f.Channel, Body: encResp.Encode()}
-		}
-	}
-	return nil
-}
+		// Act
+		decodedRoute, decodedPayload, ok := DecodeNotify(encoded)
 
-func (m *mockMux) In() <-chan transport.Frame { return m.in }
-
-func (m *mockMux) Ctx() context.Context { return m.ctx }
-
-func (m *mockMux) OnReconnect(cb func()) { m.cbs = append(m.cbs, cb) }
-
-func (m *mockMux) triggerReconnect() {
-	for _, cb := range m.cbs {
-		cb()
-	}
-}
-
-// testNewClient creates a Notice client for testing.
-func testNewClient(mux transport.MuxProvider) Client {
-	return NewClient(mux)
-}
-
-func TestShouldDeliverMessageToHandlerGivenSubscribedWhenNoticeArrives(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-	recv := make(chan string, 1)
-	_, err := c.Subscribe(context.Background(), "notice://realm/area/resource", func(ctx context.Context, msg NoticeMsg) error {
-		recv <- string(msg.Body)
-		return nil
+		// Assert
+		require.True(t, ok)
+		assert.Equal(t, route, decodedRoute)
+		assert.Equal(t, payload, decodedPayload)
 	})
-	assert.NoError(t, err)
 
-	// Act
-	body := encodeNotifyBody("notice://realm/area/resource", []byte("hello"))
-	enc := transport.NewTLVEncoder()
-	enc.AddOp(NoticeNotify)
-	enc.AddBytes(transport.TagBody, body)
-	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc.Encode()}
-
-	// Assert
-	select {
-	case v := <-recv:
-		assert.Equal(t, "hello", v)
-	case <-time.After(250 * time.Millisecond):
-		t.Fatalf("timeout waiting for handler")
-	}
-}
-
-func TestShouldStopDeliveryGivenUnsubscribedWhenNoticeArrives(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-	recv := make(chan string, 4)
-	s, err := c.Subscribe(context.Background(), "notice://realm/area/resource", func(ctx context.Context, msg NoticeMsg) error {
-		recv <- string(msg.Body)
-		return nil
-	})
-	assert.NoError(t, err)
-
-	body := encodeNotifyBody("notice://realm/area/resource", []byte("one"))
-	enc := transport.NewTLVEncoder()
-	enc.AddOp(NoticeNotify)
-	enc.AddBytes(transport.TagBody, body)
-	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc.Encode()}
-
-	select {
-	case v := <-recv:
-		assert.Equal(t, "one", v)
-	case <-time.After(250 * time.Millisecond):
-		t.Fatalf("timeout waiting for first handler")
-	}
-
-	// Act — unsubscribe and send another message
-	s.Unsubscribe()
-	body2 := encodeNotifyBody("notice://realm/area/resource", []byte("two"))
-	enc2 := transport.NewTLVEncoder()
-	enc2.AddOp(NoticeNotify)
-	enc2.AddBytes(transport.TagBody, body2)
-	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc2.Encode()}
-
-	// Assert — handler must not be invoked
-	select {
-	case <-recv:
-		t.Fatalf("handler called after unsubscribe")
-	case <-time.After(150 * time.Millisecond):
-		// success: no call
-	}
-}
-
-func TestShouldWaitForHandlerGivenInFlightWhenUnsubscribeCalled(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-	started := make(chan struct{})
-	dur := 150 * time.Millisecond
-	s, err := c.Subscribe(context.Background(), "notice://realm/area/resource", func(ctx context.Context, msg NoticeMsg) error {
-		close(started)
-		// simulate work
-		<-time.After(dur)
-		return nil
-	})
-	assert.NoError(t, err)
-
-	body := encodeNotifyBody("notice://realm/area/resource", []byte("busy"))
-	enc := transport.NewTLVEncoder()
-	enc.AddOp(NoticeNotify)
-	enc.AddBytes(transport.TagBody, body)
-	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc.Encode()}
-
-	// wait for handler to start
-	select {
-	case <-started:
-	case <-time.After(250 * time.Millisecond):
-		t.Fatalf("timeout waiting for handler to start")
-	}
-
-	// Act — unsubscribe and ensure it waits for handler to finish
-	start := time.Now()
-	s.Unsubscribe()
-	elapsed := time.Since(start)
-
-	// Assert
-	assert.GreaterOrEqual(t, int(elapsed.Milliseconds()), int(dur.Milliseconds()))
-}
-
-func TestShouldResubscribeGivenActiveSubscriptionsWhenReconnectOccurs(t *testing.T) {
-	// Arrange
-	m := newMockMux()
-	c := testNewClient(m)
-	_, err := c.Subscribe(context.Background(), "notice://realm/x/resource", func(ctx context.Context, msg NoticeMsg) error { return nil })
-	assert.NoError(t, err)
-	assert.Greater(t, len(m.sent), 0)
-
-	// Act — clear history and simulate reconnect
-	m.sent = nil
-	m.triggerReconnect()
-
-	// Assert — reconnect should result in resubscribe frames sent
-	time.Sleep(100 * time.Millisecond)
-	if len(m.sent) == 0 {
-		t.Fatalf("no resubscribe frames observed")
-	}
-}
-
-func TestShouldNotDeadlockGivenBlockedDelivererWhenUnsubscribeCalled(t *testing.T) {
-	m := newMockMux()
-	c := testNewClient(m)
-	started := make(chan struct{})
-	block := make(chan struct{})
-
-	// handler consumes the first message and then blocks
-	s, err := c.Subscribe(context.Background(), "notice://realm/area/resource", func(ctx context.Context, msg NoticeMsg) error {
-		select {
-		case <-started:
-			// second receive; should not happen after unsubscribe
-		default:
-			close(started)
+	t.Run("notification with large payload", func(t *testing.T) {
+		// Arrange
+		route := "notice://acme/app/logs/created"
+		largePayload := make([]byte, 65536)
+		for i := range largePayload {
+			largePayload[i] = byte((i + 42) % 256)
 		}
-		// block to hold handler for a while
-		<-block
-		return nil
+
+		encoded := encodePublish(route, largePayload)
+
+		// Act
+		decodedRoute, decodedPayload, ok := DecodeNotify(encoded)
+
+		// Assert
+		require.True(t, ok)
+		assert.Equal(t, route, decodedRoute)
+		assert.Equal(t, largePayload, decodedPayload)
 	})
-	assert.NoError(t, err)
 
-	// send first message (fills buffer and starts handler)
-	body := encodeNotifyBody("notice://realm/area/resource", []byte("one"))
-	enc := transport.NewTLVEncoder()
-	enc.AddOp(NoticeNotify)
-	enc.AddBytes(transport.TagBody, body)
-	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc.Encode()}
+	t.Run("notification with empty payload", func(t *testing.T) {
+		// Arrange
+		route := "notice://acme/app/signal/fired"
+		payload := []byte{}
 
-	// wait for handler to start
-	select {
-	case <-started:
-	case <-time.After(250 * time.Millisecond):
-		t.Fatalf("timeout waiting for handler to start")
+		encoded := encodePublish(route, payload)
+
+		// Act
+		decodedRoute, decodedPayload, ok := DecodeNotify(encoded)
+
+		// Assert
+		require.True(t, ok)
+		assert.Equal(t, route, decodedRoute)
+		// Empty payload may be represented as nil or empty slice
+		assert.True(t, len(decodedPayload) == 0, "payload should be empty")
+	})
+
+	t.Run("malformed notification too short", func(t *testing.T) {
+		// Arrange
+		payload := []byte{0x00, 0x00} // Too short
+
+		// Act
+		_, _, ok := DecodeNotify(payload)
+
+		// Assert
+		assert.False(t, ok)
+	})
+
+	t.Run("malformed notification missing route", func(t *testing.T) {
+		// Arrange - route_len says 100 bytes but only 10 available
+		payload := make([]byte, 14)
+		payload[0] = 0x00
+		payload[1] = 0x00
+		payload[2] = 0x00
+		payload[3] = 0x64 // route_len = 100
+
+		// Act
+		_, _, ok := DecodeNotify(payload)
+
+		// Assert
+		assert.False(t, ok)
+	})
+}
+
+// TestShouldDefineNoticeOpcodes tests that Notice opcodes are properly defined.
+func TestShouldDefineNoticeOpcodes(t *testing.T) {
+	t.Run("publish opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(500), NoticePublish)
+	})
+
+	t.Run("subscribe opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(501), NoticeSubscribe)
+	})
+
+	t.Run("unsubscribe opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(502), NoticeUnsubscribe)
+	})
+
+	t.Run("unsubscribe all opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(503), NoticeUnsubscribeAll)
+	})
+
+	t.Run("notify opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(504), NoticeNotify)
+	})
+
+	t.Run("opcodes are sequential", func(t *testing.T) {
+		assert.Equal(t, NoticePublish+1, NoticeSubscribe)
+		assert.Equal(t, NoticeSubscribe+1, NoticeUnsubscribe)
+		assert.Equal(t, NoticeUnsubscribe+1, NoticeUnsubscribeAll)
+		assert.Equal(t, NoticeUnsubscribeAll+1, NoticeNotify)
+	})
+
+	t.Run("all opcodes in 500 range", func(t *testing.T) {
+		assert.GreaterOrEqual(t, NoticePublish, uint16(500))
+		assert.LessOrEqual(t, NoticeNotify, uint16(504))
+	})
+}
+
+// TestShouldDefineNoticeErrors tests that Notice error variables are defined.
+func TestShouldDefineNoticeErrors(t *testing.T) {
+	t.Run("invalid route error", func(t *testing.T) {
+		assert.NotNil(t, ErrNoticeRouteInvalid)
+		assert.Equal(t, "invalid notice route", ErrNoticeRouteInvalid.Error())
+	})
+
+	t.Run("timeout error", func(t *testing.T) {
+		assert.NotNil(t, ErrNoticeTimeout)
+		assert.Equal(t, "notice operation timed out", ErrNoticeTimeout.Error())
+	})
+
+	t.Run("send failed error", func(t *testing.T) {
+		assert.NotNil(t, ErrNoticeSendFailed)
+		assert.Equal(t, "notice send failed", ErrNoticeSendFailed.Error())
+	})
+}
+
+// TestShouldValidateNoticeRoutes tests notice route validation.
+func TestShouldValidateNoticeRoutes(t *testing.T) {
+	validRoutes := []string{
+		"notice://acme/app/events/published",
+		"notice://acme/app/logs/created",
+		"notice://acme/*/users/updated",
+		"notice://acme/**",
 	}
 
-	// send second message which will block in deliver (buffer is 1)
-	body2 := encodeNotifyBody("notice://realm/area/resource", []byte("two"))
-	enc2 := transport.NewTLVEncoder()
-	enc2.AddOp(NoticeNotify)
-	enc2.AddBytes(transport.TagBody, body2)
-	m.in <- transport.Frame{Type: transport.FrameTypeResp, Channel: transport.ChannelSub, Body: enc2.Encode()}
-
-	// unsubscribe in goroutine and ensure it doesn't deadlock on blocked deliverer.
-	done := make(chan struct{})
-	go func() {
-		s.Unsubscribe()
-		close(done)
-	}()
-
-	// At this point Unsubscribe should be waiting for the in-flight handler
-	// (which is blocked). It must NOT be blocked by the blocked deliverer itself.
-	select {
-	case <-done:
-		t.Fatalf("unsubscribe returned early before handler finished")
-	case <-time.After(150 * time.Millisecond):
-		// expected: still waiting for handler
-	}
-
-	// allow handler to finish so Unsubscribe can complete
-	close(block)
-
-	select {
-	case <-done:
-		// success
-	case <-time.After(800 * time.Millisecond):
-		t.Fatalf("unsubscribe didn't complete after handler finished")
+	for _, route := range validRoutes {
+		t.Run("valid route: "+route, func(t *testing.T) {
+			// Just verify route can be encoded/decoded without panic
+			encoded := encodeSubscribe(route)
+			require.NotNil(t, encoded)
+			require.Greater(t, len(encoded), 4)
+		})
 	}
 }
 
-func TestShouldMatchRoutesGivenWildcardPatternsWhenCompared(t *testing.T) {
-	tab := []struct {
-		pattern string
-		route   string
-		match   bool
-	}{
-		{"notice://realm/*/res", "notice://realm/a/res", true},
-		{"notice://realm/*/res", "notice://realm/a/b/res", false},
-		{"notice://realm/**", "notice://realm/a/b/res", true},
-		{"notice://realm/**/res", "notice://realm/a/b/res", true},
-		{"notice://realm/**/res", "notice://realm/res", true},
-		{"notice://realm/**/res", "notice://realm/a/res/x", false},
+// TestShouldHandleWildcardPatterns tests wildcard pattern handling in Notice.
+func TestShouldHandleWildcardPatterns(t *testing.T) {
+	t.Run("single segment wildcard", func(t *testing.T) {
+		// Arrange
+		pattern := "notice://acme/app/*/fired"
+
+		// Act
+		encoded := encodeSubscribe(pattern)
+
+		// Assert
+		require.NotNil(t, encoded)
+		require.Greater(t, len(encoded), 4)
+	})
+
+	t.Run("multi segment wildcard", func(t *testing.T) {
+		// Arrange
+		pattern := "notice://acme/**"
+
+		// Act
+		encoded := encodeSubscribe(pattern)
+
+		// Assert
+		require.NotNil(t, encoded)
+	})
+
+	t.Run("exact pattern", func(t *testing.T) {
+		// Arrange
+		pattern := "notice://acme/app/events/published"
+
+		// Act
+		encoded := encodeSubscribe(pattern)
+
+		// Assert
+		require.NotNil(t, encoded)
+	})
+}
+
+// Benchmarks
+
+func BenchmarkDecodeNotify(b *testing.B) {
+	route := "notice://acme/app/events/published"
+	payload := []byte("event data")
+	encoded := encodePublish(route, payload)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = DecodeNotify(encoded)
 	}
-	for _, c := range tab {
-		if got := NoticeMatchRoute(c.pattern, c.route); got != c.match {
-			t.Fatalf("pattern=%q route=%q expected=%v got=%v", c.pattern, c.route, c.match, got)
+}
+
+func BenchmarkEncodeSubscribe(b *testing.B) {
+	b.Run("simple pattern", func(b *testing.B) {
+		pattern := "notice://acme/app/events/published"
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = encodeSubscribe(pattern)
+		}
+	})
+
+	b.Run("wildcard pattern", func(b *testing.B) {
+		pattern := "notice://acme/**"
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = encodeSubscribe(pattern)
+		}
+	})
+}
+
+func BenchmarkEncodeUnsubscribe(b *testing.B) {
+	pattern := "notice://acme/app/events/published"
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = encodeUnsubscribe(pattern)
+	}
+}
+
+func BenchmarkEncodePublish(b *testing.B) {
+	b.Run("small payload", func(b *testing.B) {
+		route := "notice://acme/app/events/published"
+		payload := []byte("event data")
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = encodePublish(route, payload)
+		}
+	})
+
+	b.Run("large payload", func(b *testing.B) {
+		route := "notice://acme/app/logs/created"
+		payload := make([]byte, 65536)
+		for i := range payload {
+			payload[i] = byte((i + 7) % 256)
+		}
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = encodePublish(route, payload)
+		}
+	})
+}
+
+func BenchmarkParseSubscribeResponse(b *testing.B) {
+	// [status=0][has_sub_id=1][u64 sub_id]
+	payload := make([]byte, 1+1+8)
+	payload[0] = 0
+	payload[1] = 1
+	binary.BigEndian.PutUint64(payload[2:10], 999)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		success, remaining, _ := connection.ParseStandardResponse(payload)
+		if success && len(remaining) >= 9 && remaining[0] == 1 {
+			_, _, _ = connection.ReadU64BE(remaining, 1)
 		}
 	}
-}
-
-func encodeNotifyBody(route string, payload []byte) []byte {
-	routeBytes := []byte(route)
-	buf := make([]byte, 0, 8+4+len(routeBytes)+4+len(payload))
-	buf = append(buf, 0, 0, 0, 0, 0, 0, 0, 0)
-	buf = append(buf, byte(len(routeBytes)>>24), byte(len(routeBytes)>>16), byte(len(routeBytes)>>8), byte(len(routeBytes)))
-	buf = append(buf, routeBytes...)
-	buf = append(buf, byte(len(payload)>>24), byte(len(payload)>>16), byte(len(payload)>>8), byte(len(payload)))
-	buf = append(buf, payload...)
-	return buf
 }

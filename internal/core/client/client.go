@@ -4,378 +4,446 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/cntryl/cntryl-go/internal/core/transport"
-	"github.com/cntryl/cntryl-go/internal/core/types"
-	"github.com/cntryl/cntryl-go/internal/domains/kv"
-	"github.com/cntryl/cntryl-go/internal/domains/lease"
-	"github.com/cntryl/cntryl-go/internal/domains/notice"
-	"github.com/cntryl/cntryl-go/internal/domains/queue"
-	"github.com/cntryl/cntryl-go/internal/domains/rpc"
-	"github.com/cntryl/cntryl-go/internal/domains/schedule"
-	"github.com/cntryl/cntryl-go/internal/domains/stream"
+	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/transport"
+	"github.com/cntryl/fitz-go/internal/core/types"
+	"github.com/cntryl/fitz-go/internal/domains/kv"
+	"github.com/cntryl/fitz-go/internal/domains/lease"
+	"github.com/cntryl/fitz-go/internal/domains/notice"
+	"github.com/cntryl/fitz-go/internal/domains/queue"
+	"github.com/cntryl/fitz-go/internal/domains/rpc"
+	"github.com/cntryl/fitz-go/internal/domains/schedule"
+	"github.com/cntryl/fitz-go/internal/domains/stream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// domainMux adapts the transport mux for domain clients.
-type domainMux struct {
-	send        func(transport.Frame) error
-	in          <-chan transport.Frame
-	ctx         context.Context
-	reconnectCb func(func())
-}
+// TransportType specifies the transport protocol.
+type TransportType int
 
-func (d *domainMux) Send(f transport.Frame) error { return d.send(f) }
-func (d *domainMux) In() <-chan transport.Frame   { return d.in }
-func (d *domainMux) Ctx() context.Context         { return d.ctx }
-func (d *domainMux) OnReconnect(cb func()) {
-	if d.reconnectCb != nil {
-		d.reconnectCb(cb)
-	}
-}
+const (
+	TransportAuto TransportType = iota // Auto-detect from URL
+	TransportWebSocket
+	TransportTCP
+)
 
-// FramerFactory creates a Framer from a raw net.Conn.
-type FramerFactory func(net.Conn) transport.Framer
-
-// Client implements connection management, retry logic, and mux-based domain routing.
+// Client implements the Fitz client with connection management.
+// Per CLIENT_SPEC.md: Handles authentication, request/response correlation, and domain routing.
 type Client struct {
 	addr          string
 	tokenProvider types.TokenProvider
-	dialer        Dialer
-	// framerFactory allows callers to supply a transport framer for the
-	// underlying net.Conn produced by the Dialer. If nil, the client uses
-	// a sensible default (TCP framer). Prefer providing a factory to avoid
-	// transport convenience logic in the client.
-	framerFactory FramerFactory
-	mux           *transport.Mux
-	mu            sync.RWMutex
-	closed        bool
-	retryBackoff  time.Duration
-	maxRetries    int
-	// per-domain inbound channels (dispatcher will route frames here)
-	kvIn       chan transport.Frame
-	noticeIn   chan transport.Frame
-	streamIn   chan transport.Frame
-	queueIn    chan transport.Frame
-	rpcIn      chan transport.Frame
-	leaseIn    chan transport.Frame
-	scheduleIn chan transport.Frame
+	conn          *connection.Connection
+	config        *Config
 
-	domainClients struct {
-		notice   notice.Client
-		stream   stream.Client
-		queue    queue.Client
-		rpc      rpc.Client
-		kv       kv.Client
-		lease    lease.Client
-		schedule schedule.Client
+	// Domain clients
+	kvClient       kv.Client
+	noticeClient   notice.Client
+	queueClient    queue.Client
+	rpcClient      rpc.Client
+	streamClient   stream.Client
+	leaseClient    lease.Client
+	scheduleClient schedule.Client
+
+	closeOnce sync.Once
+}
+
+// Config contains client configuration.
+type Config struct {
+	// Connection
+	URL          string
+	JWT          string
+	AuthTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+
+	// Reconnection (not yet implemented)
+	ReconnectEnabled bool
+	ReconnectBackoff time.Duration
+	MaxReconnects    int
+
+	// Transport
+	TransportType TransportType // Auto, WebSocket, or TCP
+
+	// Observability (optional)
+	Logger *slog.Logger // When nil, no logging.
+	Tracer trace.Tracer // When nil, otel.Tracer(module) is used for spans.
+}
+
+// defaultConfig returns default client configuration.
+func defaultConfig() *Config {
+	return &Config{
+		TransportType: TransportAuto,
+		AuthTimeout:   5 * time.Second,
+		ReadTimeout:   30 * time.Second,
+		WriteTimeout:  10 * time.Second,
 	}
 }
 
-// NewClient creates a new Fitz client for the given address and token provider.
-// Address format determines transport protocol:
-//   - "host:port" or "tcp://host:port" for TCP
-//   - "ws://host:port/path" for WebSocket
-//   - "wss://host:port/path" for secure WebSocket (recommended)
-//
-// TokenProvider is called during connection to obtain JWT for authentication.
-// Pass nil for unauthenticated connections.
-func NewClient(addr string, tokenProvider types.TokenProvider, opts ...ClientOption) *Client {
-	c := &Client{
+// Option is a functional option for configuring the client.
+type Option func(*Config)
+
+// WithURL sets the server URL.
+func WithURL(url string) Option {
+	return func(c *Config) { c.URL = url }
+}
+
+// WithJWT sets the JWT token for authentication.
+// Use empty string for anonymous mode.
+func WithJWT(jwt string) Option {
+	return func(c *Config) { c.JWT = jwt }
+}
+
+// WithAuthTimeout sets the authentication timeout.
+func WithAuthTimeout(timeout time.Duration) Option {
+	return func(c *Config) { c.AuthTimeout = timeout }
+}
+
+// WithReadTimeout sets the per-read timeout.
+func WithReadTimeout(timeout time.Duration) Option {
+	return func(c *Config) { c.ReadTimeout = timeout }
+}
+
+// WithWriteTimeout sets the write timeout.
+func WithWriteTimeout(timeout time.Duration) Option {
+	return func(c *Config) { c.WriteTimeout = timeout }
+}
+
+// WithReconnect enables/disables automatic reconnection.
+func WithReconnect(enabled bool, backoff time.Duration, maxAttempts int) Option {
+	return func(c *Config) {
+		c.ReconnectEnabled = enabled
+		c.ReconnectBackoff = backoff
+		c.MaxReconnects = maxAttempts
+	}
+}
+
+// WithTransport sets the transport type.
+func WithTransport(transportType TransportType) Option {
+	return func(c *Config) { c.TransportType = transportType }
+}
+
+// WithLogger sets the structured logger for connection and domain logging.
+// When nil or not set, no logs are emitted.
+func WithLogger(logger *slog.Logger) Option {
+	return func(c *Config) { c.Logger = logger }
+}
+
+// WithTracer sets the OpenTelemetry tracer for spans.
+// When nil or not set, otel.Tracer(module) is used (no-op if no TracerProvider is set).
+func WithTracer(tracer trace.Tracer) Option {
+	return func(c *Config) { c.Tracer = tracer }
+}
+
+// NewClient creates a new Fitz client targeting the given address.
+// Call Connect() to establish the connection.
+func NewClient(addr string, tokenProvider types.TokenProvider) *Client {
+	return &Client{
 		addr:          addr,
 		tokenProvider: tokenProvider,
-		dialer:        &DefaultDialer{},
-		retryBackoff:  100 * time.Millisecond,
-		maxRetries:    5,
+		config:        defaultConfig(),
 	}
-	for _, opt := range opts {
-		opt(c)
-	}
-	return c
 }
 
-// ClientOption is a functional option for configuring the client.
-type ClientOption func(*Client)
-
-// WithRetryBackoff sets the initial retry backoff duration.
-func WithRetryBackoff(d time.Duration) ClientOption {
-	return func(c *Client) { c.retryBackoff = d }
-}
-
-// WithMaxRetries sets the maximum number of connection retries.
-func WithMaxRetries(n int) ClientOption {
-	return func(c *Client) { c.maxRetries = n }
-}
-
-// WithDialer sets a custom dialer (primarily for testing).
-func WithDialer(d Dialer) ClientOption {
-	return func(c *Client) { c.dialer = d }
-}
-
-// WithFramerFactory sets a custom framer factory used to wrap the raw
-// net.Conn returned by the Dialer. This avoids client-side convenience
-// framer construction and delegates transport selection to the caller.
-func WithFramerFactory(f FramerFactory) ClientOption {
-	return func(c *Client) { c.framerFactory = f }
-}
-
-// Connect opens a connection to the broker with exponential backoff retry.
-// On success, it launches the mux and initializes domain clients.
+// Connect establishes a connection to the broker using the address and
+// TokenProvider configured during client construction.
 func (c *Client) Connect(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	tracer := c.config.Tracer
+	if tracer == nil {
+		tracer = otel.Tracer("github.com/cntryl/fitz-go")
+	}
+	transportType := c.config.TransportType
+	if transportType == TransportAuto {
+		transportType = detectTransport(c.addr)
+	}
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "fitz.Connect", trace.WithAttributes(
+		attribute.String("fitz.addr", c.addr),
+		attribute.String("fitz.transport", transportTypeString(transportType)),
+	))
+	defer span.End()
 
-	if c.mux != nil {
-		return errors.New("already connected")
+	if c.config.Logger != nil {
+		c.config.Logger.Info("connect started", "addr", c.addr)
+	}
+	// Get JWT from token provider
+	jwt := ""
+	if c.tokenProvider != nil {
+		var err error
+		jwt, err = c.tokenProvider(ctx)
+		if err != nil {
+			if c.config.Logger != nil {
+				c.config.Logger.Error("get token failed", "error", err)
+			}
+			return fmt.Errorf("get token: %w", err)
+		}
 	}
 
-	// Try to establish connection with retries.
-	var conn net.Conn
+	c.config.URL = c.addr
+	c.config.JWT = jwt
+
+	if err := c.config.validate(); err != nil {
+		if c.config.Logger != nil {
+			c.config.Logger.Error("invalid config", "error", err)
+		}
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	// Dial transport
+	var trans transport.Transport
 	var err error
-	backoff := c.retryBackoff
-	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		conn, err = c.dialer.Dial(ctx, c.addr)
-		if err == nil {
-			break
-		}
-		if attempt < c.maxRetries {
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			backoff *= 2
-		}
-	}
-	if conn == nil {
-		return fmt.Errorf("failed to connect after %d attempts: %w", c.maxRetries+1, err)
+
+	switch transportType {
+	case TransportWebSocket:
+		trans, err = transport.DialWebSocket(ctx, c.config.URL)
+	case TransportTCP:
+		trans, err = transport.DialTCP(ctx, c.config.URL)
+	default:
+		return fmt.Errorf("unsupported transport type: %d", transportType)
 	}
 
-	// Create mux and start loops. Use framer factory supplied by caller when present;
-	// otherwise default to TCP framer (legacy behavior).
-	var fr transport.Framer
-	if c.framerFactory != nil {
-		fr = c.framerFactory(conn)
-	} else {
-		fr = transport.NewTCPFramer(conn)
+	if err != nil {
+		return fmt.Errorf("dial transport: %w", err)
 	}
-	c.mux = transport.NewMux(fr)
-	c.mux.Start()
-	// Notify domain clients that the transport is writable (initial connect).
-	c.mux.FireReconnect()
 
-	// Initialize per-domain channels and start dispatcher before creating
-	// domain clients so they can receive frames from their dedicated channels.
-	c.kvIn = make(chan transport.Frame, 128)
-	c.noticeIn = make(chan transport.Frame, 128)
-	c.streamIn = make(chan transport.Frame, 128)
-	c.queueIn = make(chan transport.Frame, 128)
-	c.rpcIn = make(chan transport.Frame, 128)
-	c.leaseIn = make(chan transport.Frame, 128)
-	c.scheduleIn = make(chan transport.Frame, 128)
-	go func() {
-		defer func() {
-			close(c.kvIn)
-			close(c.noticeIn)
-			close(c.streamIn)
-			close(c.queueIn)
-			close(c.rpcIn)
-			close(c.leaseIn)
-			close(c.scheduleIn)
-		}()
-		for f := range c.mux.In() {
-			switch f.Channel {
-			case transport.ChannelKV:
-				select {
-				case c.kvIn <- f:
-				default:
-					// Drop if receiver overloaded to avoid blocking the dispatcher
-				}
-			case transport.ChannelPub, transport.ChannelSub:
-				select {
-				case c.noticeIn <- f:
-				default:
-				}
-			case transport.ChannelStream:
-				select {
-				case c.streamIn <- f:
-				default:
-				}
-			case transport.ChannelQueue:
-				select {
-				case c.queueIn <- f:
-				default:
-				}
-			case transport.ChannelRPC:
-				select {
-				case c.rpcIn <- f:
-				default:
-				}
-			case transport.ChannelLease:
-				select {
-				case c.leaseIn <- f:
-				default:
-				}
-			case transport.ChannelSchedule:
-				select {
-				case c.scheduleIn <- f:
-				default:
-				}
-			default:
-				// Unknown channel — ignore
-			}
+	// Create connection
+	connCfg := connection.Config{
+		JWT:          c.config.JWT,
+		AuthTimeout:  c.config.AuthTimeout,
+		ReadTimeout:  c.config.ReadTimeout,
+		WriteTimeout: c.config.WriteTimeout,
+		Logger:       c.config.Logger,
+		Tracer:       c.config.Tracer,
+	}
+
+	conn := connection.New(trans, connCfg)
+
+	// Start connection (dispatch loop + CONNECT handshake per CLIENT_SPEC.md)
+	if err := conn.Start(ctx); err != nil {
+		if c.config.Logger != nil {
+			c.config.Logger.Error("start connection failed", "error", err)
 		}
-	}()
-
-	// Send CONNECT frame as first message (per CLIENT_SPEC.md).
-	// CONNECT frame MUST be sent before any other operations.
-	if err := c.sendConnect(ctx); err != nil {
-		_ = c.mux.Close()
-		c.mux = nil
-		return fmt.Errorf("CONNECT handshake failed: %w", err)
+		trans.Close()
+		return fmt.Errorf("start connection: %w", err)
 	}
-	// Give broker a short grace period to finish session setup (no explicit ACK in spec).
-	// This prevents some brokers from closing the connection when a client sends
-	// domain frames immediately after CONNECT.
-	time.Sleep(50 * time.Millisecond)
 
-	// Initialize domain clients after successful connection.
-	c.initializeDomainClients()
+	c.conn = conn
 
+	// Initialize domain clients
+	c.kvClient = kv.NewClient(conn)
+	c.noticeClient = notice.NewClient(conn)
+	c.queueClient = queue.NewClient(conn)
+	c.rpcClient = rpc.NewClient(conn)
+	c.streamClient = stream.NewClient(conn)
+	c.leaseClient = lease.NewClient(conn)
+	c.scheduleClient = schedule.NewClient(conn)
+
+	if c.config.Logger != nil {
+		c.config.Logger.Info("connect success", "addr", c.addr)
+	}
 	return nil
 }
 
-// Close gracefully closes the connection and domain clients.
-func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.mux == nil {
-		return nil
+// Dial connects to a Fitz server and returns a ready-to-use client.
+// Per CLIENT_SPEC.md: Performs CONNECT handshake and waits for authentication confirmation.
+func Dial(ctx context.Context, opts ...Option) (*Client, error) {
+	cfg := defaultConfig()
+	for _, opt := range opts {
+		opt(cfg)
 	}
-	c.closed = true
-	return c.mux.Close()
+
+	if err := cfg.validate(); err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Error("invalid config", "error", err)
+		}
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
+	transportType := cfg.TransportType
+	if transportType == TransportAuto {
+		transportType = detectTransport(cfg.URL)
+	}
+	tracer := cfg.Tracer
+	if tracer == nil {
+		tracer = otel.Tracer("github.com/cntryl/fitz-go")
+	}
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "fitz.Connect", trace.WithAttributes(
+		attribute.String("fitz.addr", cfg.URL),
+		attribute.String("fitz.transport", transportTypeString(transportType)),
+	))
+	defer span.End()
+
+	c := &Client{
+		addr:   cfg.URL,
+		config: cfg,
+	}
+
+	c.config = cfg
+
+	// Dial transport
+	var trans transport.Transport
+	var err error
+
+	switch transportType {
+	case TransportWebSocket:
+		trans, err = transport.DialWebSocket(ctx, cfg.URL)
+	case TransportTCP:
+		trans, err = transport.DialTCP(ctx, cfg.URL)
+	default:
+		return nil, fmt.Errorf("unsupported transport type: %d", transportType)
+	}
+
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Error("dial transport failed", "error", err)
+		}
+		return nil, fmt.Errorf("dial transport: %w", err)
+	}
+
+	// Create connection
+	connCfg := connection.Config{
+		JWT:          cfg.JWT,
+		AuthTimeout:  cfg.AuthTimeout,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		Logger:       cfg.Logger,
+		Tracer:       cfg.Tracer,
+	}
+
+	conn := connection.New(trans, connCfg)
+
+	// Start connection (dispatch loop + CONNECT handshake per CLIENT_SPEC.md)
+	if err := conn.Start(ctx); err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Error("start connection failed", "error", err)
+		}
+		trans.Close()
+		return nil, fmt.Errorf("start connection: %w", err)
+	}
+
+	c.conn = conn
+
+	// Initialize domain clients
+	c.kvClient = kv.NewClient(conn)
+	c.noticeClient = notice.NewClient(conn)
+	c.queueClient = queue.NewClient(conn)
+	c.rpcClient = rpc.NewClient(conn)
+	c.streamClient = stream.NewClient(conn)
+	c.leaseClient = lease.NewClient(conn)
+	c.scheduleClient = schedule.NewClient(conn)
+
+	if cfg.Logger != nil {
+		cfg.Logger.Info("dial success", "url", cfg.URL)
+	}
+	return c, nil
 }
 
-// Notice returns the notice domain client.
+// detectTransport determines transport type from URL scheme.
+func detectTransport(url string) TransportType {
+	if strings.HasPrefix(url, "ws://") || strings.HasPrefix(url, "wss://") {
+		return TransportWebSocket
+	}
+	return TransportTCP
+}
+
+func transportTypeString(t TransportType) string {
+	switch t {
+	case TransportWebSocket:
+		return "websocket"
+	case TransportTCP:
+		return "tcp"
+	default:
+		return "auto"
+	}
+}
+
+// validate checks if the configuration is valid.
+func (c *Config) validate() error {
+	if c.URL == "" {
+		return errors.New("URL is required")
+	}
+	return nil
+}
+
+// Close gracefully shuts down the connection.
+// Safe to call multiple times (idempotent).
+func (c *Client) Close() error {
+	var err error
+	c.closeOnce.Do(func() {
+		if c.config.Logger != nil {
+			c.config.Logger.Info("client close")
+		}
+		if c.conn != nil {
+			err = c.conn.Close()
+		}
+	})
+	return err
+}
+
+// SendRequest is a low-level API for domain implementations.
+// Sends a synchronous request and waits for response.
+// Per CLIENT_SPEC.md: Responses matched via FIFO correlation.
+func (c *Client) SendRequest(ctx context.Context, msgType uint16, payload []byte) ([]byte, error) {
+	return c.conn.SendRequest(ctx, msgType, payload)
+}
+
+// RegisterNotifyHandler registers handler for NOTIFY messages for the given message type.
+// msgType should be protocol.MessageTypeQueueNotify (209), MessageTypeLeaseNotify (409),
+// MessageTypeNoticeNotify (504), or MessageTypeStreamNotify (609).
+func (c *Client) RegisterNotifyHandler(msgType uint16, handler func(subID uint64, route string, payload []byte)) {
+	c.conn.RegisterNotifyHandler(msgType, handler)
+}
+
+// RegisterRPCResponseHandler registers handler for RPC RESPONSE messages.
+// Called by RPC domain client.
+func (c *Client) RegisterRPCResponseHandler(handler func(correlationID [16]byte, payload []byte)) {
+	c.conn.RegisterRPCResponseHandler(handler)
+}
+
+// Metrics returns connection metrics.
+func (c *Client) Metrics() connection.MultiplexerMetrics {
+	return c.conn.Metrics()
+}
+
+// Domain client accessors (implements fitz.Client interface)
+
+// KV returns the KV domain client.
+func (c *Client) KV() kv.Client {
+	return c.kvClient
+}
+
+// Notice returns the Notice domain client.
 func (c *Client) Notice() notice.Client {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.domainClients.notice
+	return c.noticeClient
 }
 
-// Stream returns the stream domain client.
-func (c *Client) Stream() stream.Client {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.domainClients.stream
-}
-
-// Queue returns the queue domain client.
+// Queue returns the Queue domain client.
 func (c *Client) Queue() queue.Client {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.domainClients.queue
-}
-
-// Schedule returns the schedule domain client.
-func (c *Client) Schedule() schedule.Client {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.domainClients.schedule
+	return c.queueClient
 }
 
 // RPC returns the RPC domain client.
 func (c *Client) RPC() rpc.Client {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.domainClients.rpc
+	return c.rpcClient
 }
 
-// KV returns the KV domain client.
-func (c *Client) KV() kv.Client {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.domainClients.kv
+// Stream returns the Stream domain client.
+func (c *Client) Stream() stream.Client {
+	return c.streamClient
 }
 
-// Lease returns the lease domain client.
+// Lease returns the Lease domain client.
 func (c *Client) Lease() lease.Client {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.domainClients.lease
+	return c.leaseClient
 }
 
-// initializeDomainClients creates concrete domain clients that use the mux.
-// This is called after a successful connection.
-func (c *Client) initializeDomainClients() {
-	// KV client uses a domain-specific mux adapter to avoid competing readers on the shared mux
-	c.domainClients.kv = kv.NewClient(&domainMux{send: c.mux.Send, in: c.kvIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
-	// Initialize lease client
-	c.domainClients.lease = lease.NewClient(&domainMux{send: c.mux.Send, in: c.leaseIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
-	// Notice domain client
-	c.domainClients.notice = notice.NewClient(&domainMux{send: c.mux.Send, in: c.noticeIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
-	// RPC client
-	c.domainClients.rpc = rpc.NewClient(&domainMux{send: c.mux.Send, in: c.rpcIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
-	// Stream client
-	c.domainClients.stream = stream.NewClient(&domainMux{send: c.mux.Send, in: c.streamIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
-	// Queue client
-	c.domainClients.queue = queue.NewClient(&domainMux{send: c.mux.Send, in: c.queueIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
-	// Schedule client
-	c.domainClients.schedule = schedule.NewClient(&domainMux{send: c.mux.Send, in: c.scheduleIn, ctx: c.mux.Ctx(), reconnectCb: c.mux.OnReconnect})
-}
-
-// sendConnect sends the CONNECT frame with JWT token per CLIENT_SPEC.md.
-// CONNECT must be the first frame sent (MessageType=1, Channel=0 for control).
-// Per spec: "Broker behavior: Valid CONNECT: No explicit ACK message. Broker remains silent and is ready for requests."
-// We implement a timeout: if connection closes within 5 seconds, treat as auth failure.
-func (c *Client) sendConnect(ctx context.Context) error {
-	var token string
-	var err error
-
-	// Obtain JWT from token provider (may be empty for anonymous mode).
-	if c.tokenProvider != nil {
-		token, err = c.tokenProvider(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to obtain token: %w", err)
-		}
-	}
-
-	// Build CONNECT frame: Type=1, Channel=0 (control), Body=JWT bytes.
-	connectFrame := transport.Frame{
-		Type:    transport.FrameTypeConnOpen,
-		Flags:   0,
-		Channel: 0,
-		Body:    []byte(token),
-	}
-
-	// Send CONNECT frame.
-	if err := c.mux.Send(connectFrame); err != nil {
-		return fmt.Errorf("failed to send CONNECT frame: %w", err)
-	}
-
-	// Per CLIENT_SPEC.md: "Valid CONNECT: No explicit ACK message. Broker remains silent and is ready for requests."
-	// "Invalid CONNECT: Broker closes connection within 1 second (no response frame sent)"
-	// We wait briefly to detect immediate connection closure (indicates auth failure).
-	// If connection remains open after timeout, assume success.
-	const connectTimeout = 200 * time.Millisecond
-	timeoutCtx, cancel := context.WithTimeout(ctx, connectTimeout)
-	defer cancel()
-
-	select {
-	case <-c.mux.Ctx().Done():
-		// Connection closed during handshake - treat as authentication failure.
-		return errors.New("connection closed during CONNECT handshake (authentication rejected)")
-	case <-timeoutCtx.Done():
-		// Timeout elapsed without connection closure - assume success per spec.
-		// "If no close frame within 5 seconds, assume connection is ready"
-		return nil
-	}
+// Schedule returns the Schedule domain client.
+func (c *Client) Schedule() schedule.Client {
+	return c.scheduleClient
 }
