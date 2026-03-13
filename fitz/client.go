@@ -3,48 +3,67 @@ package fitz
 import (
 	"context"
 
-	"github.com/cntryl/fitz-go/internal/core/types"
-	"github.com/cntryl/fitz-go/internal/domains/kv"
-	"github.com/cntryl/fitz-go/internal/domains/lease"
-	"github.com/cntryl/fitz-go/internal/domains/notice"
-	"github.com/cntryl/fitz-go/internal/domains/queue"
-	"github.com/cntryl/fitz-go/internal/domains/rpc"
-	"github.com/cntryl/fitz-go/internal/domains/schedule"
-	"github.com/cntryl/fitz-go/internal/domains/stream"
+	coreclient "github.com/cntryl/fitz-go/internal/core/client"
 )
 
-// TokenProvider is the canonical type for JWT token providers.
-// Re-exported from internal/core/types for public API use.
-type TokenProvider = types.TokenProvider
+// Client is the canonical public Fitz Go client.
+type Client struct {
+	inner *coreclient.Client
+}
 
-// Client is the primary top-level Fitz client exposing each domain client.
-// Domain clients returned by Notice(), Stream(), Queue(), etc. are safe for concurrent use by multiple goroutines.
-// Implementations SHOULD provide a constructor (e.g., NewClient) that accepts:
-//   - addr: broker address determining transport ("host:port", "tcp://...", "ws://...", "wss://...")
-//   - tokenProvider: function for obtaining JWT tokens (supports renewal on reconnection)
-type Client interface {
-	// Connect establishes a connection to the broker using the address and
-	// TokenProvider configured during client construction.
-	//
-	// Connect will call the TokenProvider to obtain a JWT token for the
-	// CONN_OPEN handshake. This allows tokens to be refreshed on each
-	// connection attempt.
-	//
-	// Per CLIENT_SPEC.md, both TCP and WebSocket transports MUST be supported
-	// with identical Fitz wire protocol semantics.
-	Connect(ctx context.Context) error
+// NewClient constructs a disconnected client. Call Connect before using the
+// domain accessors.
+func NewClient(addr string, tokenProvider TokenProvider, opts ...Option) *Client {
+	return &Client{
+		inner: coreclient.NewClientWithOptions(addr, tokenProvider, opts...),
+	}
+}
 
-	// Close cleanly shuts down the client and associated resources.
-	// This should send a CONN_CLOSE frame if the connection is active,
-	// then close the underlying transport.
-	Close() error
+// Dial constructs and connects a client in one step.
+func Dial(ctx context.Context, addr string, tokenProvider TokenProvider, opts ...Option) (*Client, error) {
+	client := NewClient(addr, tokenProvider, opts...)
+	if err := client.Connect(ctx); err != nil {
+		return nil, err
+	}
+	return client, nil
+}
 
-	// Domain clients. Each is safe for concurrent use.
-	Notice() notice.Client
-	Stream() stream.Client
-	Queue() queue.Client
-	RPC() rpc.Client
-	KV() kv.Client
-	Lease() lease.Client
-	Schedule() schedule.Client
+func (c *Client) Connect(ctx context.Context) error {
+	return c.inner.Connect(ctx)
+}
+
+func (c *Client) Close() error {
+	return c.inner.Close()
+}
+
+func (c *Client) State() ConnectionState {
+	return c.inner.State()
+}
+
+func (c *Client) Notice() NoticeClient {
+	return c.inner.Notice()
+}
+
+func (c *Client) Stream() StreamClient {
+	return &streamClient{inner: c.inner.Stream()}
+}
+
+func (c *Client) Queue() QueueClient {
+	return &queueClient{inner: c.inner.Queue()}
+}
+
+func (c *Client) RPC() RPCClient {
+	return &rpcClient{inner: c.inner.RPC()}
+}
+
+func (c *Client) KV() KVClient {
+	return &kvClient{inner: c.inner.KV()}
+}
+
+func (c *Client) Lease() LeaseClient {
+	return &leaseClient{inner: c.inner.Lease()}
+}
+
+func (c *Client) Schedule() ScheduleClient {
+	return c.inner.Schedule()
 }

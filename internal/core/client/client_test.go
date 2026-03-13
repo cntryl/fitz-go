@@ -150,14 +150,14 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 	defer cancel()
 	require.NoError(t, c.Connect(ctx))
 
-	firstTransport.PushReadFrame(noticeSubscribeResponseFrame(t, 11))
+	go pushSubscribeResponseAfterWrite(firstTransport, noticeSubscribeResponseFrame(t, 11), 2)
 	_, err := c.Notice().Subscribe(ctx, "notice://realm/area/resource", func(context.Context, notice.NoticeMsg) error {
 		return nil
 	})
 	require.NoError(t, err)
 
 	initialConn := c.currentConnection()
-	secondTransport.PushReadFrame(noticeSubscribeResponseFrame(t, 22))
+	go pushSubscribeResponseAfterWrite(secondTransport, noticeSubscribeResponseFrame(t, 22), 2)
 
 	// Act
 	require.NoError(t, initialConn.Close())
@@ -264,4 +264,14 @@ func (s *scriptedTransport) WrittenFrames() [][]byte {
 		out[idx] = append([]byte(nil), s.written[idx]...)
 	}
 	return out
+}
+
+func pushSubscribeResponseAfterWrite(trans *scriptedTransport, frame []byte, expectedWrites int) {
+	for {
+		if len(trans.WrittenFrames()) >= expectedWrites {
+			trans.PushReadFrame(frame)
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

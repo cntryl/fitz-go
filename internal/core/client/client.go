@@ -93,7 +93,7 @@ type Config struct {
 func defaultConfig() *Config {
 	return &Config{
 		TransportType: TransportAuto,
-		AuthTimeout:   5 * time.Second,
+		AuthTimeout:   100 * time.Millisecond,
 		ReadTimeout:   30 * time.Second,
 		WriteTimeout:  10 * time.Second,
 	}
@@ -107,8 +107,8 @@ func WithURL(url string) Option {
 	return func(c *Config) { c.URL = url }
 }
 
-// WithJWT sets the JWT token for authentication.
-// Use empty string for anonymous mode.
+// WithJWT sets a static JWT token on the internal client config.
+// The supported public API uses token providers instead.
 func WithJWT(jwt string) Option {
 	return func(c *Config) { c.JWT = jwt }
 }
@@ -165,6 +165,16 @@ func NewClient(addr string, tokenProvider types.TokenProvider) *Client {
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 	}
+}
+
+// NewClientWithOptions creates a new Fitz client targeting the given address
+// and applies functional options before the first Connect call.
+func NewClientWithOptions(addr string, tokenProvider types.TokenProvider, opts ...Option) *Client {
+	c := NewClient(addr, tokenProvider)
+	for _, opt := range opts {
+		opt(c.config)
+	}
+	return c
 }
 
 // Connect establishes a connection to the broker using the address and
@@ -306,6 +316,17 @@ func (c *Client) Close() error {
 	return err
 }
 
+// State returns the current connection lifecycle state.
+func (c *Client) State() connection.State {
+	if conn := c.currentConnection(); conn != nil {
+		return conn.State()
+	}
+	if c.closed.Load() {
+		return connection.StateClosed
+	}
+	return connection.StateDisconnected
+}
+
 // SendRequest is a low-level API for domain implementations.
 // Sends a synchronous request and waits for response.
 // Per CLIENT_SPEC.md: Responses matched via FIFO correlation.
@@ -342,7 +363,7 @@ func (c *Client) Metrics() connection.MultiplexerMetrics {
 	return connection.MultiplexerMetrics{}
 }
 
-// Domain client accessors (implements fitz.Client interface)
+// Domain client accessors.
 
 // KV returns the KV domain client.
 func (c *Client) KV() kv.Client {

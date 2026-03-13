@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	fitz "github.com/cntryl/fitz-go/fitz"
 	"github.com/cntryl/fitz-go/internal/core/client"
 	"github.com/cntryl/fitz-go/internal/core/types"
 )
@@ -123,7 +122,7 @@ func StartBrokerIfNeeded(transport TransportType, authMode AuthMode) (addr strin
 }
 
 // Client returns the connected Fitz client.
-func (f *TestFixture) Client() fitz.Client {
+func (f *TestFixture) Client() *client.Client {
 	if f.client == nil {
 		f.t.Fatal("client not connected; call Connect() first")
 	}

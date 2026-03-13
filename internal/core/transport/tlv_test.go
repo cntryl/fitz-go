@@ -57,15 +57,17 @@ func TestShouldReturnErrorGivenTruncatedTLVWhenDecoding(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestShouldPanicGivenDuplicateTagWhenAddTagCalled(t *testing.T) {
+func TestShouldReturnErrorGivenDuplicateTagWhenAddTagCalled(t *testing.T) {
 	// Arrange
 	enc := NewTLVEncoder()
 	enc.AddString(TagRoute, "a")
 
-	// Act & Assert
-	require.Panics(t, func() {
-		enc.AddString(TagRoute, "b")
-	})
+	// Act
+	enc.AddString(TagRoute, "b")
+
+	// Assert
+	require.Error(t, enc.Err())
+	require.Nil(t, enc.Encode())
 }
 
 func TestShouldReturnErrorGivenBadUint64LengthWhenGetUint64Called(t *testing.T) {
@@ -99,13 +101,15 @@ func TestShouldReturnValueWhenUint64LengthCorrectWhenGetUint64Called(t *testing.
 	require.Equal(t, uint64(1), v)
 }
 
-func TestShouldPanicGivenOversizedValueWhenAddTagCalled(t *testing.T) {
+func TestShouldReturnErrorGivenOversizedValueWhenAddTagCalled(t *testing.T) {
 	// Arrange
 	enc := NewTLVEncoder()
 	hugeValue := make([]byte, int(MaxTLVValueLen)+1)
 
-	// Act & Assert
-	require.Panics(t, func() {
-		enc.AddTag(TagBody, hugeValue)
-	})
+	// Act
+	enc.AddTag(TagBody, hugeValue)
+
+	// Assert
+	require.Error(t, enc.Err())
+	require.Nil(t, enc.Encode())
 }

@@ -235,13 +235,10 @@ func TestShouldHandleMaxSizePayloadGivenExactLimitWhenEncodeFrameCalled(t *testi
 
 func TestShouldRejectOversizePayloadGivenPayloadAboveLimitWhenEncodeFrameCalled(t *testing.T) {
 	// Arrange
-	// Payload larger than max should panic
 	payload := make([]byte, MaxPayloadSize+1)
 
 	// Act / Assert
-	assert.Panics(t, func() {
-		EncodeFrame(100, payload)
-	})
+	assert.Nil(t, EncodeFrame(100, payload))
 }
 
 func TestShouldPreserveBinaryDataGivenFullByteRangeWhenDecodeFrameCalled(t *testing.T) {

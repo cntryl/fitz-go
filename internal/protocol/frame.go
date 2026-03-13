@@ -132,7 +132,7 @@ func EncodeFrame(msgType uint16, payload []byte) []byte {
 // Caller must Release() the returned FrameBuffer.
 func EncodeFrameOwned(msgType uint16, payload []byte) *FrameBuffer {
 	if len(payload) > MaxPayloadSize {
-		panic(fmt.Sprintf("payload too large: %d bytes (max %d)", len(payload), MaxPayloadSize))
+		return nil
 	}
 
 	buf := getBuffer()
@@ -237,7 +237,7 @@ func EncodeTCPFrame(msgType uint16, payload []byte) []byte {
 // Caller must Release() the returned FrameBuffer.
 func EncodeTCPFrameOwned(msgType uint16, payload []byte) *FrameBuffer {
 	if len(payload) > MaxPayloadSize {
-		panic(fmt.Sprintf("payload too large: %d bytes (max %d)", len(payload), MaxPayloadSize))
+		return nil
 	}
 
 	buf := getBuffer()

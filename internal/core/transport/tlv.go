@@ -64,6 +64,7 @@ type TLVValue struct {
 type TLVEncoder struct {
 	entries []TLVValue
 	seen    map[uint8]bool
+	err     error
 }
 
 // NewTLVEncoder creates a new TLV encoder.
@@ -78,14 +79,19 @@ func NewTLVEncoder() *TLVEncoder {
 var ErrTLVValueTooLarge = errors.New("TLV value exceeds maximum length of 65535 bytes")
 
 // AddTag appends a TLV entry with the given tag and raw value.
-// Panics if the value exceeds MaxTLVValueLen or if the tag has already been added
-// (duplicate tags violate CLIENT_SPEC.md rule 5).
+// Invalid input is recorded on the encoder and surfaced via Err/Encode instead
+// of panicking.
 func (e *TLVEncoder) AddTag(tag uint8, value []byte) *TLVEncoder {
+	if e.err != nil {
+		return e
+	}
 	if len(value) > int(MaxTLVValueLen) {
-		panic(fmt.Sprintf("TLV value for tag 0x%02X is %d bytes, exceeds maximum %d", tag, len(value), MaxTLVValueLen))
+		e.err = fmt.Errorf("TLV value for tag 0x%02X is %d bytes, exceeds maximum %d", tag, len(value), MaxTLVValueLen)
+		return e
 	}
 	if e.seen[tag] {
-		panic(fmt.Sprintf("duplicate TLV tag 0x%02X: tags must be unique within a frame (CLIENT_SPEC.md rule 5)", tag))
+		e.err = fmt.Errorf("duplicate TLV tag 0x%02X: tags must be unique within a frame (CLIENT_SPEC.md rule 5)", tag)
+		return e
 	}
 	e.seen[tag] = true
 	e.entries = append(e.entries, TLVValue{
@@ -93,6 +99,11 @@ func (e *TLVEncoder) AddTag(tag uint8, value []byte) *TLVEncoder {
 		Value: value,
 	})
 	return e
+}
+
+// Err returns the first encoder error encountered during AddTag/Add* calls.
+func (e *TLVEncoder) Err() error {
+	return e.err
 }
 
 // AddString adds a string value with the given tag.
@@ -128,6 +139,10 @@ func (e *TLVEncoder) AddUint8(tag uint8, value uint8) *TLVEncoder {
 // Encode marshals all accumulated TLV entries into a single byte slice.
 // Format: [tag(1)][len(2 BE)][value...]...
 func (e *TLVEncoder) Encode() []byte {
+	if e.err != nil {
+		return nil
+	}
+
 	// Pre-calculate total size.
 	totalSize := 0
 	for _, entry := range e.entries {

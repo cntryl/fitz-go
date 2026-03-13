@@ -84,7 +84,7 @@ type Connection struct {
 // Config contains connection configuration.
 type Config struct {
 	JWT              string
-	AuthTimeout      time.Duration // Default 5s (CLIENT_SPEC.md recommendation)
+	AuthTimeout      time.Duration // CONNECT silent-success settle window (default 100ms)
 	ReadTimeout      time.Duration // Default 30s (per-read timeout)
 	WriteTimeout     time.Duration // Default 10s
 	ReconnectEnabled bool
@@ -98,7 +98,7 @@ type Config struct {
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
-		AuthTimeout:  5 * time.Second,
+		AuthTimeout:  100 * time.Millisecond,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
@@ -118,7 +118,7 @@ func New(trans transport.Transport, cfg Config) *Connection {
 
 	// Apply defaults
 	if cfg.AuthTimeout == 0 {
-		cfg.AuthTimeout = 5 * time.Second
+		cfg.AuthTimeout = 100 * time.Millisecond
 	}
 	if cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = 30 * time.Second
@@ -588,6 +588,11 @@ func (c *Connection) RegisterRPCResponseHandler(handler func(correlationID [16]b
 
 func (c *Connection) setState(state State) {
 	c.state.Store(int32(state))
+}
+
+// State returns the current lifecycle state.
+func (c *Connection) State() State {
+	return State(c.state.Load())
 }
 
 func (c *Connection) isAuthenticated() bool {

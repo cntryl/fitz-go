@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fitz-go
+        uses: actions/checkout@v4
+        with:
+          path: fitz-go
+
+      - name: Check out Fitz broker
+        uses: actions/checkout@v4
+        with:
+          repository: cntryl/fitz
+          path: fitz
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.6"
+
+      - name: Start broker stack
+        working-directory: fitz-go
+        run: docker compose -f compose.yml up -d --build
+
+      - name: Wait for brokers
+        run: sleep 10
+
+      - name: Run tests
+        working-directory: fitz-go
+        env:
+          FITZ_BROKER_ANON_TCP_ADDR: localhost:4191
+          FITZ_BROKER_ANON_WS_ADDR: ws://localhost:4190/ws
+          FITZ_BROKER_AUTH_TCP_ADDR: localhost:4091
+          FITZ_BROKER_AUTH_WS_ADDR: ws://localhost:4090/ws
+          FITZ_BROKER_JWT_HMAC_SECRET: test-secret-key
+          FITZ_BROKER_JWT_AUDIENCE: fitz
+        run: |
+          go test ./test/...
+          go test ./...
+
+      - name: Stop broker stack
+        if: always()
+        working-directory: fitz-go
+        run: docker compose -f compose.yml down -v
