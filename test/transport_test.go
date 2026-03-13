@@ -6,215 +6,136 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/internal/core/transport"
-	"github.com/cntryl/fitz-go/internal/domains/kv"
-	"github.com/cntryl/fitz-go/internal/domains/notice"
-	"github.com/cntryl/fitz-go/internal/domains/rpc"
+	"github.com/cntryl/fitz-go/fitz"
+	coretransport "github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// --- Acceptance criteria from CLIENT_SPEC.md (Transport-Level) ---
-// - TCP connect: establish TCP, send CONNECT, verify session
-// - WebSocket connect: establish WS, send CONNECT, verify session
-// - Frame size enforcement: frame > max_frame_size → broker closes
-// - Reconnect: drop connection, reconnect, verify session re-established
-// - Protocol equivalence: both transports identical behavior
-
-// TestShouldConnectViaTCPGivenValidAddressWhenTCPTransportUsed verifies
-// TCP transport connection establishment (AC-CONN-001).
 func TestShouldConnectViaTCPGivenValidAddressWhenTCPTransportUsed(t *testing.T) {
-	// Arrange
 	f := fixture.NewTestFixture(t, fixture.TransportTCP)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	// Act
-	f.ConnectOrSkip(ctx)
-
-	// Assert
-	client := f.Client()
-	require.NotNil(t, client, "expected non-nil client after successful TCP connection")
+	f.ConnectOrFail(ctx)
+	require.NotNil(t, f.Client())
 }
 
-// TestShouldConnectViaWebSocketGivenValidAddressWhenWebSocketTransportUsed
-// verifies WebSocket transport connection establishment (AC-CONN-001).
 func TestShouldConnectViaWebSocketGivenValidAddressWhenWebSocketTransportUsed(t *testing.T) {
-	// Arrange
 	f := fixture.NewTestFixture(t, fixture.TransportWebSocket)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	// Act
-	f.ConnectOrSkip(ctx)
-
-	// Assert
-	client := f.Client()
-	require.NotNil(t, client, "expected non-nil client after successful WebSocket connection")
+	f.ConnectOrFail(ctx)
+	require.NotNil(t, f.Client())
 }
 
 func TestShouldAuthenticateGivenValidJWTWhenAuthEnabledBrokerConfigured(t *testing.T) {
 	fixture.RunWithTransportsOnly(t, func(t *testing.T, transportType fixture.TransportType) {
-		// Arrange
 		f := fixture.NewTestFixture(t, transportType)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-
-		// Act
 		f.ConnectWithAuthOrFail(ctx, fixture.AuthModeValidJWT)
-
-		// Assert
 		require.NotNil(t, f.Client())
 	})
 }
 
 func TestShouldRejectExpiredJWTGivenAuthEnabledBrokerConfiguredWhenConnectCalled(t *testing.T) {
 	fixture.RunWithTransportsOnly(t, func(t *testing.T, transportType fixture.TransportType) {
-		// Arrange
 		f := fixture.NewTestFixture(t, transportType)
 		f.SetAuthMode(fixture.AuthModeExpiredJWT)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		// Act
 		err := f.Connect(ctx)
-
-		// Assert
-		if err == nil {
-			t.Skip("auth-enabled broker not configured")
-		}
 		require.Error(t, err)
 	})
 }
 
 func TestShouldRejectInvalidSignatureJWTGivenAuthEnabledBrokerConfiguredWhenConnectCalled(t *testing.T) {
 	fixture.RunWithTransportsOnly(t, func(t *testing.T, transportType fixture.TransportType) {
-		// Arrange
 		f := fixture.NewTestFixture(t, transportType)
 		f.SetAuthMode(fixture.AuthModeInvalidSignature)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		// Act
 		err := f.Connect(ctx)
-
-		// Assert
-		if err == nil {
-			t.Skip("auth-enabled broker not configured")
-		}
 		require.Error(t, err)
 	})
 }
 
-// TestShouldProduceIdenticalBehaviorGivenSameOperationWhenDifferentTransports
-// verifies protocol equivalence between TCP and WebSocket per CLIENT_SPEC.md.
 func TestShouldProduceIdenticalBehaviorGivenSameOperationWhenDifferentTransports(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		// Act
-		f.ConnectOrSkip(ctx)
+		f.ConnectOrFail(ctx)
 		client := f.Client()
-
-		// Assert — verify client is usable via both transports.
-		require.NotNil(t, client, "expected non-nil client in anonymous mode (AC-CONN-004)")
-
-		// All domain clients should be accessible.
-		require.NotNil(t, client.Notice(), "Notice client should be non-nil")
-		require.NotNil(t, client.Stream(), "Stream client should be non-nil")
-		require.NotNil(t, client.Queue(), "Queue client should be non-nil")
-		require.NotNil(t, client.RPC(), "RPC client should be non-nil")
-		require.NotNil(t, client.KV(), "KV client should be non-nil")
-		require.NotNil(t, client.Lease(), "Lease client should be non-nil")
-		require.NotNil(t, client.Schedule(), "Schedule client should be non-nil")
+		require.NotNil(t, client)
+		require.NotNil(t, client.Notice())
+		require.NotNil(t, client.Stream())
+		require.NotNil(t, client.Queue())
+		require.NotNil(t, client.RPC())
+		require.NotNil(t, client.KV())
+		require.NotNil(t, client.Lease())
+		require.NotNil(t, client.Schedule())
 	})
 }
 
-// TestShouldReconnectGivenConnectionLostWhenReconnectAttempted verifies
-// client can reconnect after a connection is dropped.
 func TestShouldReconnectGivenConnectionLostWhenReconnectAttempted(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		f.ConnectOrSkip(ctx)
-
-		// Act — close and reconnect.
-		require.NoError(t, f.Client().Close(), "Close should succeed")
-
-		// Create a new fixture for reconnection.
-		f2 := fixture.NewTestFixture(t, transport)
-		f2.ConnectOrSkip(ctx)
-
-		// Assert
-		require.NotNil(t, f2.Client(), "reconnected client should be non-nil")
-	})
-}
-
-// TestShouldDropSessionStateGivenDisconnectWhenReconnect verifies session
-// state (subscriptions, transactions) is lost on disconnect per CLIENT_SPEC.md.
-// This is a broader integration test covering the reconnect-state acceptance
-// criterion: "old subscription is lost; client must re-subscribe explicitly."
-func TestShouldDropSessionStateGivenDisconnectWhenReconnect(t *testing.T) {
-	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
-		f := fixture.NewTestFixture(t, transport)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		f.ConnectOrSkip(ctx)
-
-		// Subscribe to a notice route.
-		route := f.UniqueRoute("notice")
-		received := make(chan struct{}, 1)
-		sub, err := f.Client().Notice().Subscribe(ctx, route, func(_ context.Context, _ notice.NoticeMsg) error {
-			received <- struct{}{}
-			return nil
-		})
-
-		// If subscribe is not supported without a real broker, skip gracefully.
-		if err != nil {
-			t.Skipf("subscribe not functional without broker: %v", err)
-		}
-		_ = sub
-
-		// Act — close connection, reconnect.
+		f.ConnectOrFail(ctx)
 		require.NoError(t, f.Client().Close())
 
 		f2 := fixture.NewTestFixture(t, transport)
-		f2.ConnectOrSkip(ctx)
-
-		// Assert — old subscription should NOT be recovered; publish should
-		// not deliver to old handler. We verify the new client is usable.
+		f2.ConnectOrFail(ctx)
 		require.NotNil(t, f2.Client())
 	})
 }
 
-// TestShouldNotRecoverNoticeSubscriptionGivenDisconnectWhenReconnectedWithoutResubscribe
-// verifies session-scoped notice subscriptions are not preserved across disconnects.
+func TestShouldDropSessionStateGivenDisconnectWhenReconnect(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrFail(ctx)
+		route := f.UniqueRoute("notice")
+		received := make(chan struct{}, 1)
+		sub, err := f.Client().Notice().Subscribe(ctx, route, func(_ context.Context, _ fitz.NoticeMsg) error {
+			received <- struct{}{}
+			return nil
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, f.Client().Close())
+		sub.Unsubscribe()
+
+		f2 := fixture.NewTestFixture(t, transport)
+		f2.ConnectOrFail(ctx)
+		require.NotNil(t, f2.Client())
+	})
+}
+
 func TestShouldNotRecoverNoticeSubscriptionGivenDisconnectWhenReconnectedWithoutResubscribe(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
 		subscriber := fixture.NewTestFixture(t, transport)
 		reconnected := fixture.NewTestFixture(t, transport)
 		publisher := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		subscriber.ConnectOrSkip(ctx)
-		publisher.ConnectOrSkip(ctx)
-
+		subscriber.ConnectOrFail(ctx)
+		publisher.ConnectOrFail(ctx)
 		route := subscriber.UniqueRoute("notice")
 		received := make(chan struct{}, 2)
 
-		sub, err := subscriber.Client().Notice().Subscribe(ctx, route, func(_ context.Context, _ notice.NoticeMsg) error {
+		sub, err := subscriber.Client().Notice().Subscribe(ctx, route, func(_ context.Context, _ fitz.NoticeMsg) error {
 			received <- struct{}{}
 			return nil
 		})
@@ -227,13 +148,11 @@ func TestShouldNotRecoverNoticeSubscriptionGivenDisconnectWhenReconnectedWithout
 			t.Fatal("timed out waiting for initial notice delivery")
 		}
 
-		// Act
 		require.NoError(t, subscriber.Client().Close())
 		sub.Unsubscribe()
-		reconnected.ConnectOrSkip(ctx)
+		reconnected.ConnectOrFail(ctx)
 		require.NoError(t, publisher.Client().Notice().Publish(ctx, route, []byte("after-disconnect")))
 
-		// Assert
 		select {
 		case <-received:
 			t.Fatal("unexpected notice delivery after reconnect without resubscribe")
@@ -245,87 +164,50 @@ func TestShouldNotRecoverNoticeSubscriptionGivenDisconnectWhenReconnectedWithout
 
 func TestShouldRejectNonConnectFrameGivenNewTransportWhenFrameSentBeforeAuthentication(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
-		// Arrange
 		authMode := fixture.AuthModeForTestName(t.Name())
 		addr, stop, err := fixture.StartBrokerIfNeeded(transportType, authMode)
-		if err != nil {
-			t.Skipf("broker not available: %v", err)
-		}
+		require.NoError(t, err)
 		t.Cleanup(stop)
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		var trans transport.Transport
+		var trans coretransport.Transport
 		switch transportType {
 		case fixture.TransportTCP:
-			trans, err = transport.DialTCP(ctx, addr)
+			trans, err = coretransport.DialTCP(ctx, addr)
 		case fixture.TransportWebSocket:
-			trans, err = transport.DialWebSocket(ctx, addr)
+			trans, err = coretransport.DialWebSocket(ctx, addr)
 		default:
 			t.Fatalf("unsupported transport: %s", transportType)
 		}
-		if err != nil {
-			t.Skipf("broker not available: %v", err)
-		}
+		require.NoError(t, err)
 		t.Cleanup(func() { _ = trans.Close() })
 
 		frame := protocol.EncodeFrameOwned(protocol.MessageTypeKvBegin, nil)
 		defer frame.Release()
-
-		// Act
 		require.NoError(t, trans.Write(ctx, frame.Bytes()))
 		_, err = trans.Read(ctx)
-
-		// Assert
 		require.Error(t, err)
 	})
 }
 
-// --- Connection edge cases ---
-
-// TestShouldFailConnectGivenInvalidAddressWhenConnectCalled verifies
-// Connect returns an error when the broker address is unreachable.
 func TestShouldFailConnectGivenInvalidAddressWhenConnectCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
-		// Use a port where no broker is listening.
-		switch transport {
-		case fixture.TransportTCP:
+		if transport == fixture.TransportTCP {
 			f.SetBrokerAddr("localhost:39999")
-		case fixture.TransportWebSocket:
+		} else {
 			f.SetBrokerAddr("ws://localhost:39998/ws")
 		}
 
-		err := f.Connect(ctx)
-
-		require.Error(t, err, "Connect to invalid address should fail")
-	})
-
-	// Run TCP-only with explicit unreachable host to ensure we don't skip
-	t.Run("TCP_refused", func(t *testing.T) {
-		f := fixture.NewTestFixture(t, fixture.TransportTCP)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		f.SetBrokerAddr("localhost:39999")
-		err := f.Connect(ctx)
-		require.Error(t, err)
-	})
-
-	t.Run("WS_refused", func(t *testing.T) {
-		f := fixture.NewTestFixture(t, fixture.TransportWebSocket)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		f.SetBrokerAddr("ws://localhost:39998/ws")
-		err := f.Connect(ctx)
-		require.Error(t, err)
+		require.Error(t, f.Connect(ctx))
 	})
 }
 
-// TestShouldFailConnectGivenCanceledContextWhenConnectCalled verifies
-// Connect returns promptly when the context is already canceled.
 func TestShouldFailConnectGivenCanceledContextWhenConnectCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
@@ -333,71 +215,54 @@ func TestShouldFailConnectGivenCanceledContextWhenConnectCalled(t *testing.T) {
 		cancel()
 
 		err := f.Connect(ctx)
-
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, context.Canceled), "expected context.Canceled, got: %v", err)
+		assert.True(t, errors.Is(err, context.Canceled))
 	})
 }
 
-// TestShouldFailConnectGivenShortTimeoutWhenConnectToUnreachable verifies
-// Connect returns with deadline exceeded or connection error when address is unreachable.
 func TestShouldFailConnectGivenShortTimeoutWhenConnectToUnreachable(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 		defer cancel()
 
-		switch transport {
-		case fixture.TransportTCP:
+		if transport == fixture.TransportTCP {
 			f.SetBrokerAddr("localhost:39999")
-		case fixture.TransportWebSocket:
+		} else {
 			f.SetBrokerAddr("ws://localhost:39998/ws")
 		}
 
-		err := f.Connect(ctx)
-
-		require.Error(t, err)
+		require.Error(t, f.Connect(ctx))
 	})
 }
 
-// TestShouldNotPanicGivenDoubleCloseWhenCloseCalledTwice verifies
-// calling Close twice does not panic; second call may return error or nil.
 func TestShouldNotPanicGivenDoubleCloseWhenCloseCalledTwice(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		f.ConnectOrSkip(ctx)
-
-		client := f.Client()
-		require.NoError(t, client.Close(), "first Close should succeed")
-		// Second Close: must not panic; result is implementation-defined.
-		_ = client.Close()
+		f.ConnectOrFail(ctx)
+		require.NoError(t, f.Client().Close())
+		_ = f.Client().Close()
 	})
 }
 
-// TestShouldReturnErrorGivenOperationAfterCloseWhenDomainMethodCalled verifies
-// domain operations return an error after the client has been closed.
 func TestShouldReturnErrorGivenOperationAfterCloseWhenDomainMethodCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		f.ConnectOrSkip(ctx)
-
-		route := kv.NewRoute(f.UniqueRealm(), f.UniqueArea(), f.UniqueResource()).String()
+		f.ConnectOrFail(ctx)
+		route := f.UniqueRoute("kv")
 		require.NoError(t, f.Client().Close())
 
 		_, err := f.Client().KV().Begin(ctx, route)
-
-		require.Error(t, err, "operation after Close should fail")
+		require.Error(t, err)
 	})
 }
 
-// TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight verifies
-// a long-running request returns when the context is canceled.
 func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		fWorker := fixture.NewTestFixture(t, transport)
@@ -405,15 +270,13 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		fWorker.ConnectOrSkip(ctx)
-		fCaller.ConnectOrSkip(ctx)
-
+		fWorker.ConnectOrFail(ctx)
+		fCaller.ConnectOrFail(ctx)
 		route := fWorker.UniqueRoute("rpc")
 
-		// Worker that does not send any response for 3s, so caller blocks in Call().
-		sub, err := fWorker.Client().RPC().Subscribe(ctx, route, func(_ context.Context, _ rpc.InboundRequest, w rpc.ResponseWriter) error {
+		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 			time.Sleep(3 * time.Second)
-			return w.Response([]byte("late"))
+			return w.Send([]byte("late"))
 		})
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
@@ -421,7 +284,7 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 		callCtx, callCancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			_, err := fCaller.Client().RPC().Request(callCtx, route, []byte("block"), 10*time.Second)
+			_, err := fCaller.Client().RPC().Call(callCtx, route, []byte("block"), 10*time.Second)
 			done <- err
 		}()
 
@@ -430,8 +293,8 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 
 		select {
 		case err := <-done:
-			require.Error(t, err, "RPC Call should return error when context is canceled")
-			assert.True(t, errors.Is(err, context.Canceled), "expected context.Canceled, got: %v", err)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, context.Canceled))
 		case <-time.After(5 * time.Second):
 			t.Fatal("Call did not return after context cancel")
 		}

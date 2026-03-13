@@ -24,11 +24,12 @@ func (it *SliceIterator[T]) Next() bool {
 	return it.index < len(it.items)
 }
 
-// Value returns the current item (valid only after a successful Next()).
-// Panics if called before Next() or after Next() returns false.
+// Value returns the current item. If the iterator is not positioned on a valid
+// element, the zero value is returned.
 func (it *SliceIterator[T]) Value() T {
 	if it.index < 0 || it.index >= len(it.items) {
-		panic("SliceIterator.Value() called in invalid state")
+		var zero T
+		return zero
 	}
 	return it.items[it.index]
 }

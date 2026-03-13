@@ -6,45 +6,30 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/internal/domains/notice"
+	"github.com/cntryl/fitz-go/fitz"
 	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// --- Acceptance criteria from CLIENT_SPEC.md (Notice domain) ---
-// - subscribe to pattern, receive matching publications
-// - multiple subscriptions on same pattern both receive
-// - publish with no subscribers returns ok
-// - unsubscribe stops delivery
-// - wildcard patterns match correctly
-
-// TestShouldReceiveNotificationGivenActiveSubscriptionWhenPublishMatches
-// verifies the basic pub/sub lifecycle: SUBSCRIBE → PUBLISH → NOTIFY.
 func TestShouldReceiveNotificationGivenActiveSubscriptionWhenPublishMatches(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		f.ConnectOrSkip(ctx)
-
+		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("notice")
-		received := make(chan notice.NoticeMsg, 1)
+		received := make(chan fitz.NoticeMsg, 1)
 
-		sub, err := f.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg notice.NoticeMsg) error {
+		sub, err := f.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg fitz.NoticeMsg) error {
 			received <- msg
 			return nil
 		})
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 
-		// Act
-		err = f.Client().Notice().Publish(ctx, route, []byte("hello"))
-
-		// Assert
-		require.NoError(t, err, "Publish should succeed")
+		require.NoError(t, f.Client().Notice().Publish(ctx, route, []byte("hello")))
 		select {
 		case msg := <-received:
 			assert.Equal(t, route, msg.Route)
@@ -55,27 +40,22 @@ func TestShouldReceiveNotificationGivenActiveSubscriptionWhenPublishMatches(t *t
 	})
 }
 
-// TestShouldFanoutToAllSubscribersGivenMultipleSubscriptionsWhenPublish
-// verifies a single PUBLISH reaches all matching subscriptions from different sessions.
 func TestShouldFanoutToAllSubscribersGivenMultipleSubscriptionsWhenPublish(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange — two separate clients (sessions) subscribing to the same route.
 		f1 := fixture.NewTestFixture(t, transport)
 		f2 := fixture.NewTestFixture(t, transport)
 		publisher := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		f1.ConnectOrSkip(ctx)
-		f2.ConnectOrSkip(ctx)
-		publisher.ConnectOrSkip(ctx)
-
+		f1.ConnectOrFail(ctx)
+		f2.ConnectOrFail(ctx)
+		publisher.ConnectOrFail(ctx)
 		route := f1.UniqueRoute("notice")
 
 		var mu sync.Mutex
-		var count int
-
-		handler := func(_ context.Context, _ notice.NoticeMsg) error {
+		count := 0
+		handler := func(_ context.Context, _ fitz.NoticeMsg) error {
 			mu.Lock()
 			count++
 			mu.Unlock()
@@ -90,61 +70,42 @@ func TestShouldFanoutToAllSubscribersGivenMultipleSubscriptionsWhenPublish(t *te
 		require.NoError(t, err)
 		defer sub2.Unsubscribe()
 
-		// Act — publish from a third client
-		err = publisher.Client().Notice().Publish(ctx, route, []byte("fanout"))
-
-		// Assert
-		require.NoError(t, err)
+		require.NoError(t, publisher.Client().Notice().Publish(ctx, route, []byte("fanout")))
 		time.Sleep(500 * time.Millisecond)
 
 		mu.Lock()
-		assert.Equal(t, 2, count, "both subscribers should receive the notification")
+		assert.Equal(t, 2, count)
 		mu.Unlock()
 	})
 }
 
-// TestShouldSucceedGivenNoSubscribersWhenPublishCalled verifies a PUBLISH
-// with no active subscribers still returns success (fire-and-forget semantics).
 func TestShouldSucceedGivenNoSubscribersWhenPublishCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		f.ConnectOrSkip(ctx)
-
-		route := f.UniqueRoute("notice")
-
-		// Act — publish with no subscribers.
-		err := f.Client().Notice().Publish(ctx, route, []byte("nobody-listening"))
-
-		// Assert
-		assert.NoError(t, err, "publish with no subscribers should succeed")
+		f.ConnectOrFail(ctx)
+		assert.NoError(t, f.Client().Notice().Publish(ctx, f.UniqueRoute("notice"), []byte("nobody-listening")))
 	})
 }
 
-// TestShouldStopReceivingGivenUnsubscribeWhenPublish verifies unsubscribe
-// removes subscription; subsequent publishes are not delivered.
 func TestShouldStopReceivingGivenUnsubscribeWhenPublish(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		f.ConnectOrSkip(ctx)
-
+		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("notice")
-		received := make(chan notice.NoticeMsg, 10)
+		received := make(chan fitz.NoticeMsg, 10)
 
-		sub, err := f.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg notice.NoticeMsg) error {
+		sub, err := f.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg fitz.NoticeMsg) error {
 			received <- msg
 			return nil
 		})
 		require.NoError(t, err)
 
-		// Confirm subscription works.
 		require.NoError(t, f.Client().Notice().Publish(ctx, route, []byte("before")))
 		select {
 		case <-received:
@@ -152,49 +113,37 @@ func TestShouldStopReceivingGivenUnsubscribeWhenPublish(t *testing.T) {
 			t.Fatal("timed out waiting for first notification")
 		}
 
-		// Act — unsubscribe then publish.
 		sub.Unsubscribe()
 		require.NoError(t, f.Client().Notice().Publish(ctx, route, []byte("after")))
-
-		// Assert — should not receive anything after unsubscribe.
 		select {
 		case msg := <-received:
 			t.Fatalf("received unexpected notification after unsubscribe: %s", msg.Body)
 		case <-time.After(500 * time.Millisecond):
-			// Good — nothing received.
 		}
 	})
 }
 
-// TestShouldMatchWildcardGivenPatternSubscriptionWhenPublishToConcreteRoute
-// verifies wildcard pattern matching per CLIENT_SPEC.md.
 func TestShouldMatchWildcardGivenPatternSubscriptionWhenPublishToConcreteRoute(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		// Arrange
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		f.ConnectOrSkip(ctx)
-
+		f.ConnectOrFail(ctx)
 		realm := f.UniqueRealm()
 		area := f.UniqueArea()
 		pattern := "notice://" + realm + "/" + area + "/*"
 		concrete := "notice://" + realm + "/" + area + "/events"
 
-		received := make(chan notice.NoticeMsg, 1)
-		sub, err := f.Client().Notice().Subscribe(ctx, pattern, func(_ context.Context, msg notice.NoticeMsg) error {
+		received := make(chan fitz.NoticeMsg, 1)
+		sub, err := f.Client().Notice().Subscribe(ctx, pattern, func(_ context.Context, msg fitz.NoticeMsg) error {
 			received <- msg
 			return nil
 		})
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 
-		// Act
-		err = f.Client().Notice().Publish(ctx, concrete, []byte("wildcard-test"))
-
-		// Assert
-		require.NoError(t, err)
+		require.NoError(t, f.Client().Notice().Publish(ctx, concrete, []byte("wildcard-test")))
 		select {
 		case msg := <-received:
 			assert.Equal(t, concrete, msg.Route)

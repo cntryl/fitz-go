@@ -53,20 +53,6 @@ type transaction struct {
 	rolledback atomic.Bool
 }
 
-// readOnlyTransaction wraps a transaction but only exposes ReadTx methods.
-// This ensures BeginRead returns a type that cannot be cast to Tx.
-type readOnlyTransaction struct {
-	inner *transaction
-}
-
-func (r *readOnlyTransaction) Get(ctx context.Context, key []byte) ([]byte, bool, error) {
-	return r.inner.Get(ctx, key)
-}
-
-func (r *readOnlyTransaction) Scan(ctx context.Context, query ScanQuery) (iter.Iterator[KVPair], bool, error) {
-	return r.inner.Scan(ctx, query)
-}
-
 // Get retrieves a value by key.
 // Returns (value, true, nil) if key exists.
 // Returns (nil, false, nil) if key does not exist (not an error per CLIENT_SPEC.md).
@@ -150,6 +136,9 @@ func (t *transaction) Put(ctx context.Context, key, value []byte) error {
 	if err := t.checkState(); err != nil {
 		return err
 	}
+	if err := t.checkWritable(); err != nil {
+		return err
+	}
 
 	// Validate inputs
 	if err := ValidateKeySize(key); err != nil {
@@ -192,6 +181,9 @@ func (t *transaction) Insert(ctx context.Context, key, value []byte) error {
 	defer span.End()
 	// Validate state
 	if err := t.checkState(); err != nil {
+		return err
+	}
+	if err := t.checkWritable(); err != nil {
 		return err
 	}
 
@@ -238,6 +230,9 @@ func (t *transaction) Delete(ctx context.Context, key []byte) error {
 	if err := t.checkState(); err != nil {
 		return err
 	}
+	if err := t.checkWritable(); err != nil {
+		return err
+	}
 
 	// Validate key
 	if err := ValidateKeySize(key); err != nil {
@@ -277,6 +272,9 @@ func (t *transaction) DeleteRange(ctx context.Context, startKey, endKey []byte) 
 	defer span.End()
 	// Validate state
 	if err := t.checkState(); err != nil {
+		return err
+	}
+	if err := t.checkWritable(); err != nil {
 		return err
 	}
 
@@ -431,6 +429,9 @@ func (t *transaction) Commit(ctx context.Context) error {
 	if err := t.checkState(); err != nil {
 		return err
 	}
+	if err := t.checkWritable(); err != nil {
+		return err
+	}
 
 	// Encode request
 	// Send request
@@ -495,6 +496,13 @@ func (t *transaction) checkState() error {
 	}
 	if t.rolledback.Load() {
 		return fmt.Errorf("transaction already rolled back")
+	}
+	return nil
+}
+
+func (t *transaction) checkWritable() error {
+	if t.readOnly {
+		return ErrReadOnlyTransaction
 	}
 	return nil
 }

@@ -45,22 +45,13 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 	defer span.End()
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRenew, leaseRenewPayloadWriter(l.route, tokenToU64(token), ttlSecs))
 	if err != nil {
-		if log := l.conn.Logger(); log != nil {
-			log.Error("lease.Renew failed", "route", l.route, "error", err)
-		}
 		return 0, fmt.Errorf("EXTEND request failed: %w", err)
 	}
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := l.conn.Logger(); log != nil {
-			log.Error("lease.Renew failed", "route", l.route, "error", err)
-		}
 		return 0, fmt.Errorf("EXTEND failed: %w", mapLeaseError(err.Error()))
 	}
 	if !success {
-		if log := l.conn.Logger(); log != nil {
-			log.Error("lease.Renew failed", "route", l.route, "status", "unexpected")
-		}
 		return 0, fmt.Errorf("EXTEND failed: unexpected status")
 	}
 	// Per CLIENT_SPEC: success = [u8 status=0][u64 BE new_fencing_token]
@@ -89,22 +80,13 @@ func (l *Lease) releaseWithToken(ctx context.Context, token []byte) error {
 	defer span.End()
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRelease, leaseReleasePayloadWriter(l.route, tokenToU64(token)))
 	if err != nil {
-		if log := l.conn.Logger(); log != nil {
-			log.Error("lease.Release failed", "route", l.route, "error", err)
-		}
 		return fmt.Errorf("RELEASE request failed: %w", err)
 	}
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := l.conn.Logger(); log != nil {
-			log.Error("lease.Release failed", "route", l.route, "error", err)
-		}
 		return fmt.Errorf("RELEASE failed: %w", mapLeaseError(err.Error()))
 	}
 	if !success {
-		if log := l.conn.Logger(); log != nil {
-			log.Error("lease.Release failed", "route", l.route, "status", "unexpected")
-		}
 		return fmt.Errorf("RELEASE failed: unexpected status")
 	}
 	return nil
@@ -153,7 +135,6 @@ type Client interface {
 type LeaseInfo struct {
 	Held             bool
 	Token            []byte // Not set from QUERY (server returns owner_id, not token)
-	TTL              uint32 // Deprecated: use TTLRemainingSecs
 	OwnerID          string // Set when Held (owner_id from server)
 	TTLRemainingSecs uint64 // Seconds until expiry when Held
 	PendingWaiters   uint32 // Count of clients waiting in queue
@@ -197,9 +178,6 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseAcquire, leaseAcquirePayloadWriter(route, ttlSecs))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("lease.Acquire failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("ACQUIRE request failed: %w", err)
 	}
 
@@ -208,15 +186,9 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 		if isLeaseHeldError(err) {
 			return nil, ErrLeaseHeld
 		}
-		if log := c.conn.Logger(); log != nil {
-			log.Error("lease.Acquire failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("ACQUIRE failed: %w", mapLeaseError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("lease.Acquire failed", "route", route, "status", "held")
-		}
 		return nil, ErrLeaseHeld
 	}
 
@@ -258,23 +230,14 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseQuery, leaseQueryPayloadWriter(route))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("lease.Query failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("QUERY request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("lease.Query failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("QUERY failed: %w", mapLeaseError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("lease.Query failed", "route", route, "status", "unexpected")
-		}
 		return nil, fmt.Errorf("QUERY failed: unexpected status")
 	}
 
@@ -310,7 +273,6 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 		return info, nil
 	}
 	info.TTLRemainingSecs = binary.BigEndian.Uint64(remaining[offset : offset+8])
-	info.TTL = uint32(info.TTLRemainingSecs)
 	offset += 8
 	// pending_waiters (u32)
 	if offset+4 <= len(remaining) {
@@ -379,9 +341,6 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler ChangeHa
 
 	sub, err := c.subscribe(ctx, pattern, handler)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("lease.Subscribe failed", "pattern", pattern, "error", err)
-		}
 		return nil, err
 	}
 	return sub, nil

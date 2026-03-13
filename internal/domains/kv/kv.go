@@ -14,16 +14,13 @@ import (
 )
 
 // Client provides transaction-based key-value operations only. All data
-// interactions MUST occur through transactions returned by Begin/BeginRead.
+// interactions MUST occur through transactions returned by Begin.
 // Convenience helpers were intentionally removed to avoid accidental
 // non-transactional use.
 type Client interface {
-	// Begin opens a read/write transaction scoped to the provided route.
-	// Optional functional options can configure durability mode.
+	// Begin opens a transaction scoped to the provided route.
+	// Optional functional options can configure mode and durability.
 	Begin(ctx context.Context, route string, opts ...BeginOption) (Tx, error)
-
-	// BeginRead opens a read-only transaction scoped to the provided route.
-	BeginRead(ctx context.Context, route string) (ReadTx, error)
 }
 
 // BeginOption configures transaction BEGIN parameters.
@@ -31,7 +28,15 @@ type BeginOption func(*beginConfig)
 
 // beginConfig holds configuration for BEGIN operations.
 type beginConfig struct {
+	mode       uint8
 	durability uint8
+}
+
+// WithMode sets the transaction mode.
+func WithMode(mode uint8) BeginOption {
+	return func(cfg *beginConfig) {
+		cfg.mode = mode
+	}
 }
 
 // WithDurability sets the transaction durability mode.
@@ -71,7 +76,8 @@ func (c *client) Begin(ctx context.Context, route string, opts ...BeginOption) (
 
 	// Apply options
 	cfg := beginConfig{
-		durability: DurabilityBuffered, // Default to buffered for performance
+		mode:       TxModeReadWrite,
+		durability: DurabilityBuffered,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -79,26 +85,17 @@ func (c *client) Begin(ctx context.Context, route string, opts ...BeginOption) (
 
 	// Encode BEGIN request per CLIENT_SPEC.md
 	// Send request and wait for response
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, TxModeReadWrite, cfg.durability))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, cfg.mode, cfg.durability))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("kv.Begin failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("BEGIN request failed: %w", err)
 	}
 
 	// Parse response: [u8 status][u64 BE tx_id] for success
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("kv.Begin failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("BEGIN failed: %w", mapKVError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("kv.Begin failed", "route", route, "status", "unexpected")
-		}
 		return nil, fmt.Errorf("BEGIN failed: unexpected status")
 	}
 
@@ -116,70 +113,9 @@ func (c *client) Begin(ctx context.Context, route string, opts ...BeginOption) (
 	tx := &transaction{
 		route:    route,
 		conn:     c.conn,
-		readOnly: false,
+		readOnly: cfg.mode == TxModeReadOnly,
 		txID:     txID,
 	}
 
 	return tx, nil
-}
-
-// BeginRead opens a read-only transaction scoped to the provided route.
-// Per CLIENT_SPEC.md: ReadOnly transactions must also call BEGIN on server.
-func (c *client) BeginRead(ctx context.Context, route string) (ReadTx, error) {
-	ctx, span := c.conn.Tracer().Start(ctx, "fitz.kv.BeginRead", trace.WithAttributes(attribute.String("fitz.route", route)))
-	defer span.End()
-	if log := c.conn.Logger(); log != nil {
-		log.Debug("kv.BeginRead", "route", route)
-	}
-
-	// Validate route format
-	if err := types.ValidateRoute(route, "kv"); err != nil {
-		return nil, fmt.Errorf("invalid route: %w", err)
-	}
-
-	// Encode BEGIN request with ReadOnly mode
-	// Send request and wait for response
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, TxModeReadOnly, DurabilityBuffered))
-	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("kv.BeginRead failed", "route", route, "error", err)
-		}
-		return nil, fmt.Errorf("BEGIN request failed: %w", err)
-	}
-
-	// Parse response
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("kv.BeginRead failed", "route", route, "error", err)
-		}
-		return nil, fmt.Errorf("BEGIN failed: %w", mapKVError(err.Error()))
-	}
-	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("kv.BeginRead failed", "route", route, "status", "unexpected")
-		}
-		return nil, fmt.Errorf("BEGIN failed: unexpected status")
-	}
-
-	// Extract tx_id from remaining payload
-	if len(remaining) < 8 {
-		return nil, fmt.Errorf("invalid BEGIN response: expected at least 8 bytes for tx_id, got %d", len(remaining))
-	}
-
-	txID, _, err := connection.ReadU64BE(remaining, 0)
-	if err != nil {
-		return nil, fmt.Errorf("parse tx_id: %w", err)
-	}
-
-	// Create read-only transaction wrapped in readOnlyTransaction
-	// to prevent casting to Tx (per CLIENT_SPEC.md).
-	tx := &transaction{
-		route:    route,
-		conn:     c.conn,
-		readOnly: true,
-		txID:     txID,
-	}
-
-	return &readOnlyTransaction{inner: tx}, nil
 }

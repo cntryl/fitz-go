@@ -136,22 +136,20 @@ func TestShouldNotPanicGivenMultipleCloseCallsWhenCalled(t *testing.T) {
 	})
 }
 
-// TestShouldPanicGivenValueCalledBeforeNextWhenCalled verifies
-// SliceIterator panics when Value() is called before Next().
-func TestShouldPanicGivenValueCalledBeforeNextWhenCalled(t *testing.T) {
+// TestShouldReturnZeroValueGivenValueCalledBeforeNextWhenCalled verifies
+// SliceIterator returns the zero value when Value() is called before Next().
+func TestShouldReturnZeroValueGivenValueCalledBeforeNextWhenCalled(t *testing.T) {
 	// Arrange
 	items := []int{1, 2, 3}
 	it := NewSliceIterator(items)
 
 	// Act & Assert
-	assert.Panics(t, func() {
-		_ = it.Value()
-	})
+	assert.Equal(t, 0, it.Value())
 }
 
-// TestShouldPanicGivenValueCalledAfterEndWhenCalled verifies
-// SliceIterator panics when Value() is called after iterator exhausted.
-func TestShouldPanicGivenValueCalledAfterEndWhenCalled(t *testing.T) {
+// TestShouldReturnZeroValueGivenValueCalledAfterEndWhenCalled verifies
+// SliceIterator returns the zero value when Value() is called after exhaustion.
+func TestShouldReturnZeroValueGivenValueCalledAfterEndWhenCalled(t *testing.T) {
 	// Arrange
 	items := []int{1}
 	it := NewSliceIterator(items)
@@ -159,9 +157,7 @@ func TestShouldPanicGivenValueCalledAfterEndWhenCalled(t *testing.T) {
 	it.Next() // Move past end
 
 	// Act & Assert
-	assert.Panics(t, func() {
-		_ = it.Value()
-	})
+	assert.Equal(t, 0, it.Value())
 }
 
 // --- Mock failing iterator for testing ---

@@ -8,8 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/internal/core/client"
-	"github.com/cntryl/fitz-go/internal/core/types"
+	"github.com/cntryl/fitz-go/fitz"
 )
 
 // Environment variables for broker configuration.
@@ -45,7 +44,7 @@ type TestFixture struct {
 	transport    TransportType
 	brokerAddr   string
 	authMode     AuthMode
-	client       *client.Client
+	client       *fitz.Client
 	cleanupFuncs []func()
 }
 
@@ -94,7 +93,7 @@ func (f *TestFixture) Connect(ctx context.Context) error {
 		return err
 	}
 
-	f.client = client.NewClient(f.brokerAddr, tokenProvider)
+	f.client = fitz.NewClient(f.brokerAddr, tokenProvider)
 	return f.client.Connect(ctx)
 }
 
@@ -122,7 +121,7 @@ func StartBrokerIfNeeded(transport TransportType, authMode AuthMode) (addr strin
 }
 
 // Client returns the connected Fitz client.
-func (f *TestFixture) Client() *client.Client {
+func (f *TestFixture) Client() *fitz.Client {
 	if f.client == nil {
 		f.t.Fatal("client not connected; call Connect() first")
 	}
@@ -210,7 +209,7 @@ func (f *TestFixture) UniqueRoute(scheme string) string {
 	return fmt.Sprintf("%s://%s/%s/%s", scheme, realm, area, resource)
 }
 
-func (f *TestFixture) tokenProviderForMode() (types.TokenProvider, error) {
+func (f *TestFixture) tokenProviderForMode() (fitz.TokenProvider, error) {
 	secret := os.Getenv(EnvBrokerJWTHMACSecret)
 	if secret == "" {
 		secret = "test-secret-key"

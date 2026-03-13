@@ -6,9 +6,21 @@ import (
 	internalqueue "github.com/cntryl/fitz-go/internal/domains/queue"
 )
 
-type QueueAvailabilityNotification = internalqueue.AvailabilityNotification
-type QueueAvailabilityHandler = internalqueue.AvailabilityHandler
-type QueueSubscription = internalqueue.Subscription
+type QueueAvailabilityNotification struct {
+	Route string
+}
+
+type QueueAvailabilityHandler func(context.Context, QueueAvailabilityNotification) error
+
+type QueueSubscription struct {
+	inner *internalqueue.Subscription
+}
+
+func (s *QueueSubscription) Unsubscribe() {
+	if s != nil && s.inner != nil {
+		s.inner.Unsubscribe()
+	}
+}
 
 type QueueClient interface {
 	Enqueue(ctx context.Context, route string, body []byte) (uint64, error)
@@ -45,19 +57,19 @@ func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 }
 
 func (q *QueueItem) Complete(ctx context.Context) error {
-	return q.inner.Ack(ctx)
+	return q.inner.Complete(ctx)
 }
 
 func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
-	return q.inner.AckWithToken(ctx, token)
+	return q.inner.CompleteWithToken(ctx, token)
 }
 
 func (c *queueClient) Enqueue(ctx context.Context, route string, body []byte) (uint64, error) {
-	return c.inner.Send(ctx, route, body)
+	return c.inner.Enqueue(ctx, route, body)
 }
 
 func (c *queueClient) Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error) {
-	items, err := c.inner.Receive(ctx, route, leaseSecs, batchSize)
+	items, err := c.inner.Reserve(ctx, route, leaseSecs, batchSize)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +81,13 @@ func (c *queueClient) Reserve(ctx context.Context, route string, leaseSecs uint6
 }
 
 func (c *queueClient) Subscribe(ctx context.Context, pattern string, handler QueueAvailabilityHandler) (*QueueSubscription, error) {
-	return c.inner.Subscribe(ctx, pattern, handler)
+	subscription, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notification internalqueue.AvailabilityNotification) error {
+		return handler(ctx, QueueAvailabilityNotification{Route: notification.Route})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &QueueSubscription{inner: subscription}, nil
 }
 
 var (

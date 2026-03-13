@@ -57,7 +57,7 @@ func TestShouldReturnErrorGivenMissingURLWhenDialCalled(t *testing.T) {
 	ctx := context.Background()
 
 	// Act
-	c, err := Dial(ctx)
+	c, err := Dial(ctx, "", nil)
 
 	// Assert
 	require.Error(t, err)
@@ -141,23 +141,25 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 		tokenCalls++
 		return fmt.Sprintf("token-%d", tokenCalls), nil
 	})
-	c.config.AuthTimeout = 20 * time.Millisecond
+	c.config.AuthSettleDelay = 20 * time.Millisecond
 	c.config.ReconnectEnabled = true
 	c.config.ReconnectBackoff = 10 * time.Millisecond
 	c.config.MaxReconnects = 1
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	go pushResponseAfterWrite(firstTransport, scheduleListResponseFrame(t), 2)
 	require.NoError(t, c.Connect(ctx))
 
-	go pushSubscribeResponseAfterWrite(firstTransport, noticeSubscribeResponseFrame(t, 11), 2)
+	go pushResponseAfterWrite(firstTransport, noticeSubscribeResponseFrame(t, 11), 3)
 	_, err := c.Notice().Subscribe(ctx, "notice://realm/area/resource", func(context.Context, notice.NoticeMsg) error {
 		return nil
 	})
 	require.NoError(t, err)
 
 	initialConn := c.currentConnection()
-	go pushSubscribeResponseAfterWrite(secondTransport, noticeSubscribeResponseFrame(t, 22), 2)
+	go pushResponseAfterWrite(secondTransport, scheduleListResponseFrame(t), 2)
+	go pushResponseAfterWrite(secondTransport, noticeSubscribeResponseFrame(t, 22), 3)
 
 	// Act
 	require.NoError(t, initialConn.Close())
@@ -169,13 +171,17 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 	assert.Equal(t, 2, tokenCalls)
 
 	writtenFrames := secondTransport.WrittenFrames()
-	require.Len(t, writtenFrames, 2)
+	require.Len(t, writtenFrames, 3)
 	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeConnect, connectType)
 	assert.Equal(t, []byte("token-2"), connectPayload)
 
-	subscribeType, _, err := protocol.DecodeFrame(writtenFrames[1])
+	probeType, _, err := protocol.DecodeFrame(writtenFrames[1])
+	require.NoError(t, err)
+	assert.Equal(t, protocol.MessageTypeScheduleList, probeType)
+
+	subscribeType, _, err := protocol.DecodeFrame(writtenFrames[2])
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeNoticeSubscribe, subscribeType)
 }
@@ -197,6 +203,18 @@ func noticeSubscribeResponseFrame(t *testing.T, subID uint64) []byte {
 
 	// Assert
 	return encoded
+}
+
+func scheduleListResponseFrame(t *testing.T) []byte {
+	t.Helper()
+
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	buf.WriteByte(0)
+	connection.WriteU64BE(buf, 0)
+	frame := protocol.EncodeFrameOwned(protocol.MessageTypeScheduleList, append([]byte(nil), buf.Bytes()...))
+	defer frame.Release()
+	return append([]byte(nil), frame.Bytes()...)
 }
 
 type scriptedTransport struct {
@@ -266,7 +284,7 @@ func (s *scriptedTransport) WrittenFrames() [][]byte {
 	return out
 }
 
-func pushSubscribeResponseAfterWrite(trans *scriptedTransport, frame []byte, expectedWrites int) {
+func pushResponseAfterWrite(trans *scriptedTransport, frame []byte, expectedWrites int) {
 	for {
 		if len(trans.WrittenFrames()) >= expectedWrites {
 			trans.PushReadFrame(frame)

@@ -14,18 +14,29 @@ type Client struct {
 // NewClient constructs a disconnected client. Call Connect before using the
 // domain accessors.
 func NewClient(addr string, tokenProvider TokenProvider, opts ...Option) *Client {
+	coreOpts := applyOptions(opts)
 	return &Client{
-		inner: coreclient.NewClientWithOptions(addr, tokenProvider, opts...),
+		inner: coreclient.NewClientWithOptions(addr, coreclientTokenProvider(tokenProvider), coreOpts...),
 	}
 }
 
 // Dial constructs and connects a client in one step.
 func Dial(ctx context.Context, addr string, tokenProvider TokenProvider, opts ...Option) (*Client, error) {
-	client := NewClient(addr, tokenProvider, opts...)
-	if err := client.Connect(ctx); err != nil {
+	coreOpts := applyOptions(opts)
+	inner, err := coreclient.Dial(ctx, addr, coreclientTokenProvider(tokenProvider), coreOpts...)
+	if err != nil {
 		return nil, err
 	}
-	return client, nil
+	return &Client{inner: inner}, nil
+}
+
+func coreclientTokenProvider(tokenProvider TokenProvider) func(context.Context) (string, error) {
+	if tokenProvider == nil {
+		return nil
+	}
+	return func(ctx context.Context) (string, error) {
+		return tokenProvider(ctx)
+	}
 }
 
 func (c *Client) Connect(ctx context.Context) error {
@@ -37,11 +48,11 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) State() ConnectionState {
-	return c.inner.State()
+	return fromCoreConnectionState(c.inner.State())
 }
 
 func (c *Client) Notice() NoticeClient {
-	return c.inner.Notice()
+	return &noticeClient{inner: c.inner.Notice()}
 }
 
 func (c *Client) Stream() StreamClient {
@@ -65,5 +76,5 @@ func (c *Client) Lease() LeaseClient {
 }
 
 func (c *Client) Schedule() ScheduleClient {
-	return c.inner.Schedule()
+	return &scheduleClient{inner: c.inner.Schedule()}
 }

@@ -56,7 +56,7 @@ type Connection struct {
 	stateMu   sync.RWMutex // Protects state transitions
 
 	// CONNECT configuration (per CLIENT_SPEC.md)
-	jwt string
+	token string
 
 	// Authentication confirmation
 	authConfirmed chan struct{} // Closed when auth succeeds
@@ -83,8 +83,8 @@ type Connection struct {
 
 // Config contains connection configuration.
 type Config struct {
-	JWT              string
-	AuthTimeout      time.Duration // CONNECT silent-success settle window (default 100ms)
+	Token            string
+	AuthSettleDelay  time.Duration // CONNECT silent-success settle window (default 100ms)
 	ReadTimeout      time.Duration // Default 30s (per-read timeout)
 	WriteTimeout     time.Duration // Default 10s
 	ReconnectEnabled bool
@@ -98,9 +98,9 @@ type Config struct {
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
-		AuthTimeout:  100 * time.Millisecond,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		AuthSettleDelay: 250 * time.Millisecond,
+		ReadTimeout:     30 * time.Second,
+		WriteTimeout:    10 * time.Second,
 	}
 }
 
@@ -117,8 +117,8 @@ func New(trans transport.Transport, cfg Config) *Connection {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Apply defaults
-	if cfg.AuthTimeout == 0 {
-		cfg.AuthTimeout = 100 * time.Millisecond
+	if cfg.AuthSettleDelay == 0 {
+		cfg.AuthSettleDelay = 250 * time.Millisecond
 	}
 	if cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = 30 * time.Second
@@ -133,7 +133,7 @@ func New(trans transport.Transport, cfg Config) *Connection {
 	}
 	return &Connection{
 		transport:     trans,
-		jwt:           cfg.JWT,
+		token:         cfg.Token,
 		authConfirmed: make(chan struct{}),
 		mux:           NewMultiplexer(),
 		ctx:           ctx,
@@ -169,15 +169,12 @@ func (c *Connection) Start(ctx context.Context) error {
 
 	// Send CONNECT
 	if err := c.sendConnect(ctx); err != nil {
-		if c.logger != nil {
-			c.logger.Error("send CONNECT failed", "error", err)
-		}
 		c.Close()
 		return fmt.Errorf("send CONNECT: %w", err)
 	}
 
 	// Wait for authentication confirmation
-	authTimeout := c.cfg.AuthTimeout
+	authSettleDelay := c.cfg.AuthSettleDelay
 
 	select {
 	case <-c.authConfirmed:
@@ -189,9 +186,6 @@ func (c *Connection) Start(ctx context.Context) error {
 
 	case <-c.done:
 		// Connection closed during auth (likely invalid JWT)
-		if c.logger != nil {
-			c.logger.Error("authentication failed", "error", c.authError)
-		}
 		if c.authError != nil {
 			return c.authError
 		}
@@ -202,7 +196,7 @@ func (c *Connection) Start(ctx context.Context) error {
 		c.Close()
 		return ctx.Err()
 
-	case <-time.After(authTimeout):
+	case <-time.After(authSettleDelay):
 		// Valid JWT CONNECT is silently accepted by the broker; if the transport
 		// remains open through the auth window, treat the connection as
 		// authenticated.
@@ -221,7 +215,7 @@ func (c *Connection) Start(ctx context.Context) error {
 // Per CLIENT_SPEC.md: [MessageType=1][Length][JWT bytes UTF-8]
 // Empty JWT for anonymous mode.
 func (c *Connection) sendConnect(ctx context.Context) error {
-	payload := []byte(c.jwt)
+	payload := []byte(c.token)
 	frame := protocol.EncodeFrameOwned(protocol.MessageTypeConnect, payload)
 	if frame == nil {
 		return fmt.Errorf("encode CONNECT frame")
@@ -241,7 +235,7 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 
 	// For anonymous mode (empty JWT), confirm immediately
 	// Per CLIENT_SPEC.md: Server stays silent on valid JWT
-	if c.jwt == "" {
+	if c.token == "" {
 		c.confirmAuthentication()
 	}
 

@@ -1,75 +1,135 @@
 package fitz
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
 	coreclient "github.com/cntryl/fitz-go/internal/core/client"
 	"github.com/cntryl/fitz-go/internal/core/connection"
-	"github.com/cntryl/fitz-go/internal/core/iter"
-	"github.com/cntryl/fitz-go/internal/core/types"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TokenProvider supplies a JWT for each connect attempt. Return an empty string
-// for anonymous mode.
-type TokenProvider = types.TokenProvider
+// TokenProvider supplies a token for each connect attempt. Return an empty
+// string for anonymous mode.
+type TokenProvider func(context.Context) (string, error)
 
-// Iterator is the canonical streaming iterator shape used by the Fitz Go SDK.
-type Iterator[T any] = iter.Iterator[T]
+// Iterator is the canonical iterator shape used by the public Fitz Go SDK.
+type Iterator[T any] interface {
+	Next() bool
+	Value() T
+	Err() error
+	Close() error
+}
 
 // ConnectionState describes the lifecycle state of the broker connection.
-type ConnectionState = connection.State
+type ConnectionState uint8
 
 const (
-	ConnectionStateDisconnected   = connection.StateDisconnected
-	ConnectionStateConnecting     = connection.StateConnecting
-	ConnectionStateConnected      = connection.StateConnected
-	ConnectionStateAuthenticating = connection.StateAuthenticating
-	ConnectionStateAuthenticated  = connection.StateAuthenticated
-	ConnectionStateClosed         = connection.StateClosed
+	ConnectionStateDisconnected ConnectionState = iota
+	ConnectionStateConnecting
+	ConnectionStateConnected
+	ConnectionStateAuthenticating
+	ConnectionStateAuthenticated
+	ConnectionStateClosed
 )
 
 // TransportType selects the underlying transport implementation.
-type TransportType = coreclient.TransportType
+type TransportType uint8
 
 const (
-	TransportAuto      = coreclient.TransportAuto
-	TransportWebSocket = coreclient.TransportWebSocket
-	TransportTCP       = coreclient.TransportTCP
+	TransportAuto TransportType = iota
+	TransportWebSocket
+	TransportTCP
 )
 
+type clientConfig struct {
+	coreOptions []coreclient.Option
+}
+
 // Option configures the public client at construction time.
-type Option = coreclient.Option
+type Option func(*clientConfig)
+
+func applyOptions(opts []Option) []coreclient.Option {
+	cfg := &clientConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(cfg)
+		}
+	}
+	return append([]coreclient.Option(nil), cfg.coreOptions...)
+}
 
 // WithAuthSettleDelay configures the silent CONNECT settle window used to infer
 // successful auth on brokers that do not emit CONNECT_OK.
 func WithAuthSettleDelay(delay time.Duration) Option {
-	return coreclient.WithAuthTimeout(delay)
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithAuthSettleDelay(delay))
+	}
 }
 
 func WithReadTimeout(timeout time.Duration) Option {
-	return coreclient.WithReadTimeout(timeout)
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReadTimeout(timeout))
+	}
 }
 
 func WithWriteTimeout(timeout time.Duration) Option {
-	return coreclient.WithWriteTimeout(timeout)
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithWriteTimeout(timeout))
+	}
 }
 
 func WithReconnect(enabled bool, backoff time.Duration, maxAttempts int) Option {
-	return coreclient.WithReconnect(enabled, backoff, maxAttempts)
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReconnect(enabled, backoff, maxAttempts))
+	}
 }
 
 func WithTransport(transportType TransportType) Option {
-	return coreclient.WithTransport(transportType)
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithTransport(toCoreTransportType(transportType)))
+	}
 }
 
 func WithLogger(logger *slog.Logger) Option {
-	return coreclient.WithLogger(logger)
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithLogger(logger))
+	}
 }
 
 func WithTracer(tracer trace.Tracer) Option {
-	return coreclient.WithTracer(tracer)
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithTracer(tracer))
+	}
+}
+
+func toCoreTransportType(transportType TransportType) coreclient.TransportType {
+	switch transportType {
+	case TransportWebSocket:
+		return coreclient.TransportWebSocket
+	case TransportTCP:
+		return coreclient.TransportTCP
+	default:
+		return coreclient.TransportAuto
+	}
+}
+
+func fromCoreConnectionState(state connection.State) ConnectionState {
+	switch state {
+	case connection.StateConnecting:
+		return ConnectionStateConnecting
+	case connection.StateConnected:
+		return ConnectionStateConnected
+	case connection.StateAuthenticating:
+		return ConnectionStateAuthenticating
+	case connection.StateAuthenticated:
+		return ConnectionStateAuthenticated
+	case connection.StateClosed:
+		return ConnectionStateClosed
+	default:
+		return ConnectionStateDisconnected
+	}
 }
 
 var (

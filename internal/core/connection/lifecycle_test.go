@@ -16,8 +16,8 @@ func TestShouldAuthenticateAfterSilentConnectWindowGivenValidJWTWhenStartCalled(
 	// Arrange
 	transport := testkit.NewMockTransport()
 	cfg := DefaultConfig()
-	cfg.JWT = "token"
-	cfg.AuthTimeout = 20 * time.Millisecond
+	cfg.Token = "token"
+	cfg.AuthSettleDelay = 20 * time.Millisecond
 	cfg.ReadTimeout = time.Second
 	conn := New(transport, cfg)
 
@@ -35,7 +35,7 @@ func TestShouldReturnAuthenticationFailedGivenReadErrorWhenStartCalled(t *testin
 	transport := testkit.NewMockTransport()
 	transport.SetReadError(io.EOF)
 	cfg := DefaultConfig()
-	cfg.JWT = "token"
+	cfg.Token = "token"
 	conn := New(transport, cfg)
 
 	// Act
@@ -52,7 +52,7 @@ func TestShouldConfirmAuthenticationGivenFirstValidResponseWhenStartCalled(t *te
 	transport := testkit.NewMockTransport()
 	transport.SetReadFrames([][]byte{append([]byte(nil), frame.Bytes()...)})
 	cfg := DefaultConfig()
-	cfg.JWT = "token"
+	cfg.Token = "token"
 	cfg.ReadTimeout = time.Second
 	conn := New(transport, cfg)
 
@@ -69,7 +69,7 @@ func TestShouldReturnConnectionClosedGivenCloseWhileRequestPendingWhenSendReques
 	// Arrange
 	transport := testkit.NewMockTransport()
 	cfg := DefaultConfig()
-	cfg.JWT = ""
+	cfg.Token = ""
 	cfg.ReadTimeout = time.Second
 	conn := New(transport, cfg)
 	require.NoError(t, conn.Start(context.Background()))
@@ -115,7 +115,7 @@ func TestShouldDispatchHandlersGivenIncomingNotifyFramesWhenStartCalled(t *testi
 		append([]byte(nil), noticeFrame.Bytes()...),
 		append([]byte(nil), scheduleFrame.Bytes()...),
 	})
-	conn := New(transport, Config{JWT: "", ReadTimeout: time.Second})
+	conn := New(transport, Config{Token: "", ReadTimeout: time.Second})
 	noticeSeen := make(chan struct{}, 1)
 	scheduleSeen := make(chan struct{}, 1)
 	conn.RegisterNotifyHandler(protocol.MessageTypeNoticeNotify, func(subID uint64, route string, payload []byte) {

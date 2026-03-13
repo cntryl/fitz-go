@@ -60,7 +60,7 @@ func (t *scriptedTransport) RemoteAddr() string {
 func newStartedScheduleClient(t *testing.T) (*client, *scriptedTransport) {
 	t.Helper()
 	transport := newScriptedTransport()
-	conn := connection.New(transport, connection.Config{JWT: "", ReadTimeout: time.Second})
+	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() {
 		_ = conn.Close()

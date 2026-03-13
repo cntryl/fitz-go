@@ -15,7 +15,7 @@ import (
 func newStartedRPCConnection(t *testing.T) (*connection.Connection, *testkit.MockTransport) {
 	t.Helper()
 	transport := testkit.NewMockTransport()
-	conn := connection.New(transport, connection.Config{JWT: "", ReadTimeout: time.Second})
+	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() {
 		_ = conn.Close()

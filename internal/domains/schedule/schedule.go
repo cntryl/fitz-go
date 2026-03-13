@@ -133,23 +133,14 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreate, scheduleCreatePayloadWriter(route, cronExpr, payload))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.Create failed", "route", route, "error", err)
-		}
 		return "", fmt.Errorf("CREATE request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.Create failed", "route", route, "error", err)
-		}
 		return "", fmt.Errorf("CREATE failed: %w", mapScheduleError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.Create failed", "route", route, "status", "unexpected")
-		}
 		return "", fmt.Errorf("CREATE failed: unexpected status")
 	}
 
@@ -180,23 +171,14 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCancel, scheduleCancelPayloadWriter(route))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.Cancel failed", "route", route, "error", err)
-		}
 		return fmt.Errorf("CANCEL request failed: %w", err)
 	}
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.Cancel failed", "route", route, "error", err)
-		}
 		return fmt.Errorf("CANCEL failed: %w", mapScheduleError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.Cancel failed", "route", route, "status", "unexpected")
-		}
 		return fmt.Errorf("CANCEL failed: unexpected status")
 	}
 
@@ -214,23 +196,14 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleList, scheduleListPayloadWriter(offset, limit))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.List failed", "error", err)
-		}
 		return nil, 0, fmt.Errorf("LIST request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.List failed", "error", err)
-		}
 		return nil, 0, fmt.Errorf("LIST failed: %w", mapScheduleError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.List failed", "status", "unexpected")
-		}
 		return nil, 0, fmt.Errorf("LIST failed: unexpected status")
 	}
 
@@ -298,9 +271,6 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 
 	sub, err := c.subscribe(ctx, pattern, handler)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("schedule.Subscribe failed", "pattern", pattern, "error", err)
-		}
 		return nil, err
 	}
 	return sub, nil

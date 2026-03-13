@@ -118,9 +118,6 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 	}
 
 	if err := c.conn.SendFireAndForgetWithWriter(ctx, protocol.MessageTypeNoticePublish, publishPayloadWriter(route, body)); err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("notice.Publish failed", "route", route, "error", err)
-		}
 		return fmt.Errorf("PUBLISH failed: %w", err)
 	}
 
@@ -140,9 +137,6 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHa
 
 	sub, err := c.subscribe(ctx, pattern, handler)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("notice.Subscribe failed", "pattern", pattern, "error", err)
-		}
 		return nil, err
 	}
 	return sub, nil

@@ -6,18 +6,49 @@ import (
 	internalkv "github.com/cntryl/fitz-go/internal/domains/kv"
 )
 
-type KVPair = internalkv.KVPair
-type KVScanQuery = internalkv.ScanQuery
-type KVDurabilityMode = uint8
-type KVBeginOption = internalkv.BeginOption
+type KVPair struct {
+	Key   []byte
+	Value []byte
+}
+
+type KVScanQuery struct {
+	StartKey []byte
+	EndKey   []byte
+	Limit    uint32
+	Reverse  bool
+}
+
+type KVDurabilityMode uint8
 
 const (
-	KVDurabilityBuffered KVDurabilityMode = internalkv.DurabilityBuffered
-	KVDurabilitySync     KVDurabilityMode = internalkv.DurabilitySync
+	KVDurabilityBuffered KVDurabilityMode = KVDurabilityMode(internalkv.DurabilityBuffered)
+	KVDurabilitySync     KVDurabilityMode = KVDurabilityMode(internalkv.DurabilitySync)
 )
 
+type KVMode uint8
+
+const (
+	KVModeReadOnly  KVMode = KVMode(internalkv.TxModeReadOnly)
+	KVModeReadWrite KVMode = KVMode(internalkv.TxModeReadWrite)
+)
+
+type kvBeginConfig struct {
+	mode       KVMode
+	durability KVDurabilityMode
+}
+
+type KVBeginOption func(*kvBeginConfig)
+
+func WithKVMode(mode KVMode) KVBeginOption {
+	return func(cfg *kvBeginConfig) {
+		cfg.mode = mode
+	}
+}
+
 func WithKVDurability(mode KVDurabilityMode) KVBeginOption {
-	return internalkv.WithDurability(uint8(mode))
+	return func(cfg *kvBeginConfig) {
+		cfg.durability = mode
+	}
 }
 
 type KVGetResult struct {
@@ -25,13 +56,9 @@ type KVGetResult struct {
 	Value []byte
 }
 
-type KVReadTx interface {
+type KVTx interface {
 	Get(ctx context.Context, key []byte) (KVGetResult, error)
 	Scan(ctx context.Context, query KVScanQuery) (Iterator[KVPair], bool, error)
-}
-
-type KVTx interface {
-	KVReadTx
 	Put(ctx context.Context, key, value []byte) error
 	Insert(ctx context.Context, key, value []byte) error
 	Delete(ctx context.Context, key []byte) error
@@ -42,50 +69,42 @@ type KVTx interface {
 
 type KVClient interface {
 	Begin(ctx context.Context, route string, opts ...KVBeginOption) (KVTx, error)
-	BeginReadOnly(ctx context.Context, route string) (KVReadTx, error)
 }
 
 type kvClient struct {
 	inner internalkv.Client
 }
 
-type kvReadTx struct {
-	inner internalkv.ReadTx
-}
-
 type kvTx struct {
 	inner internalkv.Tx
 }
 
+type kvPairIterator struct {
+	inner   Iterator[internalkv.KVPair]
+	current KVPair
+}
+
 func (c *kvClient) Begin(ctx context.Context, route string, opts ...KVBeginOption) (KVTx, error) {
-	tx, err := c.inner.Begin(ctx, route, opts...)
+	cfg := kvBeginConfig{
+		mode:       KVModeReadWrite,
+		durability: KVDurabilityBuffered,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
+	tx, err := c.inner.Begin(
+		ctx,
+		route,
+		internalkv.WithMode(uint8(cfg.mode)),
+		internalkv.WithDurability(uint8(cfg.durability)),
+	)
 	if err != nil {
 		return nil, err
 	}
 	return &kvTx{inner: tx}, nil
-}
-
-func (c *kvClient) BeginReadOnly(ctx context.Context, route string) (KVReadTx, error) {
-	tx, err := c.inner.BeginRead(ctx, route)
-	if err != nil {
-		return nil, err
-	}
-	return &kvReadTx{inner: tx}, nil
-}
-
-func (t *kvReadTx) Get(ctx context.Context, key []byte) (KVGetResult, error) {
-	value, found, err := t.inner.Get(ctx, key)
-	if err != nil {
-		return KVGetResult{}, err
-	}
-	return KVGetResult{
-		Found: found,
-		Value: value,
-	}, nil
-}
-
-func (t *kvReadTx) Scan(ctx context.Context, query KVScanQuery) (Iterator[KVPair], bool, error) {
-	return t.inner.Scan(ctx, query)
 }
 
 func (t *kvTx) Get(ctx context.Context, key []byte) (KVGetResult, error) {
@@ -100,7 +119,16 @@ func (t *kvTx) Get(ctx context.Context, key []byte) (KVGetResult, error) {
 }
 
 func (t *kvTx) Scan(ctx context.Context, query KVScanQuery) (Iterator[KVPair], bool, error) {
-	return t.inner.Scan(ctx, query)
+	iter, hasMore, err := t.inner.Scan(ctx, internalkv.ScanQuery{
+		StartKey: query.StartKey,
+		EndKey:   query.EndKey,
+		Limit:    query.Limit,
+		Reverse:  query.Reverse,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return &kvPairIterator{inner: iter}, hasMore, nil
 }
 
 func (t *kvTx) Put(ctx context.Context, key, value []byte) error {
@@ -127,6 +155,30 @@ func (t *kvTx) Rollback(ctx context.Context) error {
 	return t.inner.Rollback(ctx)
 }
 
+func (it *kvPairIterator) Next() bool {
+	if !it.inner.Next() {
+		return false
+	}
+	value := it.inner.Value()
+	it.current = KVPair{
+		Key:   append([]byte(nil), value.Key...),
+		Value: append([]byte(nil), value.Value...),
+	}
+	return true
+}
+
+func (it *kvPairIterator) Value() KVPair {
+	return it.current
+}
+
+func (it *kvPairIterator) Err() error {
+	return it.inner.Err()
+}
+
+func (it *kvPairIterator) Close() error {
+	return it.inner.Close()
+}
+
 var (
 	ErrKVNotFound            = internalkv.ErrNotFound
 	ErrKVKeyExists           = internalkv.ErrKeyExists
@@ -135,4 +187,5 @@ var (
 	ErrKVKeyTooLarge         = internalkv.ErrKeyTooLarge
 	ErrKVValueTooLarge       = internalkv.ErrValueTooLarge
 	ErrKVTransactionAborted  = internalkv.ErrTransactionAborted
+	ErrKVReadOnly            = internalkv.ErrReadOnlyTransaction
 )

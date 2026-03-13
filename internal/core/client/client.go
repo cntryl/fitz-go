@@ -70,11 +70,10 @@ type Client struct {
 // Config contains client configuration.
 type Config struct {
 	// Connection
-	URL          string
-	JWT          string
-	AuthTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	URL             string
+	AuthSettleDelay time.Duration
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
 
 	// Reconnection (not yet implemented)
 	ReconnectEnabled bool
@@ -92,10 +91,10 @@ type Config struct {
 // defaultConfig returns default client configuration.
 func defaultConfig() *Config {
 	return &Config{
-		TransportType: TransportAuto,
-		AuthTimeout:   100 * time.Millisecond,
-		ReadTimeout:   30 * time.Second,
-		WriteTimeout:  10 * time.Second,
+		TransportType:   TransportAuto,
+		AuthSettleDelay: 250 * time.Millisecond,
+		ReadTimeout:     30 * time.Second,
+		WriteTimeout:    10 * time.Second,
 	}
 }
 
@@ -107,15 +106,9 @@ func WithURL(url string) Option {
 	return func(c *Config) { c.URL = url }
 }
 
-// WithJWT sets a static JWT token on the internal client config.
-// The supported public API uses token providers instead.
-func WithJWT(jwt string) Option {
-	return func(c *Config) { c.JWT = jwt }
-}
-
-// WithAuthTimeout sets the authentication timeout.
-func WithAuthTimeout(timeout time.Duration) Option {
-	return func(c *Config) { c.AuthTimeout = timeout }
+// WithAuthSettleDelay sets the silent CONNECT settle window.
+func WithAuthSettleDelay(delay time.Duration) Option {
+	return func(c *Config) { c.AuthSettleDelay = delay }
 }
 
 // WithReadTimeout sets the per-read timeout.
@@ -158,10 +151,12 @@ func WithTracer(tracer trace.Tracer) Option {
 // Call Connect() to establish the connection.
 func NewClient(addr string, tokenProvider types.TokenProvider) *Client {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	cfg := defaultConfig()
+	cfg.URL = addr
 	return &Client{
 		addr:            addr,
 		tokenProvider:   tokenProvider,
-		config:          defaultConfig(),
+		config:          cfg,
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 	}
@@ -171,6 +166,7 @@ func NewClient(addr string, tokenProvider types.TokenProvider) *Client {
 // and applies functional options before the first Connect call.
 func NewClientWithOptions(addr string, tokenProvider types.TokenProvider, opts ...Option) *Client {
 	c := NewClient(addr, tokenProvider)
+	c.config.URL = addr
 	for _, opt := range opts {
 		opt(c.config)
 	}
@@ -201,12 +197,8 @@ func (c *Client) Connect(ctx context.Context) error {
 	if c.config.Logger != nil {
 		c.config.Logger.Info("connect started", "addr", c.addr)
 	}
-	c.config.URL = c.addr
 
 	if err := c.config.validate(); err != nil {
-		if c.config.Logger != nil {
-			c.config.Logger.Error("invalid config", "error", err)
-		}
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
@@ -223,51 +215,12 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 // Dial connects to a Fitz server and returns a ready-to-use client.
-// Per CLIENT_SPEC.md: Performs CONNECT handshake and waits for authentication confirmation.
-func Dial(ctx context.Context, opts ...Option) (*Client, error) {
-	cfg := defaultConfig()
-	for _, opt := range opts {
-		opt(cfg)
-	}
-
-	if err := cfg.validate(); err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Error("invalid config", "error", err)
-		}
-		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-
-	transportType := cfg.TransportType
-	if transportType == TransportAuto {
-		transportType = detectTransport(cfg.URL)
-	}
-	tracer := cfg.Tracer
-	if tracer == nil {
-		tracer = otel.Tracer("github.com/cntryl/fitz-go")
-	}
-	var span trace.Span
-	ctx, span = tracer.Start(ctx, "fitz.Connect", trace.WithAttributes(
-		attribute.String("fitz.addr", cfg.URL),
-		attribute.String("fitz.transport", transportTypeString(transportType)),
-	))
-	defer span.End()
-
-	c := &Client{
-		addr:   cfg.URL,
-		config: cfg,
-	}
-	c.lifecycleCtx, c.lifecycleCancel = context.WithCancel(context.Background())
-
-	conn, err := c.dialConnection(ctx, transportType)
-	if err != nil {
+func Dial(ctx context.Context, addr string, tokenProvider types.TokenProvider, opts ...Option) (*Client, error) {
+	client := NewClientWithOptions(addr, tokenProvider, opts...)
+	if err := client.Connect(ctx); err != nil {
 		return nil, err
 	}
-	c.attachConnection(conn)
-
-	if cfg.Logger != nil {
-		cfg.Logger.Info("dial success", "url", cfg.URL)
-	}
-	return c, nil
+	return client, nil
 }
 
 // detectTransport determines transport type from URL scheme.
@@ -407,21 +360,15 @@ func (c *Client) currentConnection() *connection.Connection {
 }
 
 func (c *Client) dialConnection(ctx context.Context, transportType TransportType) (*connection.Connection, error) {
-	// Arrange
-	jwt := c.config.JWT
+	token := ""
 	if c.tokenProvider != nil {
-		token, err := c.tokenProvider(ctx)
+		var err error
+		token, err = c.tokenProvider(ctx)
 		if err != nil {
-			if c.config.Logger != nil {
-				c.config.Logger.Error("get token failed", "error", err)
-			}
 			return nil, fmt.Errorf("get token: %w", err)
 		}
-		jwt = token
 	}
-	c.config.JWT = jwt
 
-	// Act
 	var (
 		trans transport.Transport
 		err   error
@@ -435,30 +382,30 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 		return nil, fmt.Errorf("unsupported transport type: %d", transportType)
 	}
 	if err != nil {
-		if c.config.Logger != nil {
-			c.config.Logger.Error("dial transport failed", "error", err)
-		}
 		return nil, fmt.Errorf("dial transport: %w", err)
 	}
 
 	connCfg := connection.Config{
-		JWT:          jwt,
-		AuthTimeout:  c.config.AuthTimeout,
-		ReadTimeout:  c.config.ReadTimeout,
-		WriteTimeout: c.config.WriteTimeout,
-		Logger:       c.config.Logger,
-		Tracer:       c.config.Tracer,
+		Token:           token,
+		AuthSettleDelay: c.config.AuthSettleDelay,
+		ReadTimeout:     c.config.ReadTimeout,
+		WriteTimeout:    c.config.WriteTimeout,
+		Logger:          c.config.Logger,
+		Tracer:          c.config.Tracer,
 	}
 	conn := connection.New(trans, connCfg)
 	if err := conn.Start(ctx); err != nil {
-		if c.config.Logger != nil {
-			c.config.Logger.Error("start connection failed", "error", err)
-		}
 		_ = trans.Close()
 		return nil, fmt.Errorf("start connection: %w", err)
 	}
+	if token != "" {
+		probeClient := schedule.NewClient(conn)
+		if _, _, err := probeClient.List(ctx, 0, 1); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("probe auth: %w", err)
+		}
+	}
 
-	// Assert
 	return conn, nil
 }
 

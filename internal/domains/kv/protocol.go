@@ -372,6 +372,7 @@ var (
 	ErrKeyTooLarge         = errors.New("key too large")
 	ErrValueTooLarge       = errors.New("value too large")
 	ErrTransactionAborted  = errors.New("transaction aborted")
+	ErrReadOnlyTransaction = errors.New("transaction is read-only")
 )
 
 // mapKVError maps a broker error message to a domain-specific Go error.

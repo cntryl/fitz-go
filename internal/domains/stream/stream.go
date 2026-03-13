@@ -79,8 +79,8 @@ type Client interface {
 	// Peek returns the most recent record in the stream.
 	Peek(ctx context.Context, route string) (*Record, error)
 
-	// GetMetadata returns stream metadata.
-	GetMetadata(ctx context.Context, route string) (*Metadata, error)
+	// Metadata returns stream metadata.
+	Metadata(ctx context.Context, route string) (*Metadata, error)
 
 	// Subscribe registers a handler for stream commit notifications.
 	// Pattern should be a wildcard pattern (e.g., "stream://realm/area/resource/available").
@@ -132,23 +132,14 @@ func (c *client) Begin(ctx context.Context, route string, expectedOffset uint64)
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamBegin, streamBeginPayloadWriter(route, expectedOffset, nil))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Begin failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("BEGIN request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Begin failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("BEGIN failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Begin failed", "route", route, "status", "unexpected")
-		}
 		return nil, fmt.Errorf("BEGIN failed: unexpected status")
 	}
 
@@ -178,23 +169,14 @@ func (s *session) Append(ctx context.Context, body []byte) (uint64, error) {
 	defer span.End()
 	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, body, nil))
 	if err != nil {
-		if log := s.conn.Logger(); log != nil {
-			log.Error("stream.Send failed", "route", s.route, "session_id", s.sessionID, "error", err)
-		}
 		return 0, fmt.Errorf("SEND request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := s.conn.Logger(); log != nil {
-			log.Error("stream.Send failed", "route", s.route, "session_id", s.sessionID, "error", err)
-		}
 		return 0, fmt.Errorf("SEND failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		if log := s.conn.Logger(); log != nil {
-			log.Error("stream.Send failed", "route", s.route, "session_id", s.sessionID, "status", "unexpected")
-		}
 		return 0, fmt.Errorf("SEND failed: unexpected status")
 	}
 
@@ -226,23 +208,14 @@ func (s *session) Commit(ctx context.Context) error {
 	defer span.End()
 	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamCommit, streamCommitPayloadWriter(s.sessionID, 0))
 	if err != nil {
-		if log := s.conn.Logger(); log != nil {
-			log.Error("stream.Commit failed", "route", s.route, "session_id", s.sessionID, "error", err)
-		}
 		return fmt.Errorf("COMMIT request failed: %w", err)
 	}
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := s.conn.Logger(); log != nil {
-			log.Error("stream.Commit failed", "route", s.route, "session_id", s.sessionID, "error", err)
-		}
 		return fmt.Errorf("COMMIT failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		if log := s.conn.Logger(); log != nil {
-			log.Error("stream.Commit failed", "route", s.route, "session_id", s.sessionID, "status", "unexpected")
-		}
 		return fmt.Errorf("COMMIT failed: unexpected status")
 	}
 	return nil
@@ -258,23 +231,14 @@ func (s *session) Rollback(ctx context.Context) error {
 	defer span.End()
 	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRollback, streamRollbackPayloadWriter(s.sessionID))
 	if err != nil {
-		if log := s.conn.Logger(); log != nil {
-			log.Error("stream.Rollback failed", "route", s.route, "session_id", s.sessionID, "error", err)
-		}
 		return fmt.Errorf("ROLLBACK request failed: %w", err)
 	}
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := s.conn.Logger(); log != nil {
-			log.Error("stream.Rollback failed", "route", s.route, "session_id", s.sessionID, "error", err)
-		}
 		return fmt.Errorf("ROLLBACK failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		if log := s.conn.Logger(); log != nil {
-			log.Error("stream.Rollback failed", "route", s.route, "session_id", s.sessionID, "status", "unexpected")
-		}
 		return fmt.Errorf("ROLLBACK failed: unexpected status")
 	}
 	return nil
@@ -295,23 +259,14 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRead, streamReadPayloadWriter(route, fromOffset, limit, nil))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Read failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("READ request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Peek failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("READ failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Peek failed", "route", route, "status", "unexpected")
-		}
 		return nil, fmt.Errorf("READ failed: unexpected status")
 	}
 
@@ -338,23 +293,14 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamLast, streamLastPayloadWriter(route))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Peek failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("PEEK request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Peek failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("PEEK failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Peek failed", "route", route, "status", "unexpected")
-		}
 		return nil, fmt.Errorf("PEEK failed: unexpected status")
 	}
 
@@ -374,34 +320,25 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	return record, nil
 }
 
-// GetMetadata per server stream_codec.rs:
+// Metadata per server stream_codec.rs:
 // Request: [string route]
 // Response: [status][u8 has_session_id][u64?][bytes data]
-func (c *client) GetMetadata(ctx context.Context, route string) (*Metadata, error) {
-	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.GetMetadata", trace.WithAttributes(attribute.String("fitz.route", route)))
+func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) {
+	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Metadata", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("stream.GetMetadata", "route", route)
+		log.Debug("stream.Metadata", "route", route)
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamGetMetadata, streamGetMetadataPayloadWriter(route))
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.GetMetadata failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("GET_METADATA request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.GetMetadata failed", "route", route, "error", err)
-		}
 		return nil, fmt.Errorf("GET_METADATA failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.GetMetadata failed", "route", route, "status", "unexpected")
-		}
 		return nil, fmt.Errorf("GET_METADATA failed: unexpected status")
 	}
 
@@ -570,9 +507,6 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler CommitHa
 
 	sub, err := c.subscribe(ctx, pattern, handler)
 	if err != nil {
-		if log := c.conn.Logger(); log != nil {
-			log.Error("stream.Subscribe failed", "pattern", pattern, "error", err)
-		}
 		return nil, err
 	}
 	return sub, nil
