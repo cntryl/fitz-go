@@ -5,17 +5,10 @@ on:
   pull_request:
 
 jobs:
-  test:
+  fast:
     runs-on: ubuntu-latest
-    env:
-      FITZ_BROKER_ANON_TCP_ADDR: localhost:4191
-      FITZ_BROKER_ANON_WS_ADDR: ws://localhost:4190/ws
-      FITZ_BROKER_AUTH_TCP_ADDR: localhost:4091
-      FITZ_BROKER_AUTH_WS_ADDR: ws://localhost:4090/ws
-      FITZ_BROKER_JWT_HMAC_SECRET: test-secret-key
-      FITZ_BROKER_JWT_AUDIENCE: fitz
     steps:
-      - name: Check out fitz-ts
+      - name: Check out repository
         uses: actions/checkout@v6
 
       - name: Set up Go
@@ -32,13 +25,78 @@ jobs:
       - name: Run build
         run: go build ./...
 
-      # - name: Start broker stack
-      #   if: always()
-      #   run: docker compose up -d
+  spec:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [tcp, ws]
+        auth_mode: [anonymous, valid_jwt]
+    env:
+      FITZ_BROKER_ANON_TCP_ADDR: localhost:4191
+      FITZ_BROKER_ANON_WS_ADDR: ws://localhost:4190/ws
+      FITZ_BROKER_AUTH_TCP_ADDR: localhost:4091
+      FITZ_BROKER_AUTH_WS_ADDR: ws://localhost:4090/ws
+      FITZ_BROKER_JWT_HMAC_SECRET: test-secret-key
+      FITZ_BROKER_JWT_AUDIENCE: fitz
+      CONFORMANCE_OUTPUT: conformance-results.json
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
 
-      # - name: Run tests
-      #   run: go test ./... -v --cover
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.6"
 
-      # - name: Stop broker stack
-      #   if: always()
-      #   run: docker compose down --volumes
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Start broker stack
+        run: docker compose up -d
+
+      - name: Run broker-backed test suite
+        env:
+          FITZ_BROKER_TCP_ADDR: ${{ matrix.auth_mode == 'valid_jwt' && 'localhost:4091' || 'localhost:4191' }}
+          FITZ_BROKER_WS_ADDR: ${{ matrix.auth_mode == 'valid_jwt' && 'ws://localhost:4090/ws' || 'ws://localhost:4190/ws' }}
+          FITZ_BROKER_AUTH_REQUIRED: ${{ matrix.auth_mode == 'valid_jwt' && 'true' || 'false' }}
+        run: go test ./...
+
+      - name: Run conformance suite
+        env:
+          CONFORMANCE_TRANSPORT: ${{ matrix.transport }}
+          CONFORMANCE_AUTH_MODE: ${{ matrix.auth_mode }}
+        run: go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
+
+      - name: Run invalid JWT auth scenario
+        env:
+          CONFORMANCE_TRANSPORT: ${{ matrix.transport }}
+          CONFORMANCE_AUTH_MODE: anonymous
+        run: go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite/CS-002_auth_failure
+
+      - name: Enforce P0 conformance
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          required = {"CS-001","CS-002","CS-003","CS-004","CS-005","CS-006","CS-007","CS-008"}
+          path = Path("conformance-results.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          observed = {s["scenario_id"] for s in data["scenarios"]}
+          missing = sorted(required - observed)
+          failing = sorted(s["scenario_id"] for s in data["scenarios"] if s["scenario_id"] in required and s["verdict"] != "pass")
+          print(f"transport={data['transport']} auth={data['auth_mode']} p0={data['p0_pass_rate']:.0%} p1={data['p1_pass_rate']:.0%} failing={failing} missing={missing}")
+          if failing or missing:
+              raise SystemExit(1)
+          PY
+
+      - name: Upload conformance results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fitz-go-conformance-${{ matrix.transport }}-${{ matrix.auth_mode }}
+          path: conformance-results.json
+
+      - name: Stop broker stack
+        if: always()
+        run: docker compose down --volumes

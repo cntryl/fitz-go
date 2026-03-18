@@ -109,6 +109,12 @@ go test ./test/...
 go test ./...
 ```
 
+Run the repo-local spec-compliance conformance suite with:
+
+```bash
+go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
+```
+
 ## Protocol source of truth
 
 This repo does not maintain an independent copy of the protocol specification.
