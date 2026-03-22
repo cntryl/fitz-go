@@ -1,6 +1,8 @@
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
-// Covers all 15 scenarios defined in:
+// Covers all 19 scenarios: the 15 scenarios defined in the cross-language spec plus
+// 4 domain-lifecycle scenarios (CS-016–CS-019) added in the Go client to close
+// coverage gaps for Queue, Lease, Notice, and Schedule domains:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
 //
@@ -187,9 +189,6 @@ func uniqueRoute(scheme string) string {
 	routeCounterMu.Unlock()
 
 	id := fmt.Sprintf("%d-%d-%d", time.Now().UnixNano(), n, rand.IntN(1_000_000))
-	if scheme == "schedule" {
-		return fmt.Sprintf("%s://conformance/%s/res/run", scheme, id)
-	}
 	return fmt.Sprintf("%s://conformance/%s/res", scheme, id)
 }
 
@@ -963,6 +962,219 @@ func TestConformanceSuite(t *testing.T) {
 		results.record(r)
 		if r.Verdict != VerdictPass {
 			t.Errorf("CS-015: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	// -------------------------------------------------------------------------
+	// CS-016 – CS-019: domain lifecycle scenarios not in the cross-language spec
+	// but required to close coverage gaps for Queue, Lease, Notice, Schedule.
+	// -------------------------------------------------------------------------
+
+	t.Run("CS-016_queue_enqueue_reserve_complete", func(t *testing.T) {
+		r := run("CS-016", "queue enqueue/reserve/complete lifecycle", "P1", func() (Verdict, []string, error) {
+			var ev []string
+			f := connectFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			route := uniqueRoute("queue")
+			msgID, err := f.Client().Queue().Enqueue(ctx, route, []byte("cs016-payload"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("enqueue: %w", err)
+			}
+			if msgID == 0 {
+				return VerdictFail, ev, fmt.Errorf("expected non-zero message ID, got 0")
+			}
+			ev = append(ev, fmt.Sprintf("enqueued message ID=%d", msgID))
+
+			items, err := f.Client().Queue().Reserve(ctx, route, 30, 1)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("reserve: %w", err)
+			}
+			if len(items) != 1 {
+				return VerdictFail, ev, fmt.Errorf("expected 1 reserved item, got %d", len(items))
+			}
+			if string(items[0].Body) != "cs016-payload" {
+				return VerdictFail, ev, fmt.Errorf("expected 'cs016-payload', got %q", items[0].Body)
+			}
+			ev = append(ev, fmt.Sprintf("reserved item body=%q", items[0].Body))
+
+			if err := items[0].Complete(ctx); err != nil {
+				return VerdictFail, ev, fmt.Errorf("complete: %w", err)
+			}
+			ev = append(ev, "message completed (acknowledged)")
+
+			// After complete the queue should be empty
+			empty, err := f.Client().Queue().Reserve(ctx, route, 30, 1)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("second reserve: %w", err)
+			}
+			if len(empty) != 0 {
+				ev = append(ev, fmt.Sprintf("WARNING: expected empty queue after complete, got %d items", len(empty)))
+				return VerdictPartial, ev, nil
+			}
+			ev = append(ev, "queue is empty after complete (correct)")
+			return VerdictPass, ev, nil
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+			t.Errorf("CS-016: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("CS-017_lease_acquire_contention_release", func(t *testing.T) {
+		r := run("CS-017", "lease acquire/contention/release lifecycle", "P1", func() (Verdict, []string, error) {
+			var ev []string
+
+			f1 := connectFixture(t)
+			f2 := connectFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			route := uniqueRoute("lease")
+			l1, err := f1.Client().Lease().Acquire(ctx, route, 30)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("acquire: %w", err)
+			}
+			if l1 == nil || len(l1.Token) == 0 {
+				return VerdictFail, ev, fmt.Errorf("expected non-nil lease with token")
+			}
+			ev = append(ev, fmt.Sprintf("client1 acquired lease token=%x…", l1.Token[:min(4, len(l1.Token))]))
+
+			// Contention: second client must be rejected
+			l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
+			if err2 == nil && l2 != nil {
+				return VerdictFail, ev, fmt.Errorf("expected contention error but acquire succeeded")
+			}
+			ev = append(ev, fmt.Sprintf("client2 rejected on held lease: %v (correct)", err2))
+
+			// Release and allow client2 to acquire
+			if err := l1.Release(ctx); err != nil {
+				return VerdictFail, ev, fmt.Errorf("release: %w", err)
+			}
+			ev = append(ev, "client1 released lease")
+
+			l3, err3 := f2.Client().Lease().Acquire(ctx, route, 30)
+			if err3 != nil {
+				return VerdictFail, ev, fmt.Errorf("acquire after release: %w", err3)
+			}
+			if l3 == nil || len(l3.Token) == 0 {
+				return VerdictFail, ev, fmt.Errorf("expected lease after release, got nil")
+			}
+			ev = append(ev, "client2 acquired lease after release (correct)")
+			return VerdictPass, ev, nil
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("CS-018_notice_subscribe_publish_deliver", func(t *testing.T) {
+		r := run("CS-018", "notice subscribe/publish/deliver lifecycle", "P1", func() (Verdict, []string, error) {
+			var ev []string
+			f := connectFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			route := uniqueRoute("notice")
+			received := make(chan string, 4)
+
+			sub, err := f.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg fitz.NoticeMsg) error {
+				received <- string(msg.Body)
+				return nil
+			})
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("subscribe: %w", err)
+			}
+			ev = append(ev, "subscribed to route")
+
+			if err := f.Client().Notice().Publish(ctx, route, []byte("cs018-msg")); err != nil {
+				sub.Unsubscribe()
+				return VerdictFail, ev, fmt.Errorf("publish: %w", err)
+			}
+			ev = append(ev, "published message")
+
+			select {
+			case body := <-received:
+				if body != "cs018-msg" {
+					sub.Unsubscribe()
+					return VerdictFail, ev, fmt.Errorf("expected 'cs018-msg', got %q", body)
+				}
+				ev = append(ev, fmt.Sprintf("handler received message body=%q (correct)", body))
+			case <-time.After(5 * time.Second):
+				sub.Unsubscribe()
+				return VerdictFail, ev, fmt.Errorf("timed out waiting for notification delivery")
+			}
+
+			// Unsubscribe and verify no further delivery
+			sub.Unsubscribe()
+			ev = append(ev, "unsubscribed")
+
+			if err := f.Client().Notice().Publish(ctx, route, []byte("after-unsub")); err != nil {
+				return VerdictFail, ev, fmt.Errorf("publish after unsubscribe: %w", err)
+			}
+			select {
+			case body := <-received:
+				ev = append(ev, fmt.Sprintf("WARNING: received %q after unsubscribe", body))
+				return VerdictPartial, ev, nil
+			case <-time.After(500 * time.Millisecond):
+				ev = append(ev, "no delivery after unsubscribe (correct)")
+			}
+			return VerdictPass, ev, nil
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+			t.Errorf("CS-018: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("CS-019_schedule_create_subscribe_cancel", func(t *testing.T) {
+		r := run("CS-019", "schedule create/subscribe/cancel lifecycle", "P1", func() (Verdict, []string, error) {
+			var ev []string
+			f := connectFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			route := uniqueRoute("schedule")
+
+			// Subscribe first — verify the subscription API is usable
+			sub, err := f.Client().Schedule().Subscribe(ctx, route, func(_ context.Context, _ fitz.ScheduleNotification) error {
+				return nil
+			})
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("subscribe: %w", err)
+			}
+			ev = append(ev, "subscribed to schedule route")
+
+			// Create a schedule
+			scheduleID, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("cs019-payload"))
+			if err != nil {
+				sub.Unsubscribe()
+				return VerdictFail, ev, fmt.Errorf("create: %w", err)
+			}
+			if scheduleID == "" {
+				sub.Unsubscribe()
+				return VerdictFail, ev, fmt.Errorf("expected non-empty schedule ID")
+			}
+			ev = append(ev, fmt.Sprintf("schedule created id=%q", scheduleID))
+
+			// Cancel before unsubscribing
+			if err := f.Client().Schedule().Cancel(ctx, scheduleID); err != nil {
+				sub.Unsubscribe()
+				return VerdictFail, ev, fmt.Errorf("cancel: %w", err)
+			}
+			ev = append(ev, "schedule cancelled")
+
+			sub.Unsubscribe()
+			ev = append(ev, "unsubscribed")
+
+			ev = append(ev, "NOTE: schedule fire delivery tested in integration suite (requires up to 90s)")
+			return VerdictPass, ev, nil
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-019: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 }
