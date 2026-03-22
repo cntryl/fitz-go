@@ -134,8 +134,10 @@ func TestShouldIgnoreMalformedWorkerPayloadGivenShortPayloadWhenHandleWorkerRequ
 	assert.False(t, called)
 }
 
-func TestShouldCleanupPendingRPCGivenIteratorTimeoutWhenNextCalled(t *testing.T) {
+func TestShouldCleanupPendingRPCGivenContextDeadlineWhenNextCalled(t *testing.T) {
 	// Arrange
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
 	ch := make(chan ResponseFrame)
 	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
 	var correlationID [16]byte
@@ -143,8 +145,7 @@ func TestShouldCleanupPendingRPCGivenIteratorTimeoutWhenNextCalled(t *testing.T)
 	c.pendingRPCs[correlationID] = ch
 	it := &rpcIterator{
 		ch:            ch,
-		timeout:       10 * time.Millisecond,
-		ctx:           context.Background(),
+		ctx:           ctx,
 		correlationID: correlationID,
 		client:        c,
 	}
@@ -154,7 +155,7 @@ func TestShouldCleanupPendingRPCGivenIteratorTimeoutWhenNextCalled(t *testing.T)
 
 	// Assert
 	assert.False(t, ok)
-	assert.ErrorIs(t, it.Err(), ErrRPCTimeout)
+	assert.ErrorIs(t, it.Err(), context.DeadlineExceeded)
 	_, stillPending := c.pendingRPCs[correlationID]
 	assert.False(t, stillPending)
 }
@@ -170,7 +171,6 @@ func TestShouldCleanupPendingRPCGivenCanceledContextWhenNextCalled(t *testing.T)
 	c.pendingRPCs[correlationID] = ch
 	it := &rpcIterator{
 		ch:            ch,
-		timeout:       time.Second,
 		ctx:           ctx,
 		correlationID: correlationID,
 		client:        c,

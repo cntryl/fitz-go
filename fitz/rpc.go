@@ -2,7 +2,6 @@ package fitz
 
 import (
 	"context"
-	"time"
 
 	internalrpc "github.com/cntryl/fitz-go/internal/domains/rpc"
 )
@@ -37,7 +36,7 @@ type RPCHandler func(ctx context.Context, req RPCInboundRequest, writer RPCRespo
 
 type RPCClient interface {
 	RegisterWorker(ctx context.Context, route string, handler RPCHandler) (*RPCWorkerRegistration, error)
-	Call(ctx context.Context, route string, body []byte, timeout time.Duration) (Iterator[RPCResponseFrame], error)
+	Call(ctx context.Context, route string, body []byte) (Iterator[RPCResponseFrame], error)
 }
 
 type rpcClient struct {
@@ -72,8 +71,8 @@ func (c *rpcClient) RegisterWorker(ctx context.Context, route string, handler RP
 	return &RPCWorkerRegistration{inner: registration}, nil
 }
 
-func (c *rpcClient) Call(ctx context.Context, route string, body []byte, timeout time.Duration) (Iterator[RPCResponseFrame], error) {
-	iter, err := c.inner.Call(ctx, route, body, timeout)
+func (c *rpcClient) Call(ctx context.Context, route string, body []byte) (Iterator[RPCResponseFrame], error) {
+	iter, err := c.inner.Call(ctx, route, body)
 	if err != nil {
 		return nil, err
 	}

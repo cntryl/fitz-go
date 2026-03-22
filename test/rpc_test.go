@@ -29,7 +29,7 @@ func TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled(t *tes
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 
-		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("ping"), 5*time.Second)
+		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("ping"))
 		require.NoError(t, err)
 		defer iter.Close()
 
@@ -60,7 +60,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 
-		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("stream-me"), 5*time.Second)
+		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("stream-me"))
 		require.NoError(t, err)
 		defer iter.Close()
 
@@ -80,7 +80,9 @@ func TestShouldReturnTimeoutGivenNoWorkerResponseWhenRequestTimeout(t *testing.T
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		_, err := f.Client().RPC().Call(ctx, f.UniqueRoute("rpc"), []byte("nobody-home"), 1*time.Second)
+		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+		defer callCancel()
+		_, err := f.Client().RPC().Call(callCtx, f.UniqueRoute("rpc"), []byte("nobody-home"))
 		assert.Error(t, err)
 	})
 }
@@ -118,7 +120,7 @@ func TestShouldLoadBalanceGivenMultipleWorkersWhenConcurrentRequests(t *testing.
 		defer sub2.Unsubscribe()
 
 		for i := 0; i < 4; i++ {
-			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("req"), 5*time.Second)
+			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("req"))
 			require.NoError(t, err)
 			for iter.Next() {
 			}
@@ -150,7 +152,7 @@ func TestShouldCorrelateResponseGivenCorrectCorrelationIDWhenMultipleRequests(t 
 		defer sub.Unsubscribe()
 
 		for _, payload := range []string{"req-A", "req-B"} {
-			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte(payload), 5*time.Second)
+			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte(payload))
 			require.NoError(t, err)
 			require.True(t, iter.Next())
 			assert.Equal(t, payload, string(iter.Value().Body))
@@ -175,13 +177,15 @@ func TestShouldUnregisterWorkerGivenActiveSubscriptionWhenUnsubscribeCalled(t *t
 		})
 		require.NoError(t, err)
 
-		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("alive"), 3*time.Second)
+		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("alive"))
 		require.NoError(t, err)
 		require.True(t, iter.Next())
 		require.NoError(t, iter.Close())
 
 		sub.Unsubscribe()
-		_, err = fCaller.Client().RPC().Call(ctx, route, []byte("dead"), 2*time.Second)
+		deadCtx, deadCancel := context.WithTimeout(ctx, 2*time.Second)
+		defer deadCancel()
+		_, err = fCaller.Client().RPC().Call(deadCtx, route, []byte("dead"))
 		assert.Error(t, err)
 	})
 }

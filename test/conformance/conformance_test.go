@@ -382,7 +382,9 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			noWorkerRoute := uniqueRoute("rpc")
-			iter, err := f.Client().RPC().Call(ctx, noWorkerRoute, []byte("ping"), 500*time.Millisecond)
+			callCtx, callCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer callCancel()
+			iter, err := f.Client().RPC().Call(callCtx, noWorkerRoute, []byte("ping"))
 			if err != nil {
 				ev = append(ev, fmt.Sprintf("call to unregistered route returned error: %v", err))
 			} else {
@@ -474,7 +476,9 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("rpc")
-			iter, err := f.Client().RPC().Call(ctx, route, []byte("ping"), 500*time.Millisecond)
+			callCtx, callCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer callCancel()
+			iter, err := f.Client().RPC().Call(callCtx, route, []byte("ping"))
 			if err != nil {
 				ev = append(ev, fmt.Sprintf("rpc call error type: %T", err))
 				ev = append(ev, fmt.Sprintf("rpc call error: %v", err))
@@ -517,7 +521,9 @@ func TestConformanceSuite(t *testing.T) {
 
 			route := uniqueRoute("rpc")
 			start := time.Now()
-			iter, err := f.Client().RPC().Call(ctx, route, []byte("nobody"), 250*time.Millisecond)
+			callCtx, callCancel := context.WithTimeout(ctx, 250*time.Millisecond)
+			defer callCancel()
+			iter, err := f.Client().RPC().Call(callCtx, route, []byte("nobody"))
 			elapsed := time.Since(start)
 
 			var timeoutErr error
@@ -575,7 +581,7 @@ func TestConformanceSuite(t *testing.T) {
 			defer sub.Unsubscribe()
 
 			callCtx, callCancel := context.WithCancel(ctx)
-			iter, err2 := fCaller.Client().RPC().Call(callCtx, route, []byte("block"), 30*time.Second)
+			iter, err2 := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
 			if err2 != nil {
 				callCancel()
 				return VerdictFail, ev, fmt.Errorf("rpc call: %w", err2)
@@ -635,7 +641,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 
 			callCtx, callCancel := context.WithCancel(ctx)
-			iter, err2 := fCaller.Client().RPC().Call(callCtx, route, []byte("block"), 30*time.Second)
+			iter, err2 := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
 			if err2 != nil {
 				callCancel()
 				return VerdictFail, ev, fmt.Errorf("rpc call: %w", err2)

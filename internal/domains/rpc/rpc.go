@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/iter"
@@ -62,7 +61,7 @@ type Client interface {
 
 	// Call sends an RPC request and returns an iterator over response frames.
 	// Callers must call Close on the returned iterator when done to release resources.
-	Call(ctx context.Context, route string, body []byte, timeout time.Duration) (iter.Iterator[ResponseFrame], error)
+	Call(ctx context.Context, route string, body []byte) (iter.Iterator[ResponseFrame], error)
 }
 
 type client struct {
@@ -290,7 +289,7 @@ func (c *client) unsubscribeWorker(route string) {
 // Request: [correlation_id(16)][route_len][route][reply_route_len][reply_route][body_len][body]
 // Response: [status] (ack that request was dispatched)
 // Actual responses come via RPC RESPONSE (303) messages.
-func (c *client) Call(ctx context.Context, route string, body []byte, timeout time.Duration) (iter.Iterator[ResponseFrame], error) {
+func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iterator[ResponseFrame], error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.rpc.Call", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
@@ -349,7 +348,6 @@ func (c *client) Call(ctx context.Context, route string, body []byte, timeout ti
 
 	iterator := &rpcIterator{
 		ch:            ch,
-		timeout:       timeout,
 		ctx:           ctx,
 		correlationID: correlationID,
 		client:        c,
@@ -384,16 +382,6 @@ func (c *client) Call(ctx context.Context, route string, body []byte, timeout ti
 		iterator.mu.Unlock()
 		close(ch)
 		return nil, ctx.Err()
-	case <-time.After(10 * time.Second):
-		// Timeout waiting for first response
-		c.mu.Lock()
-		delete(c.pendingRPCs, correlationID)
-		c.mu.Unlock()
-		iterator.mu.Lock()
-		iterator.done = true
-		iterator.err = ErrRPCTimeout
-		iterator.mu.Unlock()
-		return nil, ErrRPCTimeout
 	}
 }
 
@@ -431,7 +419,6 @@ func (w *responseWriter) sendEnd() {
 // rpcIterator iterates over response frames from a Call.
 type rpcIterator struct {
 	ch            chan ResponseFrame
-	timeout       time.Duration
 	ctx           context.Context
 	correlationID [16]byte
 	client        *client
@@ -449,9 +436,6 @@ func (it *rpcIterator) Next() bool {
 	}
 	it.mu.Unlock()
 
-	timer := time.NewTimer(it.timeout)
-	defer timer.Stop()
-
 	select {
 	case frame, ok := <-it.ch:
 		if !ok {
@@ -462,16 +446,6 @@ func (it *rpcIterator) Next() bool {
 		}
 		it.current = frame
 		return true
-	case <-timer.C:
-		it.mu.Lock()
-		it.err = ErrRPCTimeout
-		it.done = true
-		it.mu.Unlock()
-		// Clean up pending RPC
-		it.client.mu.Lock()
-		delete(it.client.pendingRPCs, it.correlationID)
-		it.client.mu.Unlock()
-		return false
 	case <-it.ctx.Done():
 		it.mu.Lock()
 		it.err = it.ctx.Err()

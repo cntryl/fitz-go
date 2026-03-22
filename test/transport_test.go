@@ -326,7 +326,7 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 		callCtx, callCancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			_, err := fCaller.Client().RPC().Call(callCtx, route, []byte("block"), 10*time.Second)
+			_, err := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
 			done <- err
 		}()
 
