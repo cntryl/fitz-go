@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
 // MockTransport is a controllable transport for unit tests.
 // It allows tests to specify read responses and track written frames.
 type MockTransport struct {
+	mu          sync.Mutex
 	readFrames  [][]byte // Frames to return on Read() calls
 	readIndex   int
 	writeFrames [][]byte // Frames written via Write()
@@ -29,27 +31,44 @@ func NewMockTransport() *MockTransport {
 
 // SetReadFrames sets the frames to return on Read() calls.
 func (m *MockTransport) SetReadFrames(frames [][]byte) {
-	m.readFrames = frames
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.readFrames = make([][]byte, 0, len(frames))
+	for _, frame := range frames {
+		m.readFrames = append(m.readFrames, append([]byte(nil), frame...))
+	}
 	m.readIndex = 0
 }
 
 // SetReadError sets an error to return for all Read() calls.
 func (m *MockTransport) SetReadError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.readErr = err
 }
 
 // SetWriteError sets an error to return for all Write() calls.
 func (m *MockTransport) SetWriteError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.writeErr = err
 }
 
 // GetWrittenFrames returns all frames written via Write().
 func (m *MockTransport) GetWrittenFrames() [][]byte {
-	return m.writeFrames
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	frames := make([][]byte, 0, len(m.writeFrames))
+	for _, frame := range m.writeFrames {
+		frames = append(frames, append([]byte(nil), frame...))
+	}
+	return frames
 }
 
 // Write appends the frame to the written frames list.
 func (m *MockTransport) Write(ctx context.Context, frame []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.writeErr != nil {
 		return m.writeErr
 	}
@@ -67,29 +86,38 @@ func (m *MockTransport) Write(ctx context.Context, frame []byte) error {
 
 // Read returns the next queued read frame or an error.
 func (m *MockTransport) Read(ctx context.Context) ([]byte, error) {
+	m.mu.Lock()
 	if m.readErr != nil {
-		return nil, m.readErr
+		err := m.readErr
+		m.mu.Unlock()
+		return nil, err
 	}
 	if m.closed {
+		m.mu.Unlock()
 		return nil, errors.New("transport closed")
 	}
+	if m.readIndex >= len(m.readFrames) {
+		m.mu.Unlock()
+		// Block until context cancelled
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	frame := append([]byte(nil), m.readFrames[m.readIndex]...)
+	m.readIndex++
+	m.mu.Unlock()
+
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
 	}
-	if m.readIndex >= len(m.readFrames) {
-		// Block until context cancelled
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	frame := m.readFrames[m.readIndex]
-	m.readIndex++
 	return frame, nil
 }
 
 // Close marks the transport as closed.
 func (m *MockTransport) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.closed = true
 	return nil
 }

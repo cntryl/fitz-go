@@ -15,38 +15,83 @@ import (
 // unauthenticated connections.
 type TokenProvider func(ctx context.Context) (string, error)
 
-// ValidateRoute checks that a route string matches the expected format.
-//
-// Default format (most domains):
+// ValidateRoute checks that a route string matches the default domain format:
 //
 //	<expectedScheme>://realm/area/resource
 //
-// Schedule format:
-//
-//	<expectedScheme>://realm/area/resource/operation
-//
 // All path segments must be non-empty. The scheme prefix is validated
-// against expectedScheme (e.g., "queue", "stream", "rpc", "lease", "schedule").
+// against expectedScheme (e.g., "queue", "stream", "rpc", "lease").
 func ValidateRoute(route string, expectedScheme string) error {
-	prefix := expectedScheme + "://"
-	if !strings.HasPrefix(route, prefix) {
-		return fmt.Errorf("%s route must start with %s", expectedScheme, prefix)
+	segs, err := routeSegments(route, expectedScheme)
+	if err != nil {
+		return err
 	}
-	path := route[len(prefix):]
-	requiredSegments := 3
-	segmentDesc := "realm/area/resource"
-	if expectedScheme == "schedule" {
-		requiredSegments = 4
-		segmentDesc = "realm/area/resource/operation"
+	if len(segs) != 3 {
+		return fmt.Errorf("%s route must have exactly 3 segments: realm/area/resource", expectedScheme)
 	}
-	segs := strings.SplitN(path, "/", requiredSegments+1)
-	if len(segs) != requiredSegments {
-		return fmt.Errorf("%s route must have exactly %d segments: %s", expectedScheme, requiredSegments, segmentDesc)
+	return nil
+}
+
+// ValidateScheduleRoute validates exact schedule routes accepted by CREATE and CANCEL:
+//
+//	schedule://realm/area/resource
+func ValidateScheduleRoute(route string) error {
+	segs, err := routeSegments(route, "schedule")
+	if err != nil {
+		return err
 	}
-	for i := 0; i < requiredSegments; i++ {
-		if segs[i] == "" {
-			return fmt.Errorf("%s route segments must be non-empty", expectedScheme)
+	if len(segs) != 3 {
+		return fmt.Errorf("schedule route must have exactly 3 segments: realm/area/resource")
+	}
+	for _, seg := range segs {
+		if seg == "*" {
+			return fmt.Errorf("schedule route does not support wildcards")
 		}
 	}
 	return nil
+}
+
+// ValidateScheduleSelector validates route selectors accepted by schedule LIST and SUBSCRIBE:
+//
+//	schedule://realm/area
+//	schedule://realm/area/resource
+//	schedule://realm/area/*
+func ValidateScheduleSelector(selector string) error {
+	segs, err := routeSegments(selector, "schedule")
+	if err != nil {
+		return err
+	}
+	if len(segs) < 2 {
+		return fmt.Errorf("schedule selector must have 2 or 3 segments: realm/area or realm/area/resource or realm/area/*")
+	}
+	if segs[0] == "*" || segs[1] == "*" {
+		return fmt.Errorf("schedule selector wildcard is only allowed as the third segment")
+	}
+	switch len(segs) {
+	case 2:
+		return nil
+	case 3:
+		return nil
+	default:
+		return fmt.Errorf("schedule selector must have 2 or 3 segments: realm/area or realm/area/resource or realm/area/*")
+	}
+}
+
+func routeSegments(route string, expectedScheme string) ([]string, error) {
+	prefix := expectedScheme + "://"
+	if !strings.HasPrefix(route, prefix) {
+		return nil, fmt.Errorf("%s route must start with %s", expectedScheme, prefix)
+	}
+
+	path := route[len(prefix):]
+	segs := strings.Split(path, "/")
+	if len(segs) == 0 {
+		return nil, fmt.Errorf("%s route segments must be non-empty", expectedScheme)
+	}
+	for _, seg := range segs {
+		if seg == "" {
+			return nil, fmt.Errorf("%s route segments must be non-empty", expectedScheme)
+		}
+	}
+	return segs, nil
 }

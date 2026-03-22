@@ -33,6 +33,7 @@ type ScheduleClient interface {
 	Create(ctx context.Context, route string, cronExpr string, payload []byte) (id string, err error)
 	Cancel(ctx context.Context, route string) error
 	List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error)
+	ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error)
 	Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error)
 }
 
@@ -53,6 +54,18 @@ func (c *scheduleClient) List(ctx context.Context, offset, limit uint64) ([]Sche
 	if err != nil {
 		return nil, 0, err
 	}
+	return copyScheduleEntries(entries), totalCount, nil
+}
+
+func (c *scheduleClient) ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
+	entries, totalCount, err := c.inner.ListBySelector(ctx, selector, offset, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	return copyScheduleEntries(entries), totalCount, nil
+}
+
+func copyScheduleEntries(entries []internalschedule.ScheduleEntry) []ScheduleEntry {
 	publicEntries := make([]ScheduleEntry, 0, len(entries))
 	for _, entry := range entries {
 		publicEntries = append(publicEntries, ScheduleEntry{
@@ -62,7 +75,7 @@ func (c *scheduleClient) List(ctx context.Context, offset, limit uint64) ([]Sche
 			Payload: append([]byte(nil), entry.Payload...),
 		})
 	}
-	return publicEntries, totalCount, nil
+	return publicEntries
 }
 
 func (c *scheduleClient) Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error) {

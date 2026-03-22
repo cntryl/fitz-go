@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testIOTimeout = 3 * time.Second
+
 type scriptedTransport struct {
 	mu      sync.Mutex
 	writes  chan []byte
@@ -60,8 +62,16 @@ func (t *scriptedTransport) RemoteAddr() string {
 func newStartedScheduleClient(t *testing.T) (*client, *scriptedTransport) {
 	t.Helper()
 	transport := newScriptedTransport()
-	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
+	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: testIOTimeout})
 	require.NoError(t, conn.Start(context.Background()))
+	select {
+	case frame := <-transport.writes:
+		msgType, _, err := protocol.DecodeFrame(frame)
+		require.NoError(t, err)
+		require.Equal(t, protocol.MessageTypeConnect, msgType)
+	case <-time.After(testIOTimeout):
+		t.Fatal("timed out waiting for connect frame")
+	}
 	t.Cleanup(func() {
 		_ = conn.Close()
 	})
@@ -84,7 +94,7 @@ func respondOnNextWrite(t *testing.T, transport *scriptedTransport, msgType uint
 		select {
 		case <-transport.writes:
 			transport.reads <- scheduleSuccessFrame(msgType, payload)
-		case <-time.After(time.Second):
+		case <-time.After(testIOTimeout):
 			t.Error("timed out waiting for request write")
 		}
 	}()
@@ -101,7 +111,7 @@ func TestShouldReturnServerScheduleIDGivenPresentWhenCreateCalled(t *testing.T) 
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleCreate, payload)
 
 	// Act
-	id, err := client.Create(context.Background(), "schedule://realm/area/resource/run", "0 0 * * *", []byte("payload"))
+	id, err := client.Create(context.Background(), "schedule://realm/area/resource", "0 0 * * *", []byte("payload"))
 
 	// Assert
 	require.NoError(t, err)
@@ -112,7 +122,7 @@ func TestShouldReturnRouteGivenNoServerScheduleIDWhenCreateCalled(t *testing.T) 
 	// Arrange
 	client, transport := newStartedScheduleClient(t)
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleCreate, []byte{0})
-	route := "schedule://realm/area/resource/run"
+	route := "schedule://realm/area/resource"
 
 	// Act
 	id, err := client.Create(context.Background(), route, "0 0 * * *", []byte("payload"))
@@ -128,11 +138,11 @@ func TestShouldParseEntriesGivenValidListResponseWhenListCalled(t *testing.T) {
 	buf := connection.GetBuffer()
 	connection.WriteU64BE(buf, 2)
 	connection.WriteU8(buf, 1)
-	connection.WriteString(buf, "schedule://realm/area/one/run")
+	connection.WriteString(buf, "schedule://realm/area/one")
 	connection.WriteString(buf, "0 0 * * *")
 	connection.WriteBytes(buf, []byte("first"))
 	connection.WriteU8(buf, 1)
-	connection.WriteString(buf, "schedule://realm/area/two/run")
+	connection.WriteString(buf, "schedule://realm/area/two")
 	connection.WriteString(buf, "*/5 * * * *")
 	connection.WriteBytes(buf, []byte("second"))
 	connection.WriteU8(buf, 0)
@@ -147,7 +157,7 @@ func TestShouldParseEntriesGivenValidListResponseWhenListCalled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), totalCount)
 	require.Len(t, entries, 2)
-	assert.Equal(t, "schedule://realm/area/one/run", entries[0].Route)
+	assert.Equal(t, "schedule://realm/area/one", entries[0].Route)
 	assert.Equal(t, []byte("second"), entries[1].Payload)
 }
 
@@ -183,7 +193,7 @@ func TestShouldUseServerSubscriptionIDGivenPresentWhenSubscribeCalled(t *testing
 	assert.Equal(t, uint64(42), sub.subID)
 }
 
-func TestShouldAllocateClientSubscriptionIDGivenMissingServerValueWhenSubscribeCalled(t *testing.T) {
+func TestShouldReturnErrorGivenMissingServerSubscriptionIDWhenSubscribeCalled(t *testing.T) {
 	// Arrange
 	client, transport := newStartedScheduleClient(t)
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleSubscribe, nil)
@@ -192,22 +202,20 @@ func TestShouldAllocateClientSubscriptionIDGivenMissingServerValueWhenSubscribeC
 	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) {})
 
 	// Assert
-	require.NoError(t, err)
-	assert.Equal(t, uint64(1), sub.subID)
+	require.Error(t, err)
+	assert.Nil(t, sub)
 }
 
 func TestShouldDispatchNotificationGivenMatchingSubscriptionWhenHandleScheduleNotifyCalled(t *testing.T) {
 	// Arrange
 	client, _ := newStartedScheduleClient(t)
 	received := make(chan Notification, 1)
-	client.subscriptions[7] = &Subscription{
-		subID:   7,
-		pattern: "schedule://realm/area/*",
-		client:  client,
-		handler: func(_ context.Context, n Notification) {
-			received <- n
-		},
-	}
+	_, _, err := client.subscriptions.Subscribe("schedule://realm/area/*", func(_ context.Context, n Notification) {
+		received <- n
+	}, func(string) (uint64, error) {
+		return 7, nil
+	})
+	require.NoError(t, err)
 
 	// Act
 	client.handleScheduleNotify(7, []byte("run"))
@@ -221,12 +229,52 @@ func TestShouldDispatchNotificationGivenMatchingSubscriptionWhenHandleScheduleNo
 	}
 }
 
+func TestShouldFanOutHandlersGivenDuplicatePatternWhenSubscribeCalled(t *testing.T) {
+	client, transport := newStartedScheduleClient(t)
+	buf := connection.GetBuffer()
+	connection.WriteU8(buf, 1)
+	connection.WriteU64BE(buf, 42)
+	payload := append([]byte(nil), buf.Bytes()...)
+	connection.PutBuffer(buf)
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleSubscribe, payload)
+
+	first := make(chan Notification, 1)
+	second := make(chan Notification, 1)
+
+	sub1, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(_ context.Context, n Notification) {
+		first <- n
+	})
+	require.NoError(t, err)
+
+	sub2, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(_ context.Context, n Notification) {
+		second <- n
+	})
+	require.NoError(t, err)
+	assert.Equal(t, sub1.subID, sub2.subID)
+
+	client.handleScheduleNotify(42, []byte("fire"))
+
+	select {
+	case msg := <-first:
+		assert.Equal(t, []byte("fire"), msg.Payload)
+	case <-time.After(time.Second):
+		t.Fatal("first schedule handler not notified")
+	}
+
+	select {
+	case msg := <-second:
+		assert.Equal(t, []byte("fire"), msg.Payload)
+	case <-time.After(time.Second):
+		t.Fatal("second schedule handler not notified")
+	}
+}
+
 func TestShouldReturnErrorGivenInvalidRouteWhenCancelCalled(t *testing.T) {
 	// Arrange
 	client, _ := newStartedScheduleClient(t)
 
 	// Act
-	err := client.Cancel(context.Background(), "schedule://realm/area/resource")
+	err := client.Cancel(context.Background(), "schedule://realm/area")
 
 	// Assert
 	require.Error(t, err)

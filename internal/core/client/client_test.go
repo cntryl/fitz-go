@@ -148,18 +148,16 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	go pushResponseAfterWrite(firstTransport, scheduleListResponseFrame(t), 2)
 	require.NoError(t, c.Connect(ctx))
 
-	go pushResponseAfterWrite(firstTransport, noticeSubscribeResponseFrame(t, 11), 3)
+	go pushResponseAfterWrite(firstTransport, noticeSubscribeResponseFrame(t, 11), 2)
 	_, err := c.Notice().Subscribe(ctx, "notice://realm/area/resource", func(context.Context, notice.NoticeMsg) error {
 		return nil
 	})
 	require.NoError(t, err)
 
 	initialConn := c.currentConnection()
-	go pushResponseAfterWrite(secondTransport, scheduleListResponseFrame(t), 2)
-	go pushResponseAfterWrite(secondTransport, noticeSubscribeResponseFrame(t, 22), 3)
+	go pushResponseAfterWrite(secondTransport, noticeSubscribeResponseFrame(t, 22), 2)
 
 	// Act
 	require.NoError(t, initialConn.Close())
@@ -170,20 +168,55 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 	}, time.Second, 20*time.Millisecond)
 	assert.Equal(t, 2, tokenCalls)
 
+	require.Eventually(t, func() bool {
+		return len(secondTransport.WrittenFrames()) >= 2
+	}, time.Second, 10*time.Millisecond)
+
 	writtenFrames := secondTransport.WrittenFrames()
-	require.Len(t, writtenFrames, 3)
+	require.GreaterOrEqual(t, len(writtenFrames), 2)
 	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeConnect, connectType)
 	assert.Equal(t, []byte("token-2"), connectPayload)
 
-	probeType, _, err := protocol.DecodeFrame(writtenFrames[1])
-	require.NoError(t, err)
-	assert.Equal(t, protocol.MessageTypeScheduleList, probeType)
-
-	subscribeType, _, err := protocol.DecodeFrame(writtenFrames[2])
+	subscribeType, _, err := protocol.DecodeFrame(writtenFrames[1])
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeNoticeSubscribe, subscribeType)
+}
+
+func TestShouldSendOnlyConnectFrameGivenAuthenticatedTokenWhenConnectCalled(t *testing.T) {
+	firstTransport := newScriptedTransport()
+
+	originalDialTCP := dialTCPTransport
+	originalDialWS := dialWebSocketTransport
+	defer func() {
+		dialTCPTransport = originalDialTCP
+		dialWebSocketTransport = originalDialWS
+	}()
+
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		return firstTransport, nil
+	}
+
+	c := NewClient("localhost:4091", func(context.Context) (string, error) {
+		return "token-1", nil
+	})
+	c.config.AuthSettleDelay = 20 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	require.NoError(t, c.Connect(ctx))
+	t.Cleanup(func() {
+		_ = c.Close()
+	})
+
+	writtenFrames := firstTransport.WrittenFrames()
+	require.Len(t, writtenFrames, 1)
+	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
+	require.NoError(t, err)
+	assert.Equal(t, protocol.MessageTypeConnect, connectType)
+	assert.Equal(t, []byte("token-1"), connectPayload)
 }
 
 func noticeSubscribeResponseFrame(t *testing.T, subID uint64) []byte {
@@ -203,18 +236,6 @@ func noticeSubscribeResponseFrame(t *testing.T, subID uint64) []byte {
 
 	// Assert
 	return encoded
-}
-
-func scheduleListResponseFrame(t *testing.T) []byte {
-	t.Helper()
-
-	buf := connection.GetBuffer()
-	defer connection.PutBuffer(buf)
-	buf.WriteByte(0)
-	connection.WriteU64BE(buf, 0)
-	frame := protocol.EncodeFrameOwned(protocol.MessageTypeScheduleList, append([]byte(nil), buf.Bytes()...))
-	defer frame.Release()
-	return append([]byte(nil), frame.Bytes()...)
 }
 
 type scriptedTransport struct {

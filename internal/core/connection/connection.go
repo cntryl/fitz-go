@@ -54,6 +54,7 @@ type Connection struct {
 	transport transport.Transport
 	state     atomic.Int32 // State enum
 	stateMu   sync.RWMutex // Protects state transitions
+	writeMu   sync.Mutex   // Serializes outbound frames so FIFO request queues match wire order
 
 	// CONNECT configuration (per CLIENT_SPEC.md)
 	token string
@@ -84,7 +85,7 @@ type Connection struct {
 // Config contains connection configuration.
 type Config struct {
 	Token            string
-	AuthSettleDelay  time.Duration // CONNECT silent-success settle window (default 100ms)
+	AuthSettleDelay  time.Duration // CONNECT silent-success settle window (default 500ms)
 	ReadTimeout      time.Duration // Default 30s (per-read timeout)
 	WriteTimeout     time.Duration // Default 10s
 	ReconnectEnabled bool
@@ -98,7 +99,7 @@ type Config struct {
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
-		AuthSettleDelay: 250 * time.Millisecond,
+		AuthSettleDelay: 500 * time.Millisecond,
 		ReadTimeout:     30 * time.Second,
 		WriteTimeout:    10 * time.Second,
 	}
@@ -118,7 +119,7 @@ func New(trans transport.Transport, cfg Config) *Connection {
 
 	// Apply defaults
 	if cfg.AuthSettleDelay == 0 {
-		cfg.AuthSettleDelay = 250 * time.Millisecond
+		cfg.AuthSettleDelay = 500 * time.Millisecond
 	}
 	if cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = 30 * time.Second
@@ -229,7 +230,10 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 		defer cancel()
 	}
 
-	if err := c.transport.Write(writeCtx, frame.Bytes()); err != nil {
+	c.writeMu.Lock()
+	err := c.transport.Write(writeCtx, frame.Bytes())
+	c.writeMu.Unlock()
+	if err != nil {
 		return err
 	}
 
@@ -361,21 +365,15 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		return nil, ErrNotAuthenticated
 	}
 
-	// Create response channel
-	responseChan := make(chan []byte, 1)
-
-	// Register with multiplexer (FIFO queue)
-	c.mux.RegisterRequest(msgType, responseChan, nil)
-
-	// Cleanup on context cancel or completion
-	defer c.mux.UnregisterRequest(msgType, responseChan)
-
 	// Encode frame
 	frame := protocol.EncodeFrameOwned(msgType, payload)
 	if frame == nil {
 		return nil, fmt.Errorf("encode frame")
 	}
 	defer frame.Release()
+
+	// Create response channel
+	responseChan := make(chan []byte, 1)
 
 	if c.logger != nil {
 		c.logger.Debug("request sent", "msg_type", msgType)
@@ -389,7 +387,15 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		defer cancel()
 	}
 
-	if err := c.transport.Write(writeCtx, frame.Bytes()); err != nil {
+	// Registering the pending request and writing the frame must happen under
+	// the same lock; otherwise concurrent callers can enqueue in one order but
+	// hit the wire in another, which breaks FIFO response correlation.
+	c.writeMu.Lock()
+	c.mux.RegisterRequest(msgType, responseChan, nil)
+	defer c.mux.UnregisterRequest(msgType, responseChan)
+	err := c.transport.Write(writeCtx, frame.Bytes())
+	c.writeMu.Unlock()
+	if err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
@@ -425,21 +431,15 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		return nil, ErrNotAuthenticated
 	}
 
-	// Create response channel
-	responseChan := make(chan []byte, 1)
-
-	// Register with multiplexer (FIFO queue)
-	c.mux.RegisterRequest(msgType, responseChan, nil)
-
-	// Cleanup on context cancel or completion
-	defer c.mux.UnregisterRequest(msgType, responseChan)
-
 	// Encode frame
 	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
 		return nil, fmt.Errorf("encode frame: %w", err)
 	}
 	defer frame.Release()
+
+	// Create response channel
+	responseChan := make(chan []byte, 1)
 
 	if c.logger != nil {
 		c.logger.Debug("request sent", "msg_type", msgType)
@@ -453,7 +453,13 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		defer cancel()
 	}
 
-	if err := c.transport.Write(writeCtx, frame.Bytes()); err != nil {
+	// Keep pending-queue registration aligned with actual wire order.
+	c.writeMu.Lock()
+	c.mux.RegisterRequest(msgType, responseChan, nil)
+	defer c.mux.UnregisterRequest(msgType, responseChan)
+	err = c.transport.Write(writeCtx, frame.Bytes())
+	c.writeMu.Unlock()
+	if err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
@@ -502,7 +508,10 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 		defer cancel()
 	}
 
-	if err := c.transport.Write(writeCtx, frame.Bytes()); err != nil {
+	c.writeMu.Lock()
+	err := c.transport.Write(writeCtx, frame.Bytes())
+	c.writeMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("write fire-and-forget: %w", err)
 	}
 
@@ -528,7 +537,10 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 		defer cancel()
 	}
 
-	if err := c.transport.Write(writeCtx, frame.Bytes()); err != nil {
+	c.writeMu.Lock()
+	err = c.transport.Write(writeCtx, frame.Bytes())
+	c.writeMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("write fire-and-forget: %w", err)
 	}
 

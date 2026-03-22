@@ -126,18 +126,18 @@ func TestShouldAcceptCronExpressionsGivenRepresentativeInputsWhenValidatedByCall
 
 // TestShouldDefineScheduleTargets tests schedule target resource/operation handling.
 func TestShouldDefineScheduleTargetsGivenRepresentativeRoutesWhenRead(t *testing.T) {
-	t.Run("target with operation", func(t *testing.T) {
-		target := "schedule://acme/app/backup/execute"
+	t.Run("target resource route", func(t *testing.T) {
+		target := "schedule://acme/app/backup"
 		assert.NotEmpty(t, target)
 	})
 
-	t.Run("another target with operation", func(t *testing.T) {
-		target := "schedule://acme/app/sync/run"
+	t.Run("area selector", func(t *testing.T) {
+		target := "schedule://acme/app"
 		assert.NotEmpty(t, target)
 	})
 
-	t.Run("nested target path with operation", func(t *testing.T) {
-		target := "schedule://org.example.com/production/maintenance/daily"
+	t.Run("area wildcard selector", func(t *testing.T) {
+		target := "schedule://org.example.com/production/*"
 		assert.NotEmpty(t, target)
 	})
 }
@@ -145,7 +145,7 @@ func TestShouldDefineScheduleTargetsGivenRepresentativeRoutesWhenRead(t *testing
 // Benchmarks
 
 func BenchmarkEncodeScheduleCreate(b *testing.B) {
-	route := "schedule://acme/jobs/backup/run"
+	route := "schedule://acme/jobs/backup"
 	cronExpr := "0 0 * * *"
 	payload := []byte("backup-payload")
 	w := scheduleCreatePayloadWriter(route, cronExpr, payload)
@@ -160,7 +160,7 @@ func BenchmarkEncodeScheduleCreate(b *testing.B) {
 }
 
 func BenchmarkEncodeScheduleCancel(b *testing.B) {
-	route := "schedule://acme/jobs/backup/run"
+	route := "schedule://acme/jobs/backup"
 	w := scheduleCancelPayloadWriter(route)
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)

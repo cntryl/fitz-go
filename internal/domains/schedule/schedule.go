@@ -5,10 +5,13 @@ package schedule
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
+	"github.com/cntryl/fitz-go/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -35,10 +38,10 @@ type ScheduleHandler func(ctx context.Context, n Notification)
 // Subscription represents an active subscription to schedule fire notifications.
 // Call Unsubscribe to stop receiving notifications.
 type Subscription struct {
-	subID   uint64
-	pattern string
-	client  *client
-	handler ScheduleHandler
+	subID     uint64
+	handlerID uint64
+	pattern   string
+	client    *client
 }
 
 // Unsubscribe stops receiving schedule fire notifications for this subscription.
@@ -62,6 +65,9 @@ type Client interface {
 	// Returns: schedule entries for this page, total count of all schedules, error.
 	List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error)
 
+	// ListBySelector retrieves schedules matching a canonical schedule selector.
+	ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error)
+
 	// Subscribe subscribes to schedule fire notifications for the given route pattern.
 	// When a schedule fires, the handler is invoked with the schedule's payload.
 	// Subscriptions are session-scoped and lost on disconnect.
@@ -71,46 +77,44 @@ type Client interface {
 type client struct {
 	conn *connection.Connection
 
-	mu              sync.RWMutex
-	initialized     bool
-	subscriptions   map[uint64]*Subscription
-	nextClientSubID uint64
+	mu                      sync.Mutex
+	subscriptions           *subscriptions.Registry[ScheduleHandler]
+	notifyHandlerInitOnce   sync.Once
+	notifyHandlerRegistered atomic.Bool
 }
 
 var _ reconnect.DomainRestorer = (*client)(nil)
 
 func (c *client) initScheduleNotifyHandler() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.initialized {
-		return
-	}
-	c.initialized = true
-	if c.subscriptions == nil {
-		c.subscriptions = make(map[uint64]*Subscription)
-	}
-	c.conn.RegisterScheduleNotifyHandler(c.handleScheduleNotify)
+	c.notifyHandlerInitOnce.Do(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.conn.RegisterScheduleNotifyHandler(c.handleScheduleNotify)
+		c.notifyHandlerRegistered.Store(true)
+	})
 }
 
 func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
-	c.mu.RLock()
-	sub, ok := c.subscriptions[subID]
-	c.mu.RUnlock()
-	if !ok {
+	handlers := c.subscriptions.Handlers(subID)
+	if len(handlers) == 0 {
 		return
 	}
-	msg := Notification{
-		Payload: make([]byte, len(payload)),
+
+	body := append([]byte(nil), payload...)
+	for _, handler := range handlers {
+		handler := handler
+		msg := Notification{
+			Payload: append([]byte(nil), body...),
+		}
+		go func() {
+			handler(context.Background(), msg)
+		}()
 	}
-	copy(msg.Payload, payload)
-	go func() {
-		sub.handler(context.Background(), msg)
-	}()
 }
 
 // NewClient creates a new Schedule domain client.
 func NewClient(conn *connection.Connection) Client {
-	return &client{conn: conn, subscriptions: make(map[uint64]*Subscription)}
+	return &client{conn: conn, subscriptions: subscriptions.NewRegistry[ScheduleHandler]()}
 }
 
 // Create per CLIENT_SPEC.md: Request [route_len][route][cron_len][cron][payload_len][payload].
@@ -127,7 +131,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "schedule"); err != nil {
+	if err := types.ValidateScheduleRoute(route); err != nil {
 		return "", fmt.Errorf("invalid route: %w", err)
 	}
 
@@ -165,7 +169,7 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "schedule"); err != nil {
+	if err := types.ValidateScheduleRoute(route); err != nil {
 		return fmt.Errorf("invalid route: %w", err)
 	}
 
@@ -259,8 +263,42 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 	return entries, totalCount, nil
 }
 
-// Subscribe per CLIENT_SPEC.md (703): Request [route_pattern]. Response (status=0) only; no subscription_id in response.
-// When server sends optional subscription_id in response, we use it for NOTIFY (705) matching; otherwise use client-generated id.
+func (c *client) ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
+	if err := types.ValidateScheduleSelector(selector); err != nil {
+		return nil, 0, fmt.Errorf("invalid selector: %w", err)
+	}
+
+	allEntries, err := c.listAll(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	filtered := filterScheduleEntries(allEntries, selector)
+	totalCount := uint64(len(filtered))
+	if offset >= totalCount {
+		return []ScheduleEntry{}, totalCount, nil
+	}
+
+	end := totalCount
+	if limit != 0 && offset+limit < end {
+		end = offset + limit
+	}
+
+	startIdx := int(offset)
+	endIdx := int(end)
+	window := make([]ScheduleEntry, 0, endIdx-startIdx)
+	for _, entry := range filtered[startIdx:endIdx] {
+		window = append(window, ScheduleEntry{
+			ID:      entry.ID,
+			Route:   entry.Route,
+			Cron:    entry.Cron,
+			Payload: append([]byte(nil), entry.Payload...),
+		})
+	}
+	return window, totalCount, nil
+}
+
+// Subscribe per CLIENT_SPEC.md (703): Request [route_pattern]. Response: [status][optional u64 subscription_id].
 func (c *client) Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*Subscription, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
@@ -268,20 +306,30 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 		log.Debug("schedule.Subscribe", "pattern", pattern)
 	}
 	c.initScheduleNotifyHandler()
+	if err := types.ValidateScheduleSelector(pattern); err != nil {
+		return nil, fmt.Errorf("invalid pattern: %w", err)
+	}
 
-	sub, err := c.subscribe(ctx, pattern, handler)
+	subID, handlerID, err := c.subscriptions.Subscribe(pattern, handler, func(pattern string) (uint64, error) {
+		return c.subscribeWire(ctx, pattern)
+	})
 	if err != nil {
 		return nil, err
 	}
-	return sub, nil
+	return &Subscription{
+		subID:     subID,
+		handlerID: handlerID,
+		pattern:   pattern,
+		client:    c,
+	}, nil
 }
 
 // Unsubscribe per CLIENT_SPEC.md (704):
 // Request: [string route_pattern]
 func (c *client) unsubscribe(sub *Subscription) {
-	c.mu.Lock()
-	delete(c.subscriptions, sub.subID)
-	c.mu.Unlock()
+	if !c.subscriptions.Unsubscribe(sub.pattern, sub.handlerID) {
+		return
+	}
 
 	// Best-effort unsubscribe; ignore errors to match notice semantics.
 	ctx := context.Background()
@@ -296,67 +344,92 @@ func (c *client) ReplaceConnection(conn *connection.Connection) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.conn = conn
-	if c.initialized {
+	if c.notifyHandlerRegistered.Load() {
 		c.conn.RegisterScheduleNotifyHandler(c.handleScheduleNotify)
 	}
 }
 
 func (c *client) RestoreSubscriptions(ctx context.Context) error {
-	c.mu.RLock()
-	snapshot := make([]*Subscription, 0, len(c.subscriptions))
-	for _, sub := range c.subscriptions {
-		snapshot = append(snapshot, &Subscription{pattern: sub.pattern, handler: sub.handler, client: c})
-	}
-	c.mu.RUnlock()
-
-	restored := make(map[uint64]*Subscription, len(snapshot))
-	for _, sub := range snapshot {
-		restoredSub, err := c.subscribe(ctx, sub.pattern, sub.handler)
-		if err != nil {
-			return err
-		}
-		restored[restoredSub.subID] = restoredSub
-	}
-
-	c.mu.Lock()
-	c.subscriptions = restored
-	c.mu.Unlock()
-	return nil
+	return c.subscriptions.Restore(func(pattern string) (uint64, error) {
+		return c.subscribeWire(ctx, pattern)
+	})
 }
 
-func (c *client) subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*Subscription, error) {
+func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleSubscribe, scheduleSubscribePayloadWriter(pattern))
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+		return 0, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapScheduleError(err.Error()))
+		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapScheduleError(err.Error()))
 	}
 	if !success {
-		return nil, fmt.Errorf("SUBSCRIBE failed: unexpected status")
+		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")
 	}
 
-	var subID uint64
-	if len(remaining) >= 9 && remaining[0] == 1 {
-		subID, _, _ = connection.ReadU64BE(remaining, 1)
+	if len(remaining) < 1 {
+		return 0, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
 	}
-	if subID == 0 {
-		c.mu.Lock()
-		c.nextClientSubID++
-		subID = c.nextClientSubID
-		c.mu.Unlock()
+	if remaining[0] != 1 {
+		return 0, fmt.Errorf("SUBSCRIBE response missing subscription_id")
+	}
+	if len(remaining) < 9 {
+		return 0, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
 	}
 
-	sub := &Subscription{
-		subID:   subID,
-		pattern: pattern,
-		client:  c,
-		handler: handler,
+	subID, _, err := connection.ReadU64BE(remaining, 1)
+	if err != nil {
+		return 0, fmt.Errorf("parse subscription_id: %w", err)
 	}
-	c.mu.Lock()
-	c.subscriptions[subID] = sub
-	c.mu.Unlock()
-	return sub, nil
+	return subID, nil
+}
+
+func (c *client) listAll(ctx context.Context) ([]ScheduleEntry, error) {
+	var (
+		offset  uint64
+		entries []ScheduleEntry
+	)
+
+	for {
+		page, totalCount, err := c.List(ctx, offset, 100)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, page...)
+		offset += uint64(len(page))
+		if len(page) == 0 || offset >= totalCount {
+			return entries, nil
+		}
+	}
+}
+
+func filterScheduleEntries(entries []ScheduleEntry, selector string) []ScheduleEntry {
+	if strings.HasSuffix(selector, "/*") {
+		prefix := strings.TrimSuffix(selector, "*")
+		return filterScheduleEntriesByPrefix(entries, prefix)
+	}
+
+	if len(strings.Split(strings.TrimPrefix(selector, "schedule://"), "/")) == 3 {
+		filtered := make([]ScheduleEntry, 0, len(entries))
+		for _, entry := range entries {
+			if entry.Route == selector {
+				filtered = append(filtered, entry)
+			}
+		}
+		return filtered
+	}
+
+	return filterScheduleEntriesByPrefix(entries, selector+"/")
+}
+
+func filterScheduleEntriesByPrefix(entries []ScheduleEntry, prefix string) []ScheduleEntry {
+	filtered := make([]ScheduleEntry, 0, len(entries))
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Route, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }

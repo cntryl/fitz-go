@@ -203,9 +203,6 @@ func (f *TestFixture) UniqueRoute(scheme string) string {
 	realm := f.UniqueRealm()
 	area := f.UniqueArea()
 	resource := f.UniqueResource()
-	if scheme == "schedule" {
-		return fmt.Sprintf("%s://%s/%s/%s/%s", scheme, realm, area, resource, "run")
-	}
 	return fmt.Sprintf("%s://%s/%s/%s", scheme, realm, area, resource)
 }
 
@@ -248,8 +245,11 @@ func (f *TestFixture) tokenProviderForMode() (fitz.TokenProvider, error) {
 func (f *TestFixture) probeAuthenticatedConnection(ctx context.Context) error {
 	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	_, _, err := f.client.Schedule().List(probeCtx, 0, 1)
-	return err
+	tx, err := f.client.KV().Begin(probeCtx, f.UniqueRoute("kv"))
+	if err != nil {
+		return err
+	}
+	return tx.Rollback(probeCtx)
 }
 
 func authModeFromTestName(name string) AuthMode {

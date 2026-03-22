@@ -115,6 +115,40 @@ Run the repo-local spec-compliance conformance suite with:
 go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
 ```
 
+## Local performance workflow
+
+Use direct `go test` and `go tool pprof` commands while optimizing hot paths.
+
+Run hotpath micro-benchmarks:
+
+```bash
+go test -run=^$ -bench='Benchmark(EncodeFrame|DecodeFrame|EncodeFrameWithPayloadWriter|MuxDispatchResponse|RegisterRequest|ConcurrentDispatch|WriteFrame|ReadFrame|WriteWSFrame|ReadWSFrame|WriteU64|WriteU32|WriteString|WriteBytes)' -benchmem -count=5 -benchtime=2s ./internal/protocol ./internal/core/encoding ./internal/core/connection ./internal/core/transport
+```
+
+Run domain-level benchmarks:
+
+```bash
+go test -run=^$ -bench=Benchmark -benchmem -count=5 -benchtime=2s ./internal/domains/...
+```
+
+Collect CPU and memory profiles for one benchmark target:
+
+```bash
+go test -run=^$ -bench=BenchmarkMuxDispatchResponse -benchmem -count=1 -cpuprofile=cpu.prof -memprofile=mem.prof ./internal/core/connection
+go tool pprof -top cpu.prof
+go tool pprof -top mem.prof
+```
+
+Save benchmark outputs directly when comparing changes:
+
+```bash
+go test -run=^$ -bench='Benchmark(EncodeFrame|DecodeFrame|EncodeFrameWithPayloadWriter|MuxDispatchResponse|RegisterRequest|ConcurrentDispatch|WriteFrame|ReadFrame|WriteWSFrame|ReadWSFrame|WriteU64|WriteU32|WriteString|WriteBytes)' -benchmem -count=5 ./internal/protocol ./internal/core/encoding ./internal/core/connection ./internal/core/transport > old.txt
+go test -run=^$ -bench='Benchmark(EncodeFrame|DecodeFrame|EncodeFrameWithPayloadWriter|MuxDispatchResponse|RegisterRequest|ConcurrentDispatch|WriteFrame|ReadFrame|WriteWSFrame|ReadWSFrame|WriteU64|WriteU32|WriteString|WriteBytes)' -benchmem -count=5 ./internal/protocol ./internal/core/encoding ./internal/core/connection ./internal/core/transport > new.txt
+benchstat old.txt new.txt
+```
+
+Install `benchstat` once if needed with `go install golang.org/x/perf/cmd/benchstat@latest`.
+
 ## Protocol source of truth
 
 This repo does not maintain an independent copy of the protocol specification.

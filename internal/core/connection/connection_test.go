@@ -1,16 +1,87 @@
 package connection_test
 
 import (
+	"context"
+	"io"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // Mock transport is now provided by testkit.MockTransport from internal/testkit package
+
+type writeReorderingTransport struct {
+	frames    chan []byte
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newWriteReorderingTransport() *writeReorderingTransport {
+	return &writeReorderingTransport{
+		frames: make(chan []byte, 8),
+		closed: make(chan struct{}),
+	}
+}
+
+func (t *writeReorderingTransport) Write(ctx context.Context, frame []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.closed:
+		return io.EOF
+	default:
+	}
+
+	msgType, payload, err := protocol.DecodeFrame(frame)
+	if err != nil {
+		return err
+	}
+	if msgType == protocol.MessageTypeConnect {
+		return nil
+	}
+
+	if string(payload) == "first" {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	resp := protocol.EncodeFrame(msgType, []byte("resp:"+string(payload)))
+	select {
+	case t.frames <- resp:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.closed:
+		return io.EOF
+	}
+}
+
+func (t *writeReorderingTransport) Read(ctx context.Context) ([]byte, error) {
+	select {
+	case frame := <-t.frames:
+		return frame, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-t.closed:
+		return nil, io.EOF
+	}
+}
+
+func (t *writeReorderingTransport) Close() error {
+	t.closeOnce.Do(func() {
+		close(t.closed)
+	})
+	return nil
+}
+
+func (t *writeReorderingTransport) RemoteAddr() string {
+	return "mock://reordering"
+}
 
 // TestShouldCreateConnectionGivenValidConfig tests basic connection creation.
 func TestShouldCreateConnectionGivenValidConfigWhenNewCalled(t *testing.T) {
@@ -215,6 +286,57 @@ func TestShouldDispatchToCorrectChannelGivenMatchingMessageTypeWhenDispatchCalle
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("response not received")
 	}
+}
+
+func TestShouldPreserveResponseRoutingGivenConcurrentSameTypeRequestsWhenSendRequestCalled(t *testing.T) {
+	transport := newWriteReorderingTransport()
+	cfg := connection.DefaultConfig()
+	cfg.Token = ""
+	conn := connection.New(transport, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	require.NoError(t, conn.Start(ctx))
+
+	type result struct {
+		name string
+		resp string
+		err  error
+	}
+
+	results := make(chan result, 2)
+
+	go func() {
+		resp, err := conn.SendRequest(ctx, 100, []byte("first"))
+		results <- result{name: "first", resp: string(resp), err: err}
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	go func() {
+		resp, err := conn.SendRequest(ctx, 100, []byte("second"))
+		results <- result{name: "second", resp: string(resp), err: err}
+	}()
+
+	got := make(map[string]result, 2)
+	for range 2 {
+		select {
+		case res := <-results:
+			got[res.name] = res
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for request results")
+		}
+	}
+
+	require.Len(t, got, 2)
+	require.NoError(t, got["first"].err)
+	require.NoError(t, got["second"].err)
+	assert.Equal(t, "resp:first", got["first"].resp)
+	assert.Equal(t, "resp:second", got["second"].resp)
 }
 
 // Benchmarks

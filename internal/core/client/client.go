@@ -92,7 +92,7 @@ type Config struct {
 func defaultConfig() *Config {
 	return &Config{
 		TransportType:   TransportAuto,
-		AuthSettleDelay: 250 * time.Millisecond,
+		AuthSettleDelay: 500 * time.Millisecond,
 		ReadTimeout:     30 * time.Second,
 		WriteTimeout:    10 * time.Second,
 	}
@@ -397,13 +397,6 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 	if err := conn.Start(ctx); err != nil {
 		_ = trans.Close()
 		return nil, fmt.Errorf("start connection: %w", err)
-	}
-	if token != "" {
-		probeClient := schedule.NewClient(conn)
-		if _, _, err := probeClient.List(ctx, 0, 1); err != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("probe auth: %w", err)
-		}
 	}
 
 	return conn, nil

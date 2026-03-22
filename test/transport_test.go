@@ -3,6 +3,8 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -37,6 +39,46 @@ func TestShouldAuthenticateGivenValidJWTWhenAuthEnabledBrokerConfigured(t *testi
 		defer cancel()
 		f.ConnectWithAuthOrFail(ctx, fixture.AuthModeValidJWT)
 		require.NotNil(t, f.Client())
+	})
+}
+
+func TestShouldConnectGivenJWTWithoutSchedulePermissionWhenConnectCalled(t *testing.T) {
+	fixture.RunWithTransportsOnly(t, func(t *testing.T, transportType fixture.TransportType) {
+		addr, stop, err := fixture.StartBrokerIfNeeded(transportType, fixture.AuthModeValidJWT)
+		require.NoError(t, err)
+		t.Cleanup(stop)
+
+		secret := os.Getenv(fixture.EnvBrokerJWTHMACSecret)
+		if secret == "" {
+			secret = "test-secret-key"
+		}
+		audience := os.Getenv(fixture.EnvBrokerJWTAudience)
+		if audience == "" {
+			audience = "fitz"
+		}
+
+		token, err := fixture.GenerateScopedTestJWT(secret, audience, []string{"kv://**#*"})
+		require.NoError(t, err)
+
+		client := fitz.NewClient(addr, func(context.Context) (string, error) {
+			return token, nil
+		})
+		t.Cleanup(func() {
+			_ = client.Close()
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		require.NoError(t, client.Connect(ctx))
+
+		route := fmt.Sprintf("kv://test-%d/area/resource", time.Now().UnixNano())
+		tx, err := client.KV().Begin(ctx, route)
+		require.NoError(t, err)
+		require.NoError(t, tx.Rollback(ctx))
+
+		_, _, err = client.Schedule().List(ctx, 0, 1)
+		require.Error(t, err)
 	})
 }
 

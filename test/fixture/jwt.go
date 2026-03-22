@@ -18,18 +18,22 @@ type jwtClaims struct {
 }
 
 func GenerateValidTestJWT(secret string, audience string) (string, error) {
-	return generateTestJWT(secret, audience, time.Now().Add(time.Hour))
+	return generateTestJWT(secret, audience, time.Now().Add(time.Hour), defaultPermissions())
 }
 
 func GenerateExpiredTestJWT(secret string, audience string) (string, error) {
-	return generateTestJWT(secret, audience, time.Now().Add(-time.Hour))
+	return generateTestJWT(secret, audience, time.Now().Add(-time.Hour), defaultPermissions())
 }
 
 func GenerateInvalidSignatureTestJWT(secret string, audience string) (string, error) {
-	return generateTestJWT(secret+"-invalid", audience, time.Now().Add(time.Hour))
+	return generateTestJWT(secret+"-invalid", audience, time.Now().Add(time.Hour), defaultPermissions())
 }
 
-func generateTestJWT(secret string, audience string, expiresAt time.Time) (string, error) {
+func GenerateScopedTestJWT(secret string, audience string, permissions []string) (string, error) {
+	return generateTestJWT(secret, audience, time.Now().Add(time.Hour), permissions)
+}
+
+func generateTestJWT(secret string, audience string, expiresAt time.Time, permissions []string) (string, error) {
 	now := time.Now().Unix()
 	claims := jwtClaims{
 		Audience: audience,
@@ -38,15 +42,7 @@ func generateTestJWT(secret string, audience string, expiresAt time.Time) (strin
 		Expires:  expiresAt.Unix(),
 		IssuedAt: now,
 	}
-	claims.Fitz.Permissions = []string{
-		"kv://**#*",
-		"queue://**#*",
-		"notice://**#*",
-		"stream://**#*",
-		"rpc://**#*",
-		"lease://**#*",
-		"schedule://**#*",
-	}
+	claims.Fitz.Permissions = permissions
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"iss":  "",
@@ -58,4 +54,16 @@ func generateTestJWT(secret string, audience string, expiresAt time.Time) (strin
 		"fitz": map[string]any{"permissions": claims.Fitz.Permissions},
 	})
 	return token.SignedString([]byte(secret))
+}
+
+func defaultPermissions() []string {
+	return []string{
+		"kv://**#*",
+		"queue://**#*",
+		"notice://**#*",
+		"stream://**#*",
+		"rpc://**#*",
+		"lease://**#*",
+		"schedule://**#*",
+	}
 }

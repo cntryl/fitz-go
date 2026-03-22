@@ -6,9 +6,11 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
+	"github.com/cntryl/fitz-go/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -27,10 +29,10 @@ type NoticeHandler func(ctx context.Context, msg NoticeMsg) error
 // Subscription represents an active notice subscription.
 // Call Unsubscribe to stop receiving and release the subscription.
 type Subscription struct {
-	subID   uint64
-	route   string
-	client  *client
-	handler NoticeHandler
+	subID     uint64
+	handlerID uint64
+	route     string
+	client    *client
 }
 
 // Unsubscribe removes this subscription.
@@ -53,16 +55,17 @@ type Client interface {
 type client struct {
 	conn *connection.Connection
 
-	mu            sync.RWMutex
-	subscriptions map[uint64]*Subscription // subID -> subscription
-	initialized   bool
+	mu                      sync.Mutex
+	subscriptions           *subscriptions.Registry[NoticeHandler]
+	notifyHandlerInitOnce   sync.Once
+	notifyHandlerRegistered atomic.Bool
 }
 
 // NewClient creates a new Notice domain client.
 func NewClient(conn *connection.Connection) Client {
 	c := &client{
 		conn:          conn,
-		subscriptions: make(map[uint64]*Subscription),
+		subscriptions: subscriptions.NewRegistry[NoticeHandler](),
 	}
 	return c
 }
@@ -71,35 +74,37 @@ var _ reconnect.DomainRestorer = (*client)(nil)
 
 // initNotifyHandler registers the NOTIFY handler on first use.
 func (c *client) initNotifyHandler() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.initialized {
-		return
-	}
-	c.initialized = true
-	c.conn.RegisterNotifyHandler(protocol.MessageTypeNoticeNotify, c.handleNotify)
+	c.notifyHandlerInitOnce.Do(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.conn.RegisterNotifyHandler(protocol.MessageTypeNoticeNotify, c.handleNotify)
+		c.notifyHandlerRegistered.Store(true)
+	})
 }
 
 // handleNotify is called by the mux when a NOTIFY (504) frame arrives.
 func (c *client) handleNotify(subID uint64, route string, payload []byte) {
-	c.mu.RLock()
-	sub, ok := c.subscriptions[subID]
-	c.mu.RUnlock()
-
-	if !ok {
-		return // Unknown subscription
+	handlers := c.subscriptions.Handlers(subID)
+	if len(handlers) == 0 {
+		return
 	}
 
-	msg := NoticeMsg{
-		Route: route,
-		Body:  make([]byte, len(payload)),
-	}
-	copy(msg.Body, payload)
+	body := append([]byte(nil), payload...)
+	for _, handler := range handlers {
+		handler := handler
+		msg := NoticeMsg{
+			Route: route,
+			Body:  append([]byte(nil), body...),
+		}
 
-	// Call handler asynchronously to avoid blocking the dispatch loop
-	go func() {
-		_ = sub.handler(context.Background(), msg)
-	}()
+		go func() {
+			if err := handler(context.Background(), msg); err != nil {
+				if log := c.conn.Logger(); log != nil {
+					log.Warn("notice handler failed", "route", route, "error", err)
+				}
+			}
+		}()
+	}
 }
 
 // Publish per CLIENT_SPEC.md:
@@ -135,18 +140,25 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHa
 	}
 	c.initNotifyHandler()
 
-	sub, err := c.subscribe(ctx, pattern, handler)
+	subID, handlerID, err := c.subscriptions.Subscribe(pattern, handler, func(pattern string) (uint64, error) {
+		return c.subscribeWire(ctx, pattern)
+	})
 	if err != nil {
 		return nil, err
 	}
-	return sub, nil
+	return &Subscription{
+		subID:     subID,
+		handlerID: handlerID,
+		route:     pattern,
+		client:    c,
+	}, nil
 }
 
 // unsubscribe removes a subscription.
 func (c *client) unsubscribe(sub *Subscription) {
-	c.mu.Lock()
-	delete(c.subscriptions, sub.subID)
-	c.mu.Unlock()
+	if !c.subscriptions.Unsubscribe(sub.route, sub.handlerID) {
+		return
+	}
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
 	// Server expects [string pattern] (the original subscription pattern).
@@ -162,71 +174,44 @@ func (c *client) ReplaceConnection(conn *connection.Connection) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.conn = conn
-	if c.initialized {
+	if c.notifyHandlerRegistered.Load() {
 		c.conn.RegisterNotifyHandler(protocol.MessageTypeNoticeNotify, c.handleNotify)
 	}
 }
 
 func (c *client) RestoreSubscriptions(ctx context.Context) error {
-	c.mu.RLock()
-	snapshot := make([]*Subscription, 0, len(c.subscriptions))
-	for _, sub := range c.subscriptions {
-		snapshot = append(snapshot, &Subscription{route: sub.route, handler: sub.handler, client: c})
-	}
-	c.mu.RUnlock()
-
-	restored := make(map[uint64]*Subscription, len(snapshot))
-	for _, sub := range snapshot {
-		restoredSub, err := c.subscribe(ctx, sub.route, sub.handler)
-		if err != nil {
-			return err
-		}
-		restored[restoredSub.subID] = restoredSub
-	}
-
-	c.mu.Lock()
-	c.subscriptions = restored
-	c.mu.Unlock()
-	return nil
+	return c.subscriptions.Restore(func(pattern string) (uint64, error) {
+		return c.subscribeWire(ctx, pattern)
+	})
 }
 
-func (c *client) subscribe(ctx context.Context, pattern string, handler NoticeHandler) (*Subscription, error) {
+func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeSubscribe, subscribePayloadWriter(pattern))
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+		return 0, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapNoticeError(err.Error()))
+		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapNoticeError(err.Error()))
 	}
 	if !success {
-		return nil, fmt.Errorf("SUBSCRIBE failed: unexpected status")
+		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")
 	}
 
 	if len(remaining) < 1 {
-		return nil, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
+		return 0, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
 	}
 	if remaining[0] != 1 {
-		return nil, fmt.Errorf("SUBSCRIBE response missing subscription_id")
+		return 0, fmt.Errorf("SUBSCRIBE response missing subscription_id")
 	}
 	if len(remaining) < 9 {
-		return nil, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
+		return 0, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
 	}
 
 	subID, _, err := connection.ReadU64BE(remaining, 1)
 	if err != nil {
-		return nil, fmt.Errorf("parse subscription_id: %w", err)
+		return 0, fmt.Errorf("parse subscription_id: %w", err)
 	}
-
-	sub := &Subscription{
-		subID:   subID,
-		route:   pattern,
-		client:  c,
-		handler: handler,
-	}
-	c.mu.Lock()
-	c.subscriptions[subID] = sub
-	c.mu.Unlock()
-	return sub, nil
+	return subID, nil
 }

@@ -241,7 +241,11 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 	}
 
 	go func() {
-		_ = handler(context.Background(), req, w)
+		if err := handler(context.Background(), req, w); err != nil {
+			if log := c.conn.Logger(); log != nil {
+				log.Warn("rpc worker handler failed", "route", route, "error", err)
+			}
+		}
 		// Send stream_end
 		w.sendEnd()
 	}()

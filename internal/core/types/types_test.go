@@ -18,12 +18,12 @@ func TestShouldAcceptStandardRouteGivenThreeSegmentsWhenValidateRouteCalled(t *t
 	require.NoError(t, err)
 }
 
-func TestShouldAcceptScheduleRouteGivenFourSegmentsWhenValidateRouteCalled(t *testing.T) {
+func TestShouldAcceptScheduleRouteGivenThreeSegmentsWhenValidateScheduleRouteCalled(t *testing.T) {
 	// Arrange
-	route := "schedule://realm/area/resource/run"
+	route := "schedule://realm/area/resource"
 
 	// Act
-	err := ValidateRoute(route, "schedule")
+	err := ValidateScheduleRoute(route)
 
 	// Assert
 	require.NoError(t, err)
@@ -53,16 +53,37 @@ func TestShouldRejectRouteGivenMissingSegmentsWhenValidateRouteCalled(t *testing
 	assert.Contains(t, err.Error(), "exactly 3 segments")
 }
 
-func TestShouldRejectScheduleRouteGivenMissingOperationWhenValidateRouteCalled(t *testing.T) {
+func TestShouldRejectScheduleRouteGivenMissingResourceWhenValidateScheduleRouteCalled(t *testing.T) {
 	// Arrange
-	route := "schedule://realm/area/resource"
+	route := "schedule://realm/area"
 
 	// Act
-	err := ValidateRoute(route, "schedule")
+	err := ValidateScheduleRoute(route)
 
 	// Assert
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exactly 4 segments")
+	assert.Contains(t, err.Error(), "exactly 3 segments")
+}
+
+func TestShouldAcceptScheduleSelectorGivenAreaScopeWhenValidateScheduleSelectorCalled(t *testing.T) {
+	err := ValidateScheduleSelector("schedule://realm/area")
+	require.NoError(t, err)
+}
+
+func TestShouldAcceptScheduleSelectorGivenExactResourceWhenValidateScheduleSelectorCalled(t *testing.T) {
+	err := ValidateScheduleSelector("schedule://realm/area/resource")
+	require.NoError(t, err)
+}
+
+func TestShouldAcceptScheduleSelectorGivenAreaWildcardWhenValidateScheduleSelectorCalled(t *testing.T) {
+	err := ValidateScheduleSelector("schedule://realm/area/*")
+	require.NoError(t, err)
+}
+
+func TestShouldRejectScheduleSelectorGivenWildcardOutsideResourceWhenValidateScheduleSelectorCalled(t *testing.T) {
+	err := ValidateScheduleSelector("schedule://*/area/resource")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "third segment")
 }
 
 func TestShouldRejectRouteGivenEmptySegmentWhenValidateRouteCalled(t *testing.T) {
