@@ -138,7 +138,9 @@ func TestShouldSubscribeAndUnsubscribeGivenValidPatternWhenSubscribeCalled(t *te
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		sub, err := f.Client().Schedule().Subscribe(ctx, f.UniqueRoute("schedule"), func(_ context.Context, _ fitz.ScheduleNotification) {})
+		sub, err := f.Client().Schedule().Subscribe(ctx, f.UniqueRoute("schedule"), func(_ context.Context, _ fitz.ScheduleNotification) error {
+			return nil
+		})
 		require.NoError(t, err)
 		sub.Unsubscribe()
 		require.NotNil(t, sub)
@@ -155,8 +157,9 @@ func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *te
 	payload := []byte("live-schedule-payload")
 	received := make(chan []byte, 1)
 
-	sub, err := f.Client().Schedule().Subscribe(ctx, route, func(_ context.Context, n fitz.ScheduleNotification) {
+	sub, err := f.Client().Schedule().Subscribe(ctx, route, func(_ context.Context, n fitz.ScheduleNotification) error {
 		received <- append([]byte(nil), n.Payload...)
+		return nil
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()

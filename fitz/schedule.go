@@ -17,7 +17,7 @@ type ScheduleNotification struct {
 	Payload []byte
 }
 
-type ScheduleHandler func(context.Context, ScheduleNotification)
+type ScheduleHandler func(context.Context, ScheduleNotification) error
 
 type ScheduleSubscription struct {
 	inner *internalschedule.Subscription
@@ -79,8 +79,8 @@ func copyScheduleEntries(entries []internalschedule.ScheduleEntry) []ScheduleEnt
 }
 
 func (c *scheduleClient) Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error) {
-	sub, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notification internalschedule.Notification) {
-		handler(ctx, ScheduleNotification{Payload: append([]byte(nil), notification.Payload...)})
+	sub, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notification internalschedule.Notification) error {
+		return handler(ctx, ScheduleNotification{Payload: append([]byte(nil), notification.Payload...)})
 	})
 	if err != nil {
 		return nil, err

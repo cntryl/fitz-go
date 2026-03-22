@@ -32,8 +32,8 @@ type Notification struct {
 }
 
 // ScheduleHandler is called when a schedule fires for a subscribed pattern.
-// It is fire-and-forget; the return value is not used and the server does not ack handler result.
-type ScheduleHandler func(ctx context.Context, n Notification)
+// It is fire-and-forget and server does not ack handler result.
+type ScheduleHandler func(ctx context.Context, n Notification) error
 
 // Subscription represents an active subscription to schedule fire notifications.
 // Call Unsubscribe to stop receiving notifications.
@@ -107,7 +107,11 @@ func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
 			Payload: append([]byte(nil), body...),
 		}
 		go func() {
-			handler(context.Background(), msg)
+			if err := handler(context.Background(), msg); err != nil {
+				if log := c.conn.Logger(); log != nil {
+					log.Warn("schedule notify handler failed", "error", err)
+				}
+			}
 		}()
 	}
 }

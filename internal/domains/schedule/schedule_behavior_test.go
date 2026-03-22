@@ -186,7 +186,9 @@ func TestShouldUseServerSubscriptionIDGivenPresentWhenSubscribeCalled(t *testing
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleSubscribe, payload)
 
 	// Act
-	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) {})
+	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) error {
+		return nil
+	})
 
 	// Assert
 	require.NoError(t, err)
@@ -199,7 +201,9 @@ func TestShouldReturnErrorGivenMissingServerSubscriptionIDWhenSubscribeCalled(t 
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleSubscribe, nil)
 
 	// Act
-	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) {})
+	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) error {
+		return nil
+	})
 
 	// Assert
 	require.Error(t, err)
@@ -210,8 +214,9 @@ func TestShouldDispatchNotificationGivenMatchingSubscriptionWhenHandleScheduleNo
 	// Arrange
 	client, _ := newStartedScheduleClient(t)
 	received := make(chan Notification, 1)
-	_, _, err := client.subscriptions.Subscribe("schedule://realm/area/*", func(_ context.Context, n Notification) {
+	_, _, err := client.subscriptions.Subscribe("schedule://realm/area/*", func(_ context.Context, n Notification) error {
 		received <- n
+		return nil
 	}, func(string) (uint64, error) {
 		return 7, nil
 	})
@@ -241,13 +246,15 @@ func TestShouldFanOutHandlersGivenDuplicatePatternWhenSubscribeCalled(t *testing
 	first := make(chan Notification, 1)
 	second := make(chan Notification, 1)
 
-	sub1, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(_ context.Context, n Notification) {
+	sub1, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(_ context.Context, n Notification) error {
 		first <- n
+		return nil
 	})
 	require.NoError(t, err)
 
-	sub2, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(_ context.Context, n Notification) {
+	sub2, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(_ context.Context, n Notification) error {
 		second <- n
+		return nil
 	})
 	require.NoError(t, err)
 	assert.Equal(t, sub1.subID, sub2.subID)
