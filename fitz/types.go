@@ -15,10 +15,14 @@ import (
 type TokenProvider func(context.Context) (string, error)
 
 // Iterator is the canonical iterator shape used by the public Fitz Go SDK.
+//
+// Iterators are resource-backed. Call Close when finished, especially when
+// breaking early, to release pending request/subscription state promptly.
 type Iterator[T any] interface {
 	Next() bool
 	Value() T
 	Err() error
+	// Close releases iterator resources. It is safe to call more than once.
 	Close() error
 }
 

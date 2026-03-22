@@ -57,6 +57,47 @@ func main() {
 }
 ```
 
+## Canonical usage patterns
+
+Use one control plane for request lifetime: `context.Context`.
+
+- RPC calls use context deadlines/cancellation only.
+- Schedule/Notice/Queue/Lease/Stream subscription handlers return `error`.
+- Streaming iterators should be closed when no longer needed.
+
+RPC timeout pattern:
+
+```go
+callCtx, cancelCall := context.WithTimeout(ctx, 2*time.Second)
+defer cancelCall()
+
+iter, err := client.RPC().Call(callCtx, "rpc://realm/area/echo", []byte("ping"))
+if err != nil {
+	panic(err)
+}
+defer iter.Close()
+
+for iter.Next() {
+	_ = iter.Value()
+}
+if err := iter.Err(); err != nil {
+	panic(err)
+}
+```
+
+Schedule subscription handler pattern:
+
+```go
+sub, err := client.Schedule().Subscribe(ctx, "schedule://realm/area/*", func(ctx context.Context, n fitz.ScheduleNotification) error {
+	_ = n
+	return nil
+})
+if err != nil {
+	panic(err)
+}
+defer sub.Unsubscribe()
+```
+
 ## Architecture
 
 - `fitz/`: public client, public domain wrappers, public types

@@ -276,6 +276,35 @@ func TestShouldFanOutHandlersGivenDuplicatePatternWhenSubscribeCalled(t *testing
 	}
 }
 
+func TestShouldContinueFanOutGivenHandlerErrorWhenHandleScheduleNotifyCalled(t *testing.T) {
+	client, _ := newStartedScheduleClient(t)
+
+	_, _, err := client.subscriptions.Subscribe("schedule://realm/area/*", func(_ context.Context, _ Notification) error {
+		return assert.AnError
+	}, func(string) (uint64, error) {
+		return 77, nil
+	})
+	require.NoError(t, err)
+
+	received := make(chan Notification, 1)
+	_, _, err = client.subscriptions.Subscribe("schedule://realm/area/*", func(_ context.Context, n Notification) error {
+		received <- n
+		return nil
+	}, func(string) (uint64, error) {
+		return 77, nil
+	})
+	require.NoError(t, err)
+
+	client.handleScheduleNotify(77, []byte("still-delivered"))
+
+	select {
+	case msg := <-received:
+		assert.Equal(t, []byte("still-delivered"), msg.Payload)
+	case <-time.After(time.Second):
+		t.Fatal("schedule notify fan-out stalled after handler error")
+	}
+}
+
 func TestShouldReturnErrorGivenInvalidRouteWhenCancelCalled(t *testing.T) {
 	// Arrange
 	client, _ := newStartedScheduleClient(t)
