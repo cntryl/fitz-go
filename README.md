@@ -197,3 +197,25 @@ Use the canonical server-owned docs referenced from:
 
 - `docs/CLIENT_SPEC.md`
 - `docs/CLIENT_ACCEPTANCE_CRITERIA.md`
+
+## Message type and conformance coverage map
+
+This is a lightweight map from implemented message-type ranges to conformance
+scenario coverage in `test/conformance`.
+
+| Domain | Message type range | Key message types (examples) | Conformance scenarios |
+| --- | --- | --- | --- |
+| Control | 1 | CONNECT | CS-001, CS-002 |
+| KV | 100-108 | BEGIN, COMMIT, GET, PUT, INSERT, SCAN | CS-001, CS-003, CS-005, CS-006, CS-014, CS-015 |
+| Queue | 200, 202-204, 207-209 | ENQUEUE, RESERVE, EXTEND, COMPLETE, SUBSCRIBE | Covered in integration tests; not yet a dedicated conformance scenario |
+| RPC | 300-304 | SUBSCRIBE_WORKER, REQUEST, RESPONSE | CS-004, CS-006, CS-007, CS-008, CS-009 |
+| Lease | 400-403, 407-409 | ACQUIRE, RENEW, RELEASE, QUERY, NOTIFY | Covered in integration tests; not yet a dedicated conformance scenario |
+| Notice | 500-504 | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, NOTIFY | Covered in integration tests; not yet a dedicated conformance scenario |
+| Stream | 600-609 | BEGIN, APPEND, COMMIT, READ, SUBSCRIBE | CS-011, CS-012, CS-013 |
+| Schedule | 700-705 | CREATE, CANCEL, LIST, SUBSCRIBE, NOTIFY | Covered in integration tests; not yet a dedicated conformance scenario |
+
+Notes:
+
+- Queue `201` (ENQUEUE_BATCH) is reserved by spec and intentionally not implemented.
+- Conformance scenarios focus on cross-language semantic parity; integration tests
+	provide additional domain-specific operation coverage.
