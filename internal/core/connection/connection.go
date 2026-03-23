@@ -13,6 +13,8 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -160,6 +162,9 @@ func (c *Connection) Tracer() trace.Tracer {
 // Starts dispatch loop and performs CONNECT handshake.
 // Blocks until authentication is confirmed or fails.
 func (c *Connection) Start(ctx context.Context) error {
+	ctx, span := c.tracer.Start(ctx, "fitz.connection.start")
+	defer span.End()
+
 	c.setState(StateAuthenticating)
 	if c.logger != nil {
 		c.logger.Info("connection authenticating")
@@ -170,6 +175,8 @@ func (c *Connection) Start(ctx context.Context) error {
 
 	// Send CONNECT
 	if err := c.sendConnect(ctx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		c.Close()
 		return fmt.Errorf("send CONNECT: %w", err)
 	}
@@ -188,12 +195,17 @@ func (c *Connection) Start(ctx context.Context) error {
 	case <-c.done:
 		// Connection closed during auth (likely invalid JWT)
 		if c.authError != nil {
+			span.RecordError(c.authError)
+			span.SetStatus(codes.Error, c.authError.Error())
 			return c.authError
 		}
+		span.SetStatus(codes.Error, ErrAuthenticationFailed.Error())
 		return ErrAuthenticationFailed
 
 	case <-ctx.Done():
 		// Caller cancelled
+		span.RecordError(ctx.Err())
+		span.SetStatus(codes.Error, ctx.Err().Error())
 		c.Close()
 		return ctx.Err()
 
@@ -202,7 +214,10 @@ func (c *Connection) Start(ctx context.Context) error {
 		// remains open through the auth window, treat the connection as
 		// authenticated.
 		if c.getConnError() != nil {
-			return c.getConnError()
+			err := c.getConnError()
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
 		}
 		c.confirmAuthentication()
 		if c.logger != nil {
@@ -216,10 +231,16 @@ func (c *Connection) Start(ctx context.Context) error {
 // Per CLIENT_SPEC.md: [MessageType=1][Length][JWT bytes UTF-8]
 // Empty JWT for anonymous mode.
 func (c *Connection) sendConnect(ctx context.Context) error {
+	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_connect", trace.WithAttributes(attribute.Int("fitz.msg_type", int(protocol.MessageTypeConnect))))
+	defer span.End()
+
 	payload := []byte(c.token)
 	frame := protocol.EncodeFrameOwned(protocol.MessageTypeConnect, payload)
 	if frame == nil {
-		return fmt.Errorf("encode CONNECT frame")
+		err := fmt.Errorf("encode CONNECT frame")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
 	}
 	defer frame.Release()
 
@@ -234,6 +255,8 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 	err := c.transport.Write(writeCtx, frame.Bytes())
 	c.writeMu.Unlock()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
@@ -360,15 +383,22 @@ func (c *Connection) handleReadError(err error) {
 // SendRequest sends a synchronous request and waits for response.
 // Used by domain client implementations.
 func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []byte) ([]byte, error) {
+	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	defer span.End()
+
 	// Check connection state
 	if !c.isAuthenticated() {
+		span.SetStatus(codes.Error, ErrNotAuthenticated.Error())
 		return nil, ErrNotAuthenticated
 	}
 
 	// Encode frame
 	frame := protocol.EncodeFrameOwned(msgType, payload)
 	if frame == nil {
-		return nil, fmt.Errorf("encode frame")
+		err := fmt.Errorf("encode frame")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 	defer frame.Release()
 
@@ -396,7 +426,10 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 	err := c.transport.Write(writeCtx, frame.Bytes())
 	c.writeMu.Unlock()
 	if err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
+		wrapped := fmt.Errorf("write request: %w", err)
+		span.RecordError(wrapped)
+		span.SetStatus(codes.Error, wrapped.Error())
+		return nil, wrapped
 	}
 
 	// Wait for response
@@ -405,36 +438,51 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		if !ok {
 			// Channel closed (connection error or slow consumer timeout)
 			if err := c.getConnError(); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
 				return nil, err
 			}
+			span.SetStatus(codes.Error, ErrConnectionClosed.Error())
 			return nil, ErrConnectionClosed
 		}
 		return resp, nil
 
 	case <-ctx.Done():
 		// Caller cancelled (UnregisterRequest called via defer)
+		span.RecordError(ctx.Err())
+		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()
 
 	case <-c.done:
 		// Connection closed
 		if err := c.getConnError(); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, err
 		}
+		span.SetStatus(codes.Error, ErrConnectionClosed.Error())
 		return nil, ErrConnectionClosed
 	}
 }
 
 // SendRequestWithWriter sends a request using a payload writer to avoid allocations.
 func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, writePayload func(*bytes.Buffer)) ([]byte, error) {
+	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	defer span.End()
+
 	// Check connection state
 	if !c.isAuthenticated() {
+		span.SetStatus(codes.Error, ErrNotAuthenticated.Error())
 		return nil, ErrNotAuthenticated
 	}
 
 	// Encode frame
 	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
-		return nil, fmt.Errorf("encode frame: %w", err)
+		wrapped := fmt.Errorf("encode frame: %w", err)
+		span.RecordError(wrapped)
+		span.SetStatus(codes.Error, wrapped.Error())
+		return nil, wrapped
 	}
 	defer frame.Release()
 
@@ -460,7 +508,10 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 	err = c.transport.Write(writeCtx, frame.Bytes())
 	c.writeMu.Unlock()
 	if err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
+		wrapped := fmt.Errorf("write request: %w", err)
+		span.RecordError(wrapped)
+		span.SetStatus(codes.Error, wrapped.Error())
+		return nil, wrapped
 	}
 
 	// Wait for response
@@ -469,21 +520,29 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		if !ok {
 			// Channel closed (connection error or slow consumer timeout)
 			if err := c.getConnError(); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
 				return nil, err
 			}
+			span.SetStatus(codes.Error, ErrConnectionClosed.Error())
 			return nil, ErrConnectionClosed
 		}
 		return resp, nil
 
 	case <-ctx.Done():
 		// Caller cancelled (UnregisterRequest called via defer)
+		span.RecordError(ctx.Err())
+		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()
 
 	case <-c.done:
 		// Connection closed
 		if err := c.getConnError(); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, err
 		}
+		span.SetStatus(codes.Error, ErrConnectionClosed.Error())
 		return nil, ErrConnectionClosed
 	}
 }
@@ -491,13 +550,20 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 // SendFireAndForget sends a frame without expecting a response.
 // Used for operations like Notice PUBLISH or RPC response where the server does not reply.
 func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payload []byte) error {
+	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_fire_and_forget", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	defer span.End()
+
 	if !c.isAuthenticated() {
+		span.SetStatus(codes.Error, ErrNotAuthenticated.Error())
 		return ErrNotAuthenticated
 	}
 
 	frame := protocol.EncodeFrameOwned(msgType, payload)
 	if frame == nil {
-		return fmt.Errorf("encode frame")
+		err := fmt.Errorf("encode frame")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
 	}
 	defer frame.Release()
 
@@ -512,7 +578,10 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 	err := c.transport.Write(writeCtx, frame.Bytes())
 	c.writeMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("write fire-and-forget: %w", err)
+		wrapped := fmt.Errorf("write fire-and-forget: %w", err)
+		span.RecordError(wrapped)
+		span.SetStatus(codes.Error, wrapped.Error())
+		return wrapped
 	}
 
 	return nil
@@ -520,13 +589,20 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 
 // SendFireAndForgetWithWriter sends a fire-and-forget frame using a payload writer.
 func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType uint16, writePayload func(*bytes.Buffer)) error {
+	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_fire_and_forget_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	defer span.End()
+
 	if !c.isAuthenticated() {
+		span.SetStatus(codes.Error, ErrNotAuthenticated.Error())
 		return ErrNotAuthenticated
 	}
 
 	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
-		return fmt.Errorf("encode frame: %w", err)
+		wrapped := fmt.Errorf("encode frame: %w", err)
+		span.RecordError(wrapped)
+		span.SetStatus(codes.Error, wrapped.Error())
+		return wrapped
 	}
 	defer frame.Release()
 
@@ -541,7 +617,10 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 	err = c.transport.Write(writeCtx, frame.Bytes())
 	c.writeMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("write fire-and-forget: %w", err)
+		wrapped := fmt.Errorf("write fire-and-forget: %w", err)
+		span.RecordError(wrapped)
+		span.SetStatus(codes.Error, wrapped.Error())
+		return wrapped
 	}
 
 	return nil
