@@ -12,9 +12,11 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/iter"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/internal/core/subscriptions"
+	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -492,7 +494,22 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	for _, handler := range handlers {
 		handler := handler
 		go func() {
-			if err := handler(lifecycleCtx, notif); err != nil {
+			handlerCtx, cancel, span := coretracing.StartDetachedSpan(
+				lifecycleCtx,
+				c.conn.Tracer(),
+				"fitz.stream.handler",
+				coretracing.DefaultAsyncSpanTimeout,
+				trace.WithAttributes(
+					attribute.Int64("fitz.subscription_id", int64(subID)),
+					attribute.String("fitz.route", route),
+				),
+			)
+			defer cancel()
+			defer span.End()
+
+			if err := handler(handlerCtx, notif); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
 				if log := c.conn.Logger(); log != nil {
 					log.Warn("stream notify handler failed", "route", route, "error", err)
 				}

@@ -12,9 +12,11 @@ import (
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
+	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -326,7 +328,22 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 
 	// Call handler asynchronously to avoid blocking the dispatch loop
 	go func() {
-		if err := sub.handler(lifecycleCtx, notif); err != nil {
+		handlerCtx, cancel, span := coretracing.StartDetachedSpan(
+			lifecycleCtx,
+			c.conn.Tracer(),
+			"fitz.lease.handler",
+			coretracing.DefaultAsyncSpanTimeout,
+			trace.WithAttributes(
+				attribute.Int64("fitz.subscription_id", int64(subID)),
+				attribute.String("fitz.route", route),
+			),
+		)
+		defer cancel()
+		defer span.End()
+
+		if err := sub.handler(handlerCtx, notif); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			if log := c.conn.Logger(); log != nil {
 				log.Warn("lease notify handler failed", "route", route, "error", err)
 			}

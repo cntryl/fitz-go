@@ -12,9 +12,11 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/iter"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
+	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -241,7 +243,22 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 	lifecycleCtx := c.conn.LifecycleContext()
 
 	go func() {
-		if err := handler(lifecycleCtx, req, w); err != nil {
+		handlerCtx, cancel, span := coretracing.StartDetachedSpan(
+			lifecycleCtx,
+			c.conn.Tracer(),
+			"fitz.rpc.worker_handler",
+			coretracing.DefaultAsyncSpanTimeout,
+			trace.WithAttributes(
+				attribute.String("fitz.route", route),
+				attribute.String("fitz.reply_route", replyRoute),
+			),
+		)
+		defer cancel()
+		defer span.End()
+
+		if err := handler(handlerCtx, req, w); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			if log := c.conn.Logger(); log != nil {
 				log.Warn("rpc worker handler failed", "route", route, "error", err)
 			}

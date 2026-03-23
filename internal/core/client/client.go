@@ -23,6 +23,7 @@ import (
 	"github.com/cntryl/fitz-go/internal/domains/stream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -491,29 +492,51 @@ func (c *Client) beginReconnect(cause error) {
 		maxAttempts = 1
 	}
 
+	tracer := c.config.Tracer
+	if tracer == nil {
+		tracer = otel.Tracer("github.com/cntryl/fitz-go")
+	}
+
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if c.closed.Load() {
 			return
 		}
+
+		attemptCtx, attemptSpan := tracer.Start(c.lifecycleCtx, "fitz.reconnect.attempt", trace.WithAttributes(
+			attribute.Int("fitz.attempt", attempt),
+			attribute.String("fitz.transport", transportTypeString(transportType)),
+		))
 		if cause != nil && c.config.Logger != nil {
 			c.config.Logger.Warn("reconnect attempt", "attempt", attempt, "error", cause)
 		}
+		if cause != nil {
+			attemptSpan.RecordError(cause)
+		}
 
-		conn, err := c.dialConnection(c.lifecycleCtx, transportType)
+		conn, err := c.dialConnection(attemptCtx, transportType)
 		if err == nil {
 			c.attachConnection(conn)
-			if err := c.restoreDomainSubscriptions(c.lifecycleCtx); err == nil {
+			restoreCtx, restoreSpan := tracer.Start(attemptCtx, "fitz.reconnect.restore_subscriptions")
+			err := c.restoreDomainSubscriptions(restoreCtx)
+			restoreSpan.End()
+			if err == nil {
 				if c.config.Logger != nil {
 					c.config.Logger.Info("reconnect success", "attempt", attempt)
 				}
+				attemptSpan.End()
 				return
 			} else {
+				attemptSpan.RecordError(err)
+				attemptSpan.SetStatus(codes.Error, err.Error())
 				cause = err
 				_ = conn.Close()
 			}
 		} else {
+			attemptSpan.RecordError(err)
+			attemptSpan.SetStatus(codes.Error, err.Error())
 			cause = err
 		}
+		attemptSpan.End()
 
 		timer := time.NewTimer(backoff)
 		select {
