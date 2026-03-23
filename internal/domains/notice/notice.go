@@ -90,6 +90,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	}
 
 	body := append([]byte(nil), payload...)
+	lifecycleCtx := c.conn.LifecycleContext()
 	for _, handler := range handlers {
 		handler := handler
 		msg := NoticeMsg{
@@ -98,7 +99,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 		}
 
 		go func() {
-			if err := handler(context.Background(), msg); err != nil {
+			if err := handler(lifecycleCtx, msg); err != nil {
 				if log := c.conn.Logger(); log != nil {
 					log.Warn("notice handler failed", "route", route, "error", err)
 				}
@@ -162,7 +163,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
 	// Server expects [string pattern] (the original subscription pattern).
-	ctx := context.Background()
+	ctx := c.conn.LifecycleContext()
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeUnsubscribe, unsubscribePayloadWriter(sub.route))
 	if err != nil {
 		return

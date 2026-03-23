@@ -633,6 +633,15 @@ func (c *Connection) Done() <-chan struct{} {
 	return c.done
 }
 
+// LifecycleContext returns the connection lifecycle context.
+// It is canceled when the connection begins shutdown.
+func (c *Connection) LifecycleContext() context.Context {
+	if c == nil || c.ctx == nil {
+		return context.Background()
+	}
+	return c.ctx
+}
+
 // Err returns the terminal connection error, if any.
 func (c *Connection) Err() error {
 	return c.getConnError()

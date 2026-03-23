@@ -164,7 +164,7 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		} else {
 			select {
 			case ch <- ResponseFrame{Body: body, Sequence: seq}:
-			default:
+			case <-c.conn.LifecycleContext().Done():
 			}
 		}
 		return
@@ -238,9 +238,10 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 		correlationID: correlationID,
 		seq:           0,
 	}
+	lifecycleCtx := c.conn.LifecycleContext()
 
 	go func() {
-		if err := handler(context.Background(), req, w); err != nil {
+		if err := handler(lifecycleCtx, req, w); err != nil {
 			if log := c.conn.Logger(); log != nil {
 				log.Warn("rpc worker handler failed", "route", route, "error", err)
 			}
@@ -279,7 +280,7 @@ func (c *client) unsubscribeWorker(route string) {
 	delete(c.workers, route)
 	c.mu.Unlock()
 
-	ctx := context.Background()
+	ctx := c.conn.LifecycleContext()
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcUnsubscribeWorker, rpcUnsubscribeWorkerPayloadWriter(route))
 	// Unsubscribe is a best-effort teardown: the local worker map entry has
 	// already been removed above, so the client will stop routing new calls
@@ -405,7 +406,7 @@ func (w *responseWriter) Send(body []byte) error {
 	w.seq++
 	w.mu.Unlock()
 
-	return w.conn.SendFireAndForgetWithWriter(context.Background(), protocol.MessageTypeRpcResponse, rpcResponsePayloadWriter(w.correlationID, seq, body, false))
+	return w.conn.SendFireAndForgetWithWriter(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, rpcResponsePayloadWriter(w.correlationID, seq, body, false))
 }
 
 func (w *responseWriter) sendEnd() {
@@ -422,7 +423,7 @@ func (w *responseWriter) sendEnd() {
 	// Errors here are intentionally dropped: the correlation ID has already
 	// been removed from the in-flight map, so there is no state to roll back.
 	// The caller observes the cancellation/end via iterator.Err() or context.
-	_ = w.conn.SendFireAndForget(context.Background(), protocol.MessageTypeRpcResponse, payload)
+	_ = w.conn.SendFireAndForget(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, payload)
 }
 
 // rpcIterator iterates over response frames from a Call.

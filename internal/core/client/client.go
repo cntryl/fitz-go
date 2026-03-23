@@ -75,7 +75,7 @@ type Config struct {
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 
-	// Reconnection (not yet implemented)
+	// Reconnection
 	ReconnectEnabled bool
 	ReconnectBackoff time.Duration
 	MaxReconnects    int

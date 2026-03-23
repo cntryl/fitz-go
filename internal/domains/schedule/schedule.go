@@ -101,13 +101,14 @@ func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
 	}
 
 	body := append([]byte(nil), payload...)
+	lifecycleCtx := c.conn.LifecycleContext()
 	for _, handler := range handlers {
 		handler := handler
 		msg := Notification{
 			Payload: append([]byte(nil), body...),
 		}
 		go func() {
-			if err := handler(context.Background(), msg); err != nil {
+			if err := handler(lifecycleCtx, msg); err != nil {
 				if log := c.conn.Logger(); log != nil {
 					log.Warn("schedule notify handler failed", "error", err)
 				}
@@ -336,7 +337,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	}
 
 	// Best-effort unsubscribe; ignore errors to match notice semantics.
-	ctx := context.Background()
+	ctx := c.conn.LifecycleContext()
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleUnsubscribe, scheduleUnsubscribePayloadWriter(sub.pattern))
 	if err != nil {
 		return

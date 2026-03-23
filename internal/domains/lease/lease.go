@@ -322,10 +322,15 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	notif := ChangeNotification{
 		Route: route,
 	}
+	lifecycleCtx := c.conn.LifecycleContext()
 
 	// Call handler asynchronously to avoid blocking the dispatch loop
 	go func() {
-		_ = sub.handler(context.Background(), notif)
+		if err := sub.handler(lifecycleCtx, notif); err != nil {
+			if log := c.conn.Logger(); log != nil {
+				log.Warn("lease notify handler failed", "route", route, "error", err)
+			}
+		}
 	}()
 }
 
@@ -353,7 +358,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	c.mu.Unlock()
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
-	ctx := context.Background()
+	ctx := c.conn.LifecycleContext()
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseUnsubscribe, unsubscribePayloadWriter(sub.pattern))
 	if err != nil {
 		return

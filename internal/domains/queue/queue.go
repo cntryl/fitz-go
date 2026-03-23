@@ -262,11 +262,12 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	notif := AvailabilityNotification{
 		Route: route,
 	}
+	lifecycleCtx := c.conn.LifecycleContext()
 
 	for _, handler := range handlers {
 		handler := handler
 		go func() {
-			if err := handler(context.Background(), notif); err != nil {
+			if err := handler(lifecycleCtx, notif); err != nil {
 				if log := c.conn.Logger(); log != nil {
 					log.Warn("queue notify handler failed", "route", route, "error", err)
 				}
@@ -306,7 +307,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	}
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
-	ctx := context.Background()
+	ctx := c.conn.LifecycleContext()
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(sub.pattern))
 	if err != nil {
 		return
