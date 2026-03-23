@@ -273,7 +273,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 				lifecycleCtx,
 				c.conn.Tracer(),
 				"fitz.queue.handler",
-				coretracing.DefaultAsyncSpanTimeout,
+				c.conn.AsyncHandlerTimeout(),
 				trace.WithAttributes(
 					attribute.Int64("fitz.subscription_id", int64(subID)),
 					attribute.String("fitz.route", route),
@@ -281,6 +281,16 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 			)
 			defer cancel()
 			defer span.End()
+
+			release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
+			if !ok {
+				if err := handlerCtx.Err(); err != nil {
+					span.RecordError(err)
+					span.SetStatus(codes.Error, err.Error())
+				}
+				return
+			}
+			defer release()
 
 			if err := handler(handlerCtx, notif); err != nil {
 				span.RecordError(err)

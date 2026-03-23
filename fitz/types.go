@@ -7,6 +7,7 @@ import (
 
 	coreclient "github.com/cntryl/fitz-go/internal/core/client"
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -88,6 +89,22 @@ func WithWriteTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithAsyncHandlerTimeout sets the timeout used for detached async handler
+// spans in subscription callbacks and RPC worker handlers.
+func WithAsyncHandlerTimeout(timeout time.Duration) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithAsyncHandlerTimeout(timeout))
+	}
+}
+
+// WithAsyncHandlerMaxConcurrency sets the maximum number of concurrent detached
+// async handlers used by subscription callbacks and RPC worker handlers.
+func WithAsyncHandlerMaxConcurrency(max int) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithAsyncHandlerMaxConcurrency(max))
+	}
+}
+
 // WithReconnect controls the automatic reconnect behaviour. When enabled, the
 // client will attempt to re-establish the transport connection using a fixed
 // backoff interval up to maxAttempts times (0 = unlimited).
@@ -119,6 +136,14 @@ func WithLogger(logger *slog.Logger) Option {
 func WithTracer(tracer trace.Tracer) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithTracer(tracer))
+	}
+}
+
+// WithMeter attaches an OpenTelemetry [metric.Meter] for client metrics.
+// Metrics are emitted for core operations such as detached async handler sloting.
+func WithMeter(meter metric.Meter) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithMeter(meter))
 	}
 }
 

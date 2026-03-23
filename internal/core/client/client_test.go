@@ -15,6 +15,10 @@ import (
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestShouldCreateClientGivenAddressWhenNewClientCalled(t *testing.T) {
@@ -114,6 +118,61 @@ func TestShouldValidateTransportLabelGivenKnownValueWhenTransportTypeStringCalle
 	assert.Equal(t, "auto", transportTypeString(TransportAuto))
 }
 
+func TestShouldUseDefaultAsyncHandlerTimeoutGivenNoOptionWhenNewClientCreated(t *testing.T) {
+	// Act
+	c := NewClient("localhost:4091", nil)
+
+	// Assert
+	require.NotNil(t, c.config)
+	assert.Equal(t, 30*time.Second, c.config.AsyncHandlerTimeout)
+}
+
+func TestShouldApplyAsyncHandlerTimeoutOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {
+	// Arrange
+	customTimeout := 5 * time.Second
+
+	// Act
+	c := NewClientWithOptions("localhost:4091", nil, WithAsyncHandlerTimeout(customTimeout))
+
+	// Assert
+	require.NotNil(t, c.config)
+	assert.Equal(t, customTimeout, c.config.AsyncHandlerTimeout)
+}
+
+func TestShouldUseDefaultAsyncHandlerMaxConcurrencyGivenNoOptionWhenNewClientCreated(t *testing.T) {
+	// Act
+	c := NewClient("localhost:4091", nil)
+
+	// Assert
+	require.NotNil(t, c.config)
+	assert.Equal(t, 256, c.config.AsyncHandlerMaxConcurrency)
+}
+
+func TestShouldApplyAsyncHandlerMaxConcurrencyOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {
+	// Arrange
+	customMax := 64
+
+	// Act
+	c := NewClientWithOptions("localhost:4091", nil, WithAsyncHandlerMaxConcurrency(customMax))
+
+	// Assert
+	require.NotNil(t, c.config)
+	assert.Equal(t, customMax, c.config.AsyncHandlerMaxConcurrency)
+}
+
+func TestShouldApplyMeterOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {
+	// Arrange
+	meter := metricnoop.NewMeterProvider().Meter("fitz-go-client-test")
+
+	// Act
+	c := NewClientWithOptions("localhost:4091", nil, WithMeter(meter))
+
+	// Assert
+	require.NotNil(t, c.config)
+	require.NotNil(t, c.config.Meter)
+	assert.Equal(t, meter, c.config.Meter)
+}
+
 func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenReconnectEnabled(t *testing.T) {
 	// Arrange
 	firstTransport := newScriptedTransport()
@@ -182,6 +241,111 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 	subscribeType, _, err := protocol.DecodeFrame(writtenFrames[1])
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeNoticeSubscribe, subscribeType)
+}
+
+func TestShouldEmitReconnectMetricsGivenReconnectSuccessWhenConnectionRestored(t *testing.T) {
+	// Arrange
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	firstTransport := newScriptedTransport()
+	secondTransport := newScriptedTransport()
+
+	originalDialTCP := dialTCPTransport
+	originalDialWS := dialWebSocketTransport
+	defer func() {
+		dialTCPTransport = originalDialTCP
+		dialWebSocketTransport = originalDialWS
+	}()
+
+	transports := []transport.Transport{firstTransport, secondTransport}
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		if len(transports) == 0 {
+			return nil, errors.New("no transports remaining")
+		}
+		next := transports[0]
+		transports = transports[1:]
+		return next, nil
+	}
+
+	c := NewClientWithOptions(
+		"localhost:4091",
+		func(context.Context) (string, error) { return "token-1", nil },
+		WithMeter(meterProvider.Meter("fitz-go-client-test")),
+	)
+	c.config.AuthSettleDelay = 20 * time.Millisecond
+	c.config.ReconnectEnabled = true
+	c.config.ReconnectBackoff = 10 * time.Millisecond
+	c.config.MaxReconnects = 1
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, c.Connect(ctx))
+
+	go pushResponseAfterWrite(firstTransport, noticeSubscribeResponseFrame(t, 11), 2)
+	_, err := c.Notice().Subscribe(ctx, "notice://realm/area/resource", func(context.Context, notice.NoticeMsg) error {
+		return nil
+	})
+	require.NoError(t, err)
+
+	initialConn := c.currentConnection()
+	go pushResponseAfterWrite(secondTransport, noticeSubscribeResponseFrame(t, 22), 2)
+
+	// Act
+	require.NoError(t, initialConn.Close())
+	require.Eventually(t, func() bool {
+		return c.currentConnection() != nil && c.currentConnection() != initialConn
+	}, time.Second, 20*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		var metrics metricdata.ResourceMetrics
+		if err := reader.Collect(ctx, &metrics); err != nil {
+			return false
+		}
+		foundCount, foundDuration := reconnectMetricPresence(metrics)
+		return foundCount && foundDuration
+	}, time.Second, 20*time.Millisecond)
+	assert.NoError(t, c.Close())
+}
+
+func reconnectMetricPresence(metrics metricdata.ResourceMetrics) (bool, bool) {
+	foundCount := false
+	foundDuration := false
+	for _, scopeMetrics := range metrics.ScopeMetrics {
+		for _, collected := range scopeMetrics.Metrics {
+			switch data := collected.Data.(type) {
+			case metricdata.Sum[int64]:
+				if collected.Name != "fitz.reconnect.attempts" {
+					continue
+				}
+				for _, point := range data.DataPoints {
+					attrs := point.Attributes.ToSlice()
+					if hasStringAttr(attrs, "fitz.outcome", "success") && hasStringAttr(attrs, "fitz.transport", "tcp") && point.Value >= 1 {
+						foundCount = true
+					}
+				}
+			case metricdata.Histogram[int64]:
+				if collected.Name != "fitz.reconnect.attempt_duration_ms" {
+					continue
+				}
+				for _, point := range data.DataPoints {
+					attrs := point.Attributes.ToSlice()
+					if hasStringAttr(attrs, "fitz.outcome", "success") && hasStringAttr(attrs, "fitz.transport", "tcp") && point.Count >= 1 {
+						foundDuration = true
+					}
+				}
+			}
+		}
+	}
+	return foundCount, foundDuration
+}
+
+func hasStringAttr(attrs []attribute.KeyValue, key string, expected string) bool {
+	for _, attr := range attrs {
+		if string(attr.Key) == key && attr.Value.Type() == attribute.STRING && attr.Value.AsString() == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func TestShouldSendOnlyConnectFrameGivenAuthenticatedTokenWhenConnectCalled(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 )
 
 // Mock transport is now provided by testkit.MockTransport from internal/testkit package
@@ -94,6 +95,103 @@ func TestShouldCreateConnectionGivenValidConfigWhenNewCalled(t *testing.T) {
 
 	// Assert
 	require.NotNil(t, conn)
+}
+
+func TestShouldReturnDefaultAsyncHandlerTimeoutGivenUnsetConfigWhenNewCalled(t *testing.T) {
+	// Arrange
+	transport := &testkit.MockTransport{}
+	cfg := connection.DefaultConfig()
+	cfg.AsyncHandlerTimeout = 0
+
+	// Act
+	conn := connection.New(transport, cfg)
+
+	// Assert
+	require.NotNil(t, conn)
+	assert.Equal(t, 30*time.Second, conn.AsyncHandlerTimeout())
+}
+
+func TestShouldReturnConfiguredAsyncHandlerTimeoutGivenConfigWhenNewCalled(t *testing.T) {
+	// Arrange
+	transport := &testkit.MockTransport{}
+	cfg := connection.DefaultConfig()
+	cfg.AsyncHandlerTimeout = 2 * time.Second
+
+	// Act
+	conn := connection.New(transport, cfg)
+
+	// Assert
+	require.NotNil(t, conn)
+	assert.Equal(t, 2*time.Second, conn.AsyncHandlerTimeout())
+}
+
+func TestShouldReturnDefaultAsyncHandlerMaxConcurrencyGivenUnsetConfigWhenNewCalled(t *testing.T) {
+	// Arrange
+	transport := &testkit.MockTransport{}
+	cfg := connection.DefaultConfig()
+	cfg.AsyncHandlerMaxConcurrency = 0
+
+	// Act
+	conn := connection.New(transport, cfg)
+
+	// Assert
+	require.NotNil(t, conn)
+	assert.Equal(t, 256, conn.AsyncHandlerMaxConcurrency())
+}
+
+func TestShouldReturnConfiguredAsyncHandlerMaxConcurrencyGivenConfigWhenNewCalled(t *testing.T) {
+	// Arrange
+	transport := &testkit.MockTransport{}
+	cfg := connection.DefaultConfig()
+	cfg.AsyncHandlerMaxConcurrency = 8
+
+	// Act
+	conn := connection.New(transport, cfg)
+
+	// Assert
+	require.NotNil(t, conn)
+	assert.Equal(t, 8, conn.AsyncHandlerMaxConcurrency())
+}
+
+func TestShouldUseConfiguredMeterGivenConfigWhenNewCalled(t *testing.T) {
+	// Arrange
+	transport := &testkit.MockTransport{}
+	cfg := connection.DefaultConfig()
+	meter := metricnoop.NewMeterProvider().Meter("fitz-go-connection-test")
+	cfg.Meter = meter
+
+	// Act
+	conn := connection.New(transport, cfg)
+
+	// Assert
+	require.NotNil(t, conn)
+	require.NotNil(t, conn.Meter())
+	assert.Equal(t, meter, conn.Meter())
+}
+
+func TestShouldBoundConcurrentSlotsGivenMaxOneWhenAcquireAsyncHandlerSlotCalled(t *testing.T) {
+	// Arrange
+	transport := &testkit.MockTransport{}
+	cfg := connection.DefaultConfig()
+	cfg.AsyncHandlerMaxConcurrency = 1
+	conn := connection.New(transport, cfg)
+	require.NotNil(t, conn)
+
+	// Act
+	release1, ok1 := conn.AcquireAsyncHandlerSlot(context.Background())
+	require.True(t, ok1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, ok2 := conn.AcquireAsyncHandlerSlot(ctx)
+
+	// Assert
+	assert.False(t, ok2)
+
+	release1()
+	release3, ok3 := conn.AcquireAsyncHandlerSlot(context.Background())
+	assert.True(t, ok3)
+	release3()
 }
 
 // TestShouldParseStandardResponseGivenSuccessStatus tests success response parsing.

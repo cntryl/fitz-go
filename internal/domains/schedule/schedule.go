@@ -114,11 +114,21 @@ func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
 				lifecycleCtx,
 				c.conn.Tracer(),
 				"fitz.schedule.handler",
-				coretracing.DefaultAsyncSpanTimeout,
+				c.conn.AsyncHandlerTimeout(),
 				trace.WithAttributes(attribute.Int64("fitz.subscription_id", int64(subID))),
 			)
 			defer cancel()
 			defer span.End()
+
+			release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
+			if !ok {
+				if err := handlerCtx.Err(); err != nil {
+					span.RecordError(err)
+					span.SetStatus(codes.Error, err.Error())
+				}
+				return
+			}
+			defer release()
 
 			if err := handler(handlerCtx, msg); err != nil {
 				span.RecordError(err)

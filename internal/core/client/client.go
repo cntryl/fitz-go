@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -47,6 +48,7 @@ type Client struct {
 	addr          string
 	tokenProvider types.TokenProvider
 	config        *Config
+	meter         metric.Meter
 
 	mu     sync.RWMutex
 	conn   *connection.Connection
@@ -66,15 +68,19 @@ type Client struct {
 	lifecycleCancel context.CancelFunc
 	reconnectMu     sync.Mutex
 	reconnecting    bool
+	reconnectCount  metric.Int64Counter
+	reconnectTimeMs metric.Int64Histogram
 }
 
 // Config contains client configuration.
 type Config struct {
 	// Connection
-	URL             string
-	AuthSettleDelay time.Duration
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
+	URL                        string
+	AuthSettleDelay            time.Duration
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	AsyncHandlerTimeout        time.Duration
+	AsyncHandlerMaxConcurrency int
 
 	// Reconnection
 	ReconnectEnabled bool
@@ -87,15 +93,18 @@ type Config struct {
 	// Observability (optional)
 	Logger *slog.Logger // When nil, no logging.
 	Tracer trace.Tracer // When nil, otel.Tracer(module) is used for spans.
+	Meter  metric.Meter // When nil, otel.Meter(module) is used for metrics.
 }
 
 // defaultConfig returns default client configuration.
 func defaultConfig() *Config {
 	return &Config{
-		TransportType:   TransportAuto,
-		AuthSettleDelay: 500 * time.Millisecond,
-		ReadTimeout:     30 * time.Second,
-		WriteTimeout:    10 * time.Second,
+		TransportType:              TransportAuto,
+		AuthSettleDelay:            500 * time.Millisecond,
+		ReadTimeout:                30 * time.Second,
+		WriteTimeout:               10 * time.Second,
+		AsyncHandlerTimeout:        30 * time.Second,
+		AsyncHandlerMaxConcurrency: 256,
 	}
 }
 
@@ -120,6 +129,18 @@ func WithReadTimeout(timeout time.Duration) Option {
 // WithWriteTimeout sets the write timeout.
 func WithWriteTimeout(timeout time.Duration) Option {
 	return func(c *Config) { c.WriteTimeout = timeout }
+}
+
+// WithAsyncHandlerTimeout sets the timeout used for detached async handler spans.
+// A zero duration uses the default timeout.
+func WithAsyncHandlerTimeout(timeout time.Duration) Option {
+	return func(c *Config) { c.AsyncHandlerTimeout = timeout }
+}
+
+// WithAsyncHandlerMaxConcurrency sets the maximum number of concurrent
+// detached async handlers. A value <= 0 uses the default limit.
+func WithAsyncHandlerMaxConcurrency(max int) Option {
+	return func(c *Config) { c.AsyncHandlerMaxConcurrency = max }
 }
 
 // WithReconnect enables/disables automatic reconnection.
@@ -148,19 +169,27 @@ func WithTracer(tracer trace.Tracer) Option {
 	return func(c *Config) { c.Tracer = tracer }
 }
 
+// WithMeter sets the OpenTelemetry meter for metrics.
+// When nil or not set, otel.Meter(module) is used (no-op if no MeterProvider is set).
+func WithMeter(meter metric.Meter) Option {
+	return func(c *Config) { c.Meter = meter }
+}
+
 // NewClient creates a new Fitz client targeting the given address.
 // Call Connect() to establish the connection.
 func NewClient(addr string, tokenProvider types.TokenProvider) *Client {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	cfg := defaultConfig()
 	cfg.URL = addr
-	return &Client{
+	client := &Client{
 		addr:            addr,
 		tokenProvider:   tokenProvider,
 		config:          cfg,
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 	}
+	client.initMetrics()
+	return client
 }
 
 // NewClientWithOptions creates a new Fitz client targeting the given address
@@ -171,7 +200,49 @@ func NewClientWithOptions(addr string, tokenProvider types.TokenProvider, opts .
 	for _, opt := range opts {
 		opt(c.config)
 	}
+	c.initMetrics()
 	return c
+}
+
+func (c *Client) initMetrics() {
+	if c == nil || c.config == nil {
+		return
+	}
+	meter := c.config.Meter
+	if meter == nil {
+		meter = otel.Meter("github.com/cntryl/fitz-go")
+	}
+	c.meter = meter
+	if counter, err := meter.Int64Counter(
+		"fitz.reconnect.attempts",
+		metric.WithDescription("Count of Fitz reconnect attempts by outcome"),
+		metric.WithUnit("{attempt}"),
+	); err == nil {
+		c.reconnectCount = counter
+	}
+	if histogram, err := meter.Int64Histogram(
+		"fitz.reconnect.attempt_duration_ms",
+		metric.WithDescription("Duration of Fitz reconnect attempts by outcome"),
+		metric.WithUnit("ms"),
+	); err == nil {
+		c.reconnectTimeMs = histogram
+	}
+}
+
+func (c *Client) recordReconnectAttempt(outcome string, transportType TransportType, started time.Time) {
+	if c == nil {
+		return
+	}
+	attrs := metric.WithAttributes(
+		attribute.String("fitz.outcome", outcome),
+		attribute.String("fitz.transport", transportTypeString(transportType)),
+	)
+	if c.reconnectCount != nil {
+		c.reconnectCount.Add(context.Background(), 1, attrs)
+	}
+	if c.reconnectTimeMs != nil {
+		c.reconnectTimeMs.Record(context.Background(), time.Since(started).Milliseconds(), attrs)
+	}
 }
 
 // Connect establishes a connection to the broker using the address and
@@ -387,12 +458,15 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 	}
 
 	connCfg := connection.Config{
-		Token:           token,
-		AuthSettleDelay: c.config.AuthSettleDelay,
-		ReadTimeout:     c.config.ReadTimeout,
-		WriteTimeout:    c.config.WriteTimeout,
-		Logger:          c.config.Logger,
-		Tracer:          c.config.Tracer,
+		Token:                      token,
+		AuthSettleDelay:            c.config.AuthSettleDelay,
+		ReadTimeout:                c.config.ReadTimeout,
+		WriteTimeout:               c.config.WriteTimeout,
+		AsyncHandlerTimeout:        c.config.AsyncHandlerTimeout,
+		AsyncHandlerMaxConcurrency: c.config.AsyncHandlerMaxConcurrency,
+		Logger:                     c.config.Logger,
+		Tracer:                     c.config.Tracer,
+		Meter:                      c.config.Meter,
 	}
 	conn := connection.New(trans, connCfg)
 	if err := conn.Start(ctx); err != nil {
@@ -501,6 +575,7 @@ func (c *Client) beginReconnect(cause error) {
 		if c.closed.Load() {
 			return
 		}
+		started := time.Now()
 
 		attemptCtx, attemptSpan := tracer.Start(c.lifecycleCtx, "fitz.reconnect.attempt", trace.WithAttributes(
 			attribute.Int("fitz.attempt", attempt),
@@ -523,17 +598,28 @@ func (c *Client) beginReconnect(cause error) {
 				if c.config.Logger != nil {
 					c.config.Logger.Info("reconnect success", "attempt", attempt)
 				}
+				c.recordReconnectAttempt("success", transportType, started)
 				attemptSpan.End()
 				return
 			} else {
 				attemptSpan.RecordError(err)
 				attemptSpan.SetStatus(codes.Error, err.Error())
+				outcome := "restore_error"
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					outcome = "canceled"
+				}
+				c.recordReconnectAttempt(outcome, transportType, started)
 				cause = err
 				_ = conn.Close()
 			}
 		} else {
 			attemptSpan.RecordError(err)
 			attemptSpan.SetStatus(codes.Error, err.Error())
+			outcome := "dial_error"
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				outcome = "canceled"
+			}
+			c.recordReconnectAttempt(outcome, transportType, started)
 			cause = err
 		}
 		attemptSpan.End()

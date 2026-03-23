@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -53,10 +54,11 @@ func (s State) String() string {
 // Connection manages a single connection to the Fitz server.
 // Handles authentication, dispatch loop, and request/response correlation.
 type Connection struct {
-	transport transport.Transport
-	state     atomic.Int32 // State enum
-	stateMu   sync.RWMutex // Protects state transitions
-	writeMu   sync.Mutex   // Serializes outbound frames so FIFO request queues match wire order
+	transport       transport.Transport
+	state           atomic.Int32 // State enum
+	stateMu         sync.RWMutex // Protects state transitions
+	writeMu         sync.Mutex   // Serializes outbound frames so FIFO request queues match wire order
+	asyncHandlerSem chan struct{}
 
 	// CONNECT configuration (per CLIENT_SPEC.md)
 	token string
@@ -80,22 +82,30 @@ type Connection struct {
 	cfg Config
 
 	// Observability (optional)
-	logger *slog.Logger
-	tracer trace.Tracer
+	logger                   *slog.Logger
+	tracer                   trace.Tracer
+	meter                    metric.Meter
+	asyncSlotWaitMs          metric.Int64Histogram
+	asyncSlotAcquireFailures metric.Int64Counter
+	asyncHandlersActive      metric.Int64UpDownCounter
+	asyncSlotOccupancyMs     metric.Int64Histogram
 }
 
 // Config contains connection configuration.
 type Config struct {
-	Token            string
-	AuthSettleDelay  time.Duration // CONNECT silent-success settle window (default 500ms)
-	ReadTimeout      time.Duration // Default 30s (per-read timeout)
-	WriteTimeout     time.Duration // Default 10s
-	ReconnectEnabled bool
-	ReconnectBackoff time.Duration
+	Token                      string
+	AuthSettleDelay            time.Duration // CONNECT silent-success settle window (default 500ms)
+	ReadTimeout                time.Duration // Default 30s (per-read timeout)
+	WriteTimeout               time.Duration // Default 10s
+	AsyncHandlerTimeout        time.Duration // Default 30s for detached async handler spans
+	AsyncHandlerMaxConcurrency int           // Default 256 concurrent async handlers
+	ReconnectEnabled           bool
+	ReconnectBackoff           time.Duration
 
 	// Observability (optional)
 	Logger *slog.Logger // When nil, no logging.
 	Tracer trace.Tracer // When nil, otel.Tracer(module) is used.
+	Meter  metric.Meter // When nil, otel.Meter(module) is used.
 }
 
 // DefaultConfig returns default configuration.
@@ -129,23 +139,38 @@ func New(trans transport.Transport, cfg Config) *Connection {
 	if cfg.WriteTimeout == 0 {
 		cfg.WriteTimeout = 10 * time.Second
 	}
+	if cfg.AsyncHandlerTimeout == 0 {
+		cfg.AsyncHandlerTimeout = 30 * time.Second
+	}
+	if cfg.AsyncHandlerMaxConcurrency <= 0 {
+		cfg.AsyncHandlerMaxConcurrency = 256
+	}
 
 	tracer := cfg.Tracer
 	if tracer == nil {
 		tracer = otel.Tracer("github.com/cntryl/fitz-go")
 	}
-	return &Connection{
-		transport:     trans,
-		token:         cfg.Token,
-		authConfirmed: make(chan struct{}),
-		mux:           NewMultiplexer(),
-		ctx:           ctx,
-		cancel:        cancel,
-		done:          make(chan struct{}),
-		cfg:           cfg,
-		logger:        cfg.Logger,
-		tracer:        tracer,
+	meter := cfg.Meter
+	if meter == nil {
+		meter = otel.Meter("github.com/cntryl/fitz-go")
 	}
+
+	conn := &Connection{
+		transport:       trans,
+		asyncHandlerSem: make(chan struct{}, cfg.AsyncHandlerMaxConcurrency),
+		token:           cfg.Token,
+		authConfirmed:   make(chan struct{}),
+		mux:             NewMultiplexer(),
+		ctx:             ctx,
+		cancel:          cancel,
+		done:            make(chan struct{}),
+		cfg:             cfg,
+		logger:          cfg.Logger,
+		tracer:          tracer,
+		meter:           meter,
+	}
+	conn.initAsyncHandlerMetrics()
+	return conn
 }
 
 // Logger returns the structured logger, or nil if not set.
@@ -156,6 +181,45 @@ func (c *Connection) Logger() *slog.Logger {
 // Tracer returns the OpenTelemetry tracer (never nil).
 func (c *Connection) Tracer() trace.Tracer {
 	return c.tracer
+}
+
+// Meter returns the OpenTelemetry meter (never nil).
+func (c *Connection) Meter() metric.Meter {
+	return c.meter
+}
+
+func (c *Connection) initAsyncHandlerMetrics() {
+	if c == nil || c.meter == nil {
+		return
+	}
+	if histogram, err := c.meter.Int64Histogram(
+		"fitz.async_handler.slot_wait_ms",
+		metric.WithDescription("Wait time to acquire an async handler concurrency slot"),
+		metric.WithUnit("ms"),
+	); err == nil {
+		c.asyncSlotWaitMs = histogram
+	}
+	if counter, err := c.meter.Int64Counter(
+		"fitz.async_handler.slot_acquire_failures",
+		metric.WithDescription("Count of async handler slot acquisition failures"),
+		metric.WithUnit("{failure}"),
+	); err == nil {
+		c.asyncSlotAcquireFailures = counter
+	}
+	if active, err := c.meter.Int64UpDownCounter(
+		"fitz.async_handler.active_handlers",
+		metric.WithDescription("Current number of active detached async handlers"),
+		metric.WithUnit("{handler}"),
+	); err == nil {
+		c.asyncHandlersActive = active
+	}
+	if occupancy, err := c.meter.Int64Histogram(
+		"fitz.async_handler.slot_occupancy_ms",
+		metric.WithDescription("Time an acquired async handler slot is held"),
+		metric.WithUnit("ms"),
+	); err == nil {
+		c.asyncSlotOccupancyMs = occupancy
+	}
 }
 
 // Start begins the connection lifecycle.
@@ -719,6 +783,79 @@ func (c *Connection) LifecycleContext() context.Context {
 		return context.Background()
 	}
 	return c.ctx
+}
+
+// AsyncHandlerTimeout returns the configured timeout for detached async handler spans.
+func (c *Connection) AsyncHandlerTimeout() time.Duration {
+	if c == nil {
+		return 30 * time.Second
+	}
+	if c.cfg.AsyncHandlerTimeout <= 0 {
+		return 30 * time.Second
+	}
+	return c.cfg.AsyncHandlerTimeout
+}
+
+// AsyncHandlerMaxConcurrency returns the configured maximum number of
+// concurrently executing detached async handlers.
+func (c *Connection) AsyncHandlerMaxConcurrency() int {
+	if c == nil {
+		return 256
+	}
+	if c.cfg.AsyncHandlerMaxConcurrency <= 0 {
+		return 256
+	}
+	return c.cfg.AsyncHandlerMaxConcurrency
+}
+
+// AcquireAsyncHandlerSlot acquires a concurrency slot for async handler execution.
+// It returns false if acquisition was canceled by context shutdown/deadline.
+func (c *Connection) AcquireAsyncHandlerSlot(ctx context.Context) (release func(), ok bool) {
+	noop := func() {}
+	if c == nil || c.asyncHandlerSem == nil {
+		return noop, true
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	start := time.Now()
+	recordWait := func(recordCtx context.Context) {
+		if c.asyncSlotWaitMs != nil {
+			c.asyncSlotWaitMs.Record(recordCtx, time.Since(start).Milliseconds())
+		}
+	}
+	recordFailure := func(recordCtx context.Context, reason string) {
+		if c.asyncSlotAcquireFailures != nil {
+			c.asyncSlotAcquireFailures.Add(recordCtx, 1, metric.WithAttributes(attribute.String("fitz.reason", reason)))
+		}
+	}
+
+	select {
+	case c.asyncHandlerSem <- struct{}{}:
+		recordWait(ctx)
+		if c.asyncHandlersActive != nil {
+			c.asyncHandlersActive.Add(context.Background(), 1)
+		}
+		acquiredAt := time.Now()
+		return func() {
+			<-c.asyncHandlerSem
+			if c.asyncHandlersActive != nil {
+				c.asyncHandlersActive.Add(context.Background(), -1)
+			}
+			if c.asyncSlotOccupancyMs != nil {
+				c.asyncSlotOccupancyMs.Record(context.Background(), time.Since(acquiredAt).Milliseconds())
+			}
+		}, true
+	case <-ctx.Done():
+		recordWait(ctx)
+		recordFailure(ctx, "context_done")
+		return noop, false
+	case <-c.ctx.Done():
+		recordWait(c.ctx)
+		recordFailure(c.ctx, "connection_shutdown")
+		return noop, false
+	}
 }
 
 // Err returns the terminal connection error, if any.

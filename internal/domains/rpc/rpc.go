@@ -247,7 +247,7 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 			lifecycleCtx,
 			c.conn.Tracer(),
 			"fitz.rpc.worker_handler",
-			coretracing.DefaultAsyncSpanTimeout,
+			c.conn.AsyncHandlerTimeout(),
 			trace.WithAttributes(
 				attribute.String("fitz.route", route),
 				attribute.String("fitz.reply_route", replyRoute),
@@ -255,6 +255,16 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 		)
 		defer cancel()
 		defer span.End()
+
+		release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
+		if !ok {
+			if err := handlerCtx.Err(); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+			}
+			return
+		}
+		defer release()
 
 		if err := handler(handlerCtx, req, w); err != nil {
 			span.RecordError(err)
