@@ -281,8 +281,13 @@ func (c *client) unsubscribeWorker(route string) {
 
 	ctx := context.Background()
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcUnsubscribeWorker, rpcUnsubscribeWorkerPayloadWriter(route))
-	_ = resp // ignore response
-	_ = err  // ignore errors
+	// Unsubscribe is a best-effort teardown: the local worker map entry has
+	// already been removed above, so the client will stop routing new calls
+	// regardless of whether the broker ACKs the deregistration. Errors here
+	// do not constitute data loss — they only affect broker-side routing
+	// cleanup, which the broker recovers from via session expiry.
+	_ = resp
+	_ = err
 }
 
 // Call per CLIENT_SPEC.md:
@@ -413,6 +418,10 @@ func (w *responseWriter) sendEnd() {
 		return
 	}
 
+	// sendEnd is called from finalisation paths (worker return, iterator close).
+	// Errors here are intentionally dropped: the correlation ID has already
+	// been removed from the in-flight map, so there is no state to roll back.
+	// The caller observes the cancellation/end via iterator.Err() or context.
 	_ = w.conn.SendFireAndForget(context.Background(), protocol.MessageTypeRpcResponse, payload)
 }
 

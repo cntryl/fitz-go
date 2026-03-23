@@ -72,36 +72,50 @@ func WithAuthSettleDelay(delay time.Duration) Option {
 	}
 }
 
+// WithReadTimeout sets the per-read deadline on the underlying transport
+// connection. A zero duration disables the timeout.
 func WithReadTimeout(timeout time.Duration) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReadTimeout(timeout))
 	}
 }
 
+// WithWriteTimeout sets the per-write deadline on the underlying transport
+// connection. A zero duration disables the timeout.
 func WithWriteTimeout(timeout time.Duration) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithWriteTimeout(timeout))
 	}
 }
 
+// WithReconnect controls the automatic reconnect behaviour. When enabled, the
+// client will attempt to re-establish the transport connection using a fixed
+// backoff interval up to maxAttempts times (0 = unlimited).
 func WithReconnect(enabled bool, backoff time.Duration, maxAttempts int) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReconnect(enabled, backoff, maxAttempts))
 	}
 }
 
+// WithTransport selects the transport implementation. TransportAuto (the
+// default) chooses WebSocket when the address starts with ws:// or wss://,
+// and TCP otherwise.
 func WithTransport(transportType TransportType) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithTransport(toCoreTransportType(transportType)))
 	}
 }
 
+// WithLogger attaches a structured [slog.Logger] to the client. If nil, the
+// client operates silently without emitting any log output.
 func WithLogger(logger *slog.Logger) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithLogger(logger))
 	}
 }
 
+// WithTracer attaches an OpenTelemetry [trace.Tracer] for distributed tracing.
+// Spans are created for each domain operation when a tracer is provided.
 func WithTracer(tracer trace.Tracer) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithTracer(tracer))
