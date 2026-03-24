@@ -161,20 +161,29 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 
 	// Validate route format
 	if err := types.ValidateScheduleRoute(route); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return "", fmt.Errorf("invalid route: %w", err)
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreate, scheduleCreatePayloadWriter(route, cronExpr, payload))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return "", fmt.Errorf("CREATE request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return "", fmt.Errorf("CREATE failed: %w", mapScheduleError(err.Error()))
 	}
 	if !success {
-		return "", fmt.Errorf("CREATE failed: unexpected status")
+		recordErr := fmt.Errorf("CREATE failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return "", recordErr
 	}
 
 	// Optional schedule_id when server sends it; otherwise route is identity
@@ -199,20 +208,29 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 
 	// Validate route format
 	if err := types.ValidateScheduleRoute(route); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("invalid route: %w", err)
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCancel, scheduleCancelPayloadWriter(route))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("CANCEL request failed: %w", err)
 	}
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("CANCEL failed: %w", mapScheduleError(err.Error()))
 	}
 	if !success {
-		return fmt.Errorf("CANCEL failed: unexpected status")
+		recordErr := fmt.Errorf("CANCEL failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return recordErr
 	}
 
 	return nil
@@ -229,23 +247,35 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleList, scheduleListPayloadWriter(offset, limit))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, 0, fmt.Errorf("LIST request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, 0, fmt.Errorf("LIST failed: %w", mapScheduleError(err.Error()))
 	}
 	if !success {
-		return nil, 0, fmt.Errorf("LIST failed: unexpected status")
+		recordErr := fmt.Errorf("LIST failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, 0, recordErr
 	}
 
 	// Parse total_count
 	if len(remaining) < 8 {
-		return nil, 0, fmt.Errorf("LIST response missing total_count")
+		recordErr := fmt.Errorf("LIST response missing total_count")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, 0, recordErr
 	}
 	totalCount, bytesRead, err := connection.ReadU64BE(remaining, 0)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, 0, fmt.Errorf("LIST failed to parse total_count: %w", err)
 	}
 	remaining = remaining[bytesRead:]
@@ -336,6 +366,8 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 	}
 	c.initScheduleNotifyHandler()
 	if err := types.ValidateScheduleSelector(pattern); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid pattern: %w", err)
 	}
 
@@ -343,6 +375,8 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 		return c.subscribeWire(ctx, pattern)
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	return &Subscription{

@@ -132,32 +132,49 @@ func (c *client) Begin(ctx context.Context, route string, expectedOffset uint64)
 
 	// Validate route format
 	if err := types.ValidateRoute(route, "stream"); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamBegin, streamBeginPayloadWriter(route, expectedOffset, nil))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("BEGIN request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("BEGIN failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		return nil, fmt.Errorf("BEGIN failed: unexpected status")
+		recordErr := fmt.Errorf("BEGIN failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	if len(remaining) < 1 {
-		return nil, fmt.Errorf("BEGIN response too short")
+		recordErr := fmt.Errorf("BEGIN response too short")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 	hasSessionID := remaining[0]
 	if hasSessionID != 1 || len(remaining) < 9 {
-		return nil, fmt.Errorf("BEGIN response missing session_id")
+		recordErr := fmt.Errorf("BEGIN response missing session_id")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	sessionID, _, err := connection.ReadU64BE(remaining, 1)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("parse session_id: %w", err)
 	}
 
@@ -174,15 +191,22 @@ func (s *session) Append(ctx context.Context, body []byte) (uint64, error) {
 	defer span.End()
 	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, body, nil))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("SEND request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("SEND failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		return 0, fmt.Errorf("SEND failed: unexpected status")
+		recordErr := fmt.Errorf("SEND failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return 0, recordErr
 	}
 
 	offset := 0
@@ -213,15 +237,22 @@ func (s *session) Commit(ctx context.Context) error {
 	defer span.End()
 	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamCommit, streamCommitPayloadWriter(s.sessionID, 0))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("COMMIT request failed: %w", err)
 	}
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("COMMIT failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		return fmt.Errorf("COMMIT failed: unexpected status")
+		recordErr := fmt.Errorf("COMMIT failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return recordErr
 	}
 	return nil
 }
@@ -236,15 +267,22 @@ func (s *session) Rollback(ctx context.Context) error {
 	defer span.End()
 	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRollback, streamRollbackPayloadWriter(s.sessionID))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("ROLLBACK request failed: %w", err)
 	}
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("ROLLBACK failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		return fmt.Errorf("ROLLBACK failed: unexpected status")
+		recordErr := fmt.Errorf("ROLLBACK failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return recordErr
 	}
 	return nil
 }
@@ -264,15 +302,22 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRead, streamReadPayloadWriter(route, fromOffset, limit, nil))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("READ request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("READ failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		return nil, fmt.Errorf("READ failed: unexpected status")
+		recordErr := fmt.Errorf("READ failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	// Skip optional session_id and extract data blob
@@ -281,6 +326,8 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 	// Parse records from data
 	records, err := parseReadResponse(data)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("parse READ response: %w", err)
 	}
 
@@ -298,15 +345,22 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamLast, streamLastPayloadWriter(route))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("PEEK request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("PEEK failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		return nil, fmt.Errorf("PEEK failed: unexpected status")
+		recordErr := fmt.Errorf("PEEK failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	// Skip optional session_id and extract data blob
@@ -319,6 +373,8 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 
 	record, err := parseRecord(data, 0)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("parse PEEK response: %w", err)
 	}
 
@@ -336,15 +392,22 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamGetMetadata, streamGetMetadataPayloadWriter(route))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("GET_METADATA request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("GET_METADATA failed: %w", mapStreamError(err.Error()))
 	}
 	if !success {
-		return nil, fmt.Errorf("GET_METADATA failed: unexpected status")
+		recordErr := fmt.Errorf("GET_METADATA failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	// Skip optional session_id and extract data blob
@@ -542,6 +605,8 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler CommitHa
 		return c.subscribeWire(ctx, pattern)
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	return &Subscription{

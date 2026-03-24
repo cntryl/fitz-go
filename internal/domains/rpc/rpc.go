@@ -291,11 +291,15 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 
 	// Validate route format
 	if err := types.ValidateRoute(route, "rpc"); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
 	sub, err := c.subscribeWorker(ctx, route, handler)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	return sub, nil
@@ -339,6 +343,8 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 
 	// Validate route format
 	if err := types.ValidateRoute(route, "rpc"); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
@@ -360,6 +366,8 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		delete(c.pendingRPCs, correlationID)
 		c.mu.Unlock()
 		close(ch)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("REQUEST failed: %w", err)
 	}
 
@@ -369,6 +377,8 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		delete(c.pendingRPCs, correlationID)
 		c.mu.Unlock()
 		close(ch)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("REQUEST failed: %w", mapRPCError(err.Error()))
 	}
 	if !success {
@@ -376,7 +386,10 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		delete(c.pendingRPCs, correlationID)
 		c.mu.Unlock()
 		close(ch)
-		return nil, fmt.Errorf("REQUEST failed: unexpected status")
+		recordErr := fmt.Errorf("REQUEST failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	iterator := &rpcIterator{

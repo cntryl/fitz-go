@@ -63,14 +63,21 @@ func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 	defer span.End()
 	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueExtend, extendPayloadWriter(q.route, q.ID, q.Token, leaseSecs))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("EXTEND request failed: %w", err)
 	}
 	success, _, err := parseQueueResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("EXTEND failed: %w", err)
 	}
 	if !success {
-		return fmt.Errorf("EXTEND failed: unexpected status")
+		recordErr := fmt.Errorf("EXTEND failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return recordErr
 	}
 	return nil
 }
@@ -89,14 +96,21 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 	defer span.End()
 	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueComplete, completePayloadWriter(q.route, q.ID, token))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("COMPLETE request failed: %w", err)
 	}
 	success, _, err := parseQueueResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("COMPLETE failed: %w", err)
 	}
 	if !success {
-		return fmt.Errorf("COMPLETE failed: unexpected status")
+		recordErr := fmt.Errorf("COMPLETE failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return recordErr
 	}
 	return nil
 }
@@ -147,28 +161,42 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 
 	// Validate route format
 	if err := types.ValidateRoute(route, "queue"); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("invalid route: %w", err)
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueEnqueue, enqueuePayloadWriter(route, body, 0))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("ENQUEUE request failed: %w", err)
 	}
 
 	success, remaining, err := parseQueueResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("ENQUEUE failed: %w", err)
 	}
 	if !success {
-		return 0, fmt.Errorf("ENQUEUE failed: unexpected status")
+		recordErr := fmt.Errorf("ENQUEUE failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return 0, recordErr
 	}
 
 	if len(remaining) < 8 {
-		return 0, fmt.Errorf("ENQUEUE response too short: got %d bytes", len(remaining))
+		recordErr := fmt.Errorf("ENQUEUE response too short: got %d bytes", len(remaining))
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return 0, recordErr
 	}
 
 	msgID, _, err := connection.ReadU64BE(remaining, 0)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("parse message_id: %w", err)
 	}
 
@@ -191,20 +219,29 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint64, ba
 
 	// Validate route format
 	if err := types.ValidateRoute(route, "queue"); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueReserve, reservePayloadWriter(route, leaseSecs, batchSize, 0))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("RESERVE request failed: %w", err)
 	}
 
 	success, remaining, err := parseQueueResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("RESERVE failed: %w", err)
 	}
 	if !success {
-		return nil, fmt.Errorf("RESERVE failed: unexpected status")
+		recordErr := fmt.Errorf("RESERVE failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	if len(remaining) < 4 {
@@ -213,6 +250,8 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint64, ba
 
 	count, offset, err := connection.ReadU32BE(remaining, 0)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("parse lease_count: %w", err)
 	}
 
@@ -222,17 +261,23 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint64, ba
 
 		item.ID, offset, err = connection.ReadU64BE(remaining, offset)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("parse message_id at item %d: %w", i, err)
 		}
 
 		item.Token, offset, err = connection.ReadU64BE(remaining, offset)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("parse lease_token at item %d: %w", i, err)
 		}
 
 		var bodyData []byte
 		bodyData, offset, err = connection.ReadBytes(remaining, offset)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("parse body at item %d: %w", i, err)
 		}
 		item.Body = make([]byte, len(bodyData))
@@ -317,6 +362,8 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Availabi
 		return c.subscribeWire(ctx, pattern)
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	return &Subscription{

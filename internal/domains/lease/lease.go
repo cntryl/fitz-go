@@ -47,14 +47,21 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 	defer span.End()
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRenew, leaseRenewPayloadWriter(l.route, tokenToU64(token), ttlSecs))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("EXTEND request failed: %w", err)
 	}
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("EXTEND failed: %w", mapLeaseError(err.Error()))
 	}
 	if !success {
-		return 0, fmt.Errorf("EXTEND failed: unexpected status")
+		recordErr := fmt.Errorf("EXTEND failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return 0, recordErr
 	}
 	// Per CLIENT_SPEC: success = [u8 status=0][u64 BE new_fencing_token]
 	if len(remaining) >= 8 {
@@ -82,14 +89,21 @@ func (l *Lease) releaseWithToken(ctx context.Context, token []byte) error {
 	defer span.End()
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRelease, leaseReleasePayloadWriter(l.route, tokenToU64(token)))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("RELEASE request failed: %w", err)
 	}
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("RELEASE failed: %w", mapLeaseError(err.Error()))
 	}
 	if !success {
-		return fmt.Errorf("RELEASE failed: unexpected status")
+		recordErr := fmt.Errorf("RELEASE failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return recordErr
 	}
 	return nil
 }
@@ -175,19 +189,26 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 
 	// Validate route format
 	if err := types.ValidateRoute(route, "lease"); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseAcquire, leaseAcquirePayloadWriter(route, ttlSecs))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("ACQUIRE request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		if isLeaseHeldError(err) {
+			// Don't record as span error, this is an expected condition
 			return nil, ErrLeaseHeld
 		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("ACQUIRE failed: %w", mapLeaseError(err.Error()))
 	}
 	if !success {
@@ -195,7 +216,10 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 	}
 
 	if len(remaining) < 9 {
-		return nil, fmt.Errorf("ACQUIRE response too short: got %d bytes", len(remaining))
+		recordErr := fmt.Errorf("ACQUIRE response too short: got %d bytes", len(remaining))
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 	responseType := remaining[0]
 	fencingToken := binary.BigEndian.Uint64(remaining[1:9])
@@ -232,15 +256,22 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseQuery, leaseQueryPayloadWriter(route))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("QUERY request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("QUERY failed: %w", mapLeaseError(err.Error()))
 	}
 	if !success {
-		return nil, fmt.Errorf("QUERY failed: unexpected status")
+		recordErr := fmt.Errorf("QUERY failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	info := &LeaseInfo{}
@@ -373,6 +404,8 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler ChangeHa
 
 	sub, err := c.subscribe(ctx, pattern, handler)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	return sub, nil

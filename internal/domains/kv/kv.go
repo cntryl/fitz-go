@@ -10,6 +10,7 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -71,6 +72,8 @@ func (c *client) Begin(ctx context.Context, route string, opts ...BeginOption) (
 
 	// Validate route format
 	if err := types.ValidateRoute(route, "kv"); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
@@ -87,25 +90,37 @@ func (c *client) Begin(ctx context.Context, route string, opts ...BeginOption) (
 	// Send request and wait for response
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, cfg.mode, cfg.durability))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("BEGIN request failed: %w", err)
 	}
 
 	// Parse response: [u8 status][u64 BE tx_id] for success
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("BEGIN failed: %w", mapKVError(err.Error()))
 	}
 	if !success {
-		return nil, fmt.Errorf("BEGIN failed: unexpected status")
+		recordErr := fmt.Errorf("BEGIN failed: unexpected status")
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	// Extract tx_id from remaining payload (server-assigned per CLIENT_SPEC.md)
 	if len(remaining) < 8 { // tx_id is u64 (8 bytes)
-		return nil, fmt.Errorf("invalid BEGIN response: expected at least 8 bytes for tx_id, got %d", len(remaining))
+		recordErr := fmt.Errorf("invalid BEGIN response: expected at least 8 bytes for tx_id, got %d", len(remaining))
+		span.RecordError(recordErr)
+		span.SetStatus(codes.Error, recordErr.Error())
+		return nil, recordErr
 	}
 
 	txID, _, err := connection.ReadU64BE(remaining, 0)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("parse tx_id: %w", err)
 	}
 
