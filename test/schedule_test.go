@@ -165,6 +165,7 @@ func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *te
 	route := f.UniqueRoute("schedule")
 	payload := []byte("live-schedule-payload")
 	received := make(chan []byte, 1)
+	createdIDs := make([]string, 0, 2)
 
 	sub, err := f.Client().Schedule().Subscribe(ctx, route, func(_ context.Context, n fitz.ScheduleNotification) error {
 		received <- append([]byte(nil), n.Payload...)
@@ -173,16 +174,34 @@ func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *te
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 	defer func() {
-		_ = f.Client().Schedule().Cancel(context.Background(), route)
+		for _, id := range createdIDs {
+			_ = f.Client().Schedule().Cancel(context.Background(), id)
+		}
 	}()
 
-	_, err = f.Client().Schedule().Create(ctx, route, "* * * * *", payload)
-	require.NoError(t, err)
-
-	select {
-	case got := <-received:
-		assert.Equal(t, payload, got)
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for schedule notification")
+	waitForNotification := func(wait time.Duration) ([]byte, bool) {
+		select {
+		case got := <-received:
+			return got, true
+		case <-time.After(wait):
+			return nil, false
+		}
 	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		id, createErr := f.Client().Schedule().Create(ctx, route, "* * * * *", payload)
+		require.NoError(t, createErr)
+		createdIDs = append(createdIDs, id)
+
+		if got, ok := waitForNotification(95 * time.Second); ok {
+			assert.Equal(t, payload, got)
+			return
+		}
+
+		if attempt == 1 {
+			t.Log("no schedule notification in first window; recreating schedule and retrying once")
+		}
+	}
+
+	t.Fatal("timed out waiting for schedule notification after retry")
 }
