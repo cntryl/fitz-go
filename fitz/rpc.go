@@ -18,11 +18,17 @@ type RPCResponseFrame struct {
 	Sequence uint64
 }
 
+// RPCWorkerRegistration represents an active worker registration returned by
+// [RPCClient.RegisterWorker]. Call [RPCWorkerRegistration.Deregister] to stop
+// receiving requests and release the registration.
 type RPCWorkerRegistration struct {
 	inner *internalrpc.Subscription
 }
 
-func (r *RPCWorkerRegistration) Unsubscribe() {
+// Deregister removes this worker registration from the broker and stops
+// routing new requests to it. The deregistration is best-effort on the
+// broker side (the local handler map is cleared immediately).
+func (r *RPCWorkerRegistration) Deregister() {
 	if r != nil && r.inner != nil {
 		r.inner.Unsubscribe()
 	}

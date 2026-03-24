@@ -316,12 +316,16 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 		fCaller.ConnectOrFail(ctx)
 		route := fWorker.UniqueRoute("rpc")
 
-		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
-			time.Sleep(3 * time.Second)
-			return w.Send([]byte("late"))
+		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(handlerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+			select {
+			case <-time.After(200 * time.Millisecond):
+				return w.Send([]byte("late"))
+			case <-handlerCtx.Done():
+				return handlerCtx.Err()
+			}
 		})
 		require.NoError(t, err)
-		defer sub.Unsubscribe()
+		defer sub.Deregister()
 
 		callCtx, callCancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
@@ -330,7 +334,7 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 			done <- err
 		}()
 
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		callCancel()
 
 		select {

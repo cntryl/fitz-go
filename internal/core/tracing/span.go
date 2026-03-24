@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -26,7 +26,7 @@ func StartDetachedSpan(
 	opts ...trace.SpanStartOption,
 ) (context.Context, context.CancelFunc, trace.Span) {
 	if tracer == nil {
-		tracer = otel.Tracer("github.com/cntryl/fitz-go")
+		tracer = noop.NewTracerProvider().Tracer("")
 	}
 
 	baseCtx := context.Background()

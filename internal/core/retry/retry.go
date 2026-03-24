@@ -50,6 +50,12 @@ func Do(ctx context.Context, cfg BackoffConfig, maxRetries int, fn func() error,
 	return lastErr
 }
 
+// CalculateDelay computes exponential backoff with jitter for the given attempt.
+// attempt is 0-based (first attempt = 0).
+func CalculateDelay(cfg BackoffConfig, attempt int) time.Duration {
+	return calculateDelay(cfg, attempt)
+}
+
 // calculateDelay computes exponential backoff with jitter
 func calculateDelay(cfg BackoffConfig, attempt int) time.Duration {
 	// Base delay = initial * (multiplier ^ attempt)

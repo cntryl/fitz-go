@@ -577,7 +577,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
-			defer sub.Unsubscribe()
+			defer sub.Deregister()
 
 			callCtx, callCancel := context.WithCancel(ctx)
 			iter, err2 := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))

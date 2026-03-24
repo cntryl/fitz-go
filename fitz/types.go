@@ -106,11 +106,21 @@ func WithAsyncHandlerMaxConcurrency(max int) Option {
 }
 
 // WithReconnect controls the automatic reconnect behaviour. When enabled, the
-// client will attempt to re-establish the transport connection using a fixed
-// backoff interval up to maxAttempts times (0 = unlimited).
+// client will attempt to re-establish the transport connection using exponential
+// backoff starting at backoff, doubling up to the ceiling configured by
+// WithReconnectMaxDelay (default 30s), up to maxAttempts times (0 = unlimited).
 func WithReconnect(enabled bool, backoff time.Duration, maxAttempts int) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReconnect(enabled, backoff, maxAttempts))
+	}
+}
+
+// WithReconnectMaxDelay sets the ceiling for exponential reconnect backoff.
+// After each failed attempt the delay grows (with jitter) until it reaches
+// this maximum. Defaults to 30s.
+func WithReconnectMaxDelay(d time.Duration) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReconnectMaxDelay(d))
 	}
 }
 

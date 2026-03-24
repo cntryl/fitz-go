@@ -416,6 +416,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	c.mu.Lock()
 	delete(c.subscriptions, sub.subID)
 	c.mu.Unlock()
+	c.conn.AddSubscriptions(-1)
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
 	ctx := c.conn.LifecycleContext()
@@ -479,6 +480,7 @@ func (c *client) subscribe(ctx context.Context, pattern string, handler ChangeHa
 	if err != nil {
 		return nil, fmt.Errorf("parse subscription_id: %w", err)
 	}
+	c.conn.AddSubscriptions(1)
 
 	sub := &Subscription{
 		subID:   subID,

@@ -486,6 +486,22 @@ func (it *rpcIterator) Next() bool {
 	}
 	it.mu.Unlock()
 
+	// Eagerly check context cancellation before entering the select.  This
+	// prevents the race where both it.ch has a buffered frame AND ctx.Done()
+	// is already closed simultaneously — without this guard, Go's scheduler
+	// would non-deterministically choose between the two cases, causing
+	// callers to receive a stale frame even after cancellation (CS-008).
+	if err := it.ctx.Err(); err != nil {
+		it.mu.Lock()
+		it.err = err
+		it.done = true
+		it.mu.Unlock()
+		it.client.mu.Lock()
+		delete(it.client.pendingRPCs, it.correlationID)
+		it.client.mu.Unlock()
+		return false
+	}
+
 	select {
 	case frame, ok := <-it.ch:
 		if !ok {

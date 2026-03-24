@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"io"
 	"net/url"
 	"testing"
 	"time"
@@ -133,9 +132,10 @@ func TestShouldRejectTextFrameGivenTextMessageWhenReadCalled(t *testing.T) {
 	// Act
 	_, err := transport.Read(context.Background())
 
-	// Assert
+	// Assert — text frames must be immediately rejected with a descriptive error,
+	// not silently skipped (REQ-PROTO-003: binary-only transport).
 	assert.Error(t, err)
-	assert.True(t, errors.Is(err, io.EOF))
+	assert.Contains(t, err.Error(), "text frame")
 }
 
 // TestShouldParseWSURLGivenURLStringWhenURLParsed tests URL parsing assumptions used by dialing.

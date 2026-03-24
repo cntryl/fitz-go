@@ -10,13 +10,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/protocol"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
+	traceNoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 // State represents the connection lifecycle state.
@@ -81,14 +83,21 @@ type Connection struct {
 	// Configuration
 	cfg Config
 
-	// Observability (optional)
-	logger                   *slog.Logger
-	tracer                   trace.Tracer
-	meter                    metric.Meter
 	asyncSlotWaitMs          metric.Int64Histogram
 	asyncSlotAcquireFailures metric.Int64Counter
 	asyncHandlersActive      metric.Int64UpDownCounter
 	asyncSlotOccupancyMs     metric.Int64Histogram
+
+	// Observability (optional)
+	logger *slog.Logger
+	tracer trace.Tracer
+	meter  metric.Meter
+	// Request observability instruments (REQ-OBS-006)
+	requestDuration metric.Int64Histogram
+	requestErrors   metric.Int64Counter
+
+	// Subscription tracking for fitz.subscriptions.active gauge
+	activeSubscriptions atomic.Int64
 }
 
 // Config contains connection configuration.
@@ -148,11 +157,11 @@ func New(trans transport.Transport, cfg Config) *Connection {
 
 	tracer := cfg.Tracer
 	if tracer == nil {
-		tracer = otel.Tracer("github.com/cntryl/fitz-go")
+		tracer = traceNoop.NewTracerProvider().Tracer("")
 	}
 	meter := cfg.Meter
 	if meter == nil {
-		meter = otel.Meter("github.com/cntryl/fitz-go")
+		meter = noop.NewMeterProvider().Meter("")
 	}
 
 	conn := &Connection{
@@ -219,6 +228,41 @@ func (c *Connection) initAsyncHandlerMetrics() {
 		metric.WithUnit("ms"),
 	); err == nil {
 		c.asyncSlotOccupancyMs = occupancy
+	}
+
+	if hist, err := c.meter.Int64Histogram(
+		"fitz.request.duration",
+		metric.WithDescription("Duration of synchronous request-response round-trips"),
+		metric.WithUnit("ms"),
+	); err == nil {
+		c.requestDuration = hist
+	}
+	if ctr, err := c.meter.Int64Counter(
+		"fitz.request.errors",
+		metric.WithDescription("Count of synchronous request errors"),
+		metric.WithUnit("{error}"),
+	); err == nil {
+		c.requestErrors = ctr
+	}
+
+	if stateGauge, err := c.meter.Int64ObservableGauge(
+		"fitz.connection.state",
+		metric.WithDescription("Current connection lifecycle state (0=disconnected,1=connecting,2=connected,3=authenticating,4=authenticated,5=closed)"),
+	); err == nil {
+		_, _ = c.meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+			o.ObserveInt64(stateGauge, int64(c.state.Load()))
+			return nil
+		}, stateGauge)
+	}
+	if subGauge, err := c.meter.Int64ObservableGauge(
+		"fitz.subscriptions.active",
+		metric.WithDescription("Number of active server-side subscriptions across all domains"),
+		metric.WithUnit("{subscription}"),
+	); err == nil {
+		_, _ = c.meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+			o.ObserveInt64(subGauge, c.activeSubscriptions.Load())
+			return nil
+		}, subGauge)
 	}
 }
 
@@ -446,17 +490,33 @@ func (c *Connection) handleReadError(err error) {
 
 // SendRequest sends a synchronous request and waits for response.
 // Used by domain client implementations.
-func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []byte) ([]byte, error) {
+func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []byte) (_ []byte, retErr error) {
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
 	defer span.End()
 
-	// Check connection state
+	reqStart := time.Now()
+	defer func() {
+		attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
+		if c.requestDuration != nil {
+			c.requestDuration.Record(context.Background(), time.Since(reqStart).Milliseconds(), attrs)
+		}
+		if retErr != nil && c.requestErrors != nil {
+			errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
+			var de *coreerrors.DomainError
+			if errors.As(retErr, &de) {
+				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", int64(de.Code)))
+			} else {
+				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
+			}
+			c.requestErrors.Add(context.Background(), 1, metric.WithAttributes(errorAttrs...))
+		}
+	}()
+
 	if !c.isAuthenticated() {
 		span.SetStatus(codes.Error, ErrNotAuthenticated.Error())
 		return nil, ErrNotAuthenticated
 	}
 
-	// Encode frame
 	frame := protocol.EncodeFrameOwned(msgType, payload)
 	if frame == nil {
 		err := fmt.Errorf("encode frame")
@@ -466,14 +526,11 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 	}
 	defer frame.Release()
 
-	// Create response channel
 	responseChan := make(chan []byte, 1)
-
 	if c.logger != nil {
 		c.logger.Debug("request sent", "msg_type", msgType)
 	}
 
-	// Send request
 	writeCtx := ctx
 	if c.cfg.WriteTimeout > 0 {
 		var cancel context.CancelFunc
@@ -481,9 +538,6 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		defer cancel()
 	}
 
-	// Registering the pending request and writing the frame must happen under
-	// the same lock; otherwise concurrent callers can enqueue in one order but
-	// hit the wire in another, which breaks FIFO response correlation.
 	c.writeMu.Lock()
 	c.mux.RegisterRequest(msgType, responseChan, nil)
 	defer c.mux.UnregisterRequest(msgType, responseChan)
@@ -496,11 +550,9 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		return nil, wrapped
 	}
 
-	// Wait for response
 	select {
 	case resp, ok := <-responseChan:
 		if !ok {
-			// Channel closed (connection error or slow consumer timeout)
 			if err := c.getConnError(); err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
@@ -510,15 +562,11 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 			return nil, ErrConnectionClosed
 		}
 		return resp, nil
-
 	case <-ctx.Done():
-		// Caller cancelled (UnregisterRequest called via defer)
 		span.RecordError(ctx.Err())
 		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()
-
 	case <-c.done:
-		// Connection closed
 		if err := c.getConnError(); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -530,17 +578,33 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 }
 
 // SendRequestWithWriter sends a request using a payload writer to avoid allocations.
-func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, writePayload func(*bytes.Buffer)) ([]byte, error) {
+func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, writePayload func(*bytes.Buffer)) (_ []byte, retErr error) {
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
 	defer span.End()
 
-	// Check connection state
+	reqStart := time.Now()
+	defer func() {
+		attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
+		if c.requestDuration != nil {
+			c.requestDuration.Record(context.Background(), time.Since(reqStart).Milliseconds(), attrs)
+		}
+		if retErr != nil && c.requestErrors != nil {
+			errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
+			var de *coreerrors.DomainError
+			if errors.As(retErr, &de) {
+				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", int64(de.Code)))
+			} else {
+				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
+			}
+			c.requestErrors.Add(context.Background(), 1, metric.WithAttributes(errorAttrs...))
+		}
+	}()
+
 	if !c.isAuthenticated() {
 		span.SetStatus(codes.Error, ErrNotAuthenticated.Error())
 		return nil, ErrNotAuthenticated
 	}
 
-	// Encode frame
 	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
 		wrapped := fmt.Errorf("encode frame: %w", err)
@@ -550,14 +614,11 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 	}
 	defer frame.Release()
 
-	// Create response channel
 	responseChan := make(chan []byte, 1)
-
 	if c.logger != nil {
 		c.logger.Debug("request sent", "msg_type", msgType)
 	}
 
-	// Send request
 	writeCtx := ctx
 	if c.cfg.WriteTimeout > 0 {
 		var cancel context.CancelFunc
@@ -565,7 +626,6 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		defer cancel()
 	}
 
-	// Keep pending-queue registration aligned with actual wire order.
 	c.writeMu.Lock()
 	c.mux.RegisterRequest(msgType, responseChan, nil)
 	defer c.mux.UnregisterRequest(msgType, responseChan)
@@ -578,11 +638,9 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		return nil, wrapped
 	}
 
-	// Wait for response
 	select {
 	case resp, ok := <-responseChan:
 		if !ok {
-			// Channel closed (connection error or slow consumer timeout)
 			if err := c.getConnError(); err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
@@ -592,15 +650,11 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 			return nil, ErrConnectionClosed
 		}
 		return resp, nil
-
 	case <-ctx.Done():
-		// Caller cancelled (UnregisterRequest called via defer)
 		span.RecordError(ctx.Err())
 		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()
-
 	case <-c.done:
-		// Connection closed
 		if err := c.getConnError(); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -861,4 +915,11 @@ func (c *Connection) AcquireAsyncHandlerSlot(ctx context.Context) (release func(
 // Err returns the terminal connection error, if any.
 func (c *Connection) Err() error {
 	return c.getConnError()
+}
+
+// AddSubscriptions adjusts the active subscription count by delta.
+// Call with delta=+1 when a server-side subscription is established,
+// and delta=-1 when it is removed. Used to populate the fitz.subscriptions.active metric.
+func (c *Connection) AddSubscriptions(delta int64) {
+	c.activeSubscriptions.Add(delta)
 }

@@ -7,8 +7,9 @@
 
 Use the canonical acceptance criteria for all Go SDK validation work:
 
-- [CLIENT_ACCEPTANCE_CRITERIA.md](../../fitz/docs/clients/CLIENT_ACCEPTANCE_CRITERIA.md)
-- [CLIENT_SPEC.md](../../fitz/docs/clients/CLIENT_SPEC.md)
-- [CLIENT_IMPLEMENTATION_GUIDE.md](../../fitz/docs/clients/CLIENT_IMPLEMENTATION_GUIDE.md)
+- [client-acceptance-criteria.md](../../fitz/docs/clients/client-acceptance-criteria.md)
+- [client-spec.md](../../fitz/docs/clients/client-spec.md)
+- [client-implementation-guide.md](../../fitz/docs/clients/client-implementation-guide.md)
+- [client-requirements.md](../../fitz/docs/clients/client-requirements.md) — grading rubric (world-class definition)
 
 This repository intentionally avoids keeping a second acceptance-criteria copy.

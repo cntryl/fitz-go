@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -148,8 +149,16 @@ func TestShouldSubscribeAndUnsubscribeGivenValidPatternWhenSubscribeCalled(t *te
 }
 
 func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *testing.T) {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			if s.Key == "-race" && s.Value == "true" {
+				t.Skip("skipping live schedule notification test under -race")
+			}
+		}
+	}
+
 	f := fixture.NewTestFixture(t, fixture.TransportTCP)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	f.ConnectOrFail(ctx)

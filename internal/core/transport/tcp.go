@@ -30,7 +30,7 @@ func DialTCP(ctx context.Context, addr string) (Transport, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("dial tcp: %w", err)
+		return nil, newTransportError("dial", err)
 	}
 
 	return &TCPTransport{

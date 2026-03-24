@@ -393,6 +393,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if !c.subscriptions.Unsubscribe(sub.pattern, sub.handlerID) {
 		return
 	}
+	c.conn.AddSubscriptions(-1)
 
 	// Best-effort unsubscribe; ignore errors to match notice semantics.
 	ctx := c.conn.LifecycleContext()
@@ -446,6 +447,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 	if err != nil {
 		return 0, fmt.Errorf("parse subscription_id: %w", err)
 	}
+	c.conn.AddSubscriptions(1)
 	return subID, nil
 }
 

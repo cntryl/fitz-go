@@ -27,7 +27,7 @@ func TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled(t *tes
 			return w.Send(req.Body)
 		})
 		require.NoError(t, err)
-		defer sub.Unsubscribe()
+		defer sub.Deregister()
 
 		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("ping"))
 		require.NoError(t, err)
@@ -58,7 +58,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 			return nil
 		})
 		require.NoError(t, err)
-		defer sub.Unsubscribe()
+		defer sub.Deregister()
 
 		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("stream-me"))
 		require.NoError(t, err)
@@ -113,11 +113,11 @@ func TestShouldLoadBalanceGivenMultipleWorkersWhenConcurrentRequests(t *testing.
 
 		sub1, err := fW1.Client().RPC().RegisterWorker(ctx, route, echoHandler("w1"))
 		require.NoError(t, err)
-		defer sub1.Unsubscribe()
+		defer sub1.Deregister()
 
 		sub2, err := fW2.Client().RPC().RegisterWorker(ctx, route, echoHandler("w2"))
 		require.NoError(t, err)
-		defer sub2.Unsubscribe()
+		defer sub2.Deregister()
 
 		for i := 0; i < 4; i++ {
 			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("req"))
@@ -149,7 +149,7 @@ func TestShouldCorrelateResponseGivenCorrectCorrelationIDWhenMultipleRequests(t 
 			return w.Send(req.Body)
 		})
 		require.NoError(t, err)
-		defer sub.Unsubscribe()
+		defer sub.Deregister()
 
 		for _, payload := range []string{"req-A", "req-B"} {
 			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte(payload))
@@ -161,7 +161,7 @@ func TestShouldCorrelateResponseGivenCorrectCorrelationIDWhenMultipleRequests(t 
 	})
 }
 
-func TestShouldUnregisterWorkerGivenActiveSubscriptionWhenUnsubscribeCalled(t *testing.T) {
+func TestShouldUnregisterWorkerGivenActiveSubscriptionWhenDeregisterCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		fWorker := fixture.NewTestFixture(t, transport)
 		fCaller := fixture.NewTestFixture(t, transport)
@@ -182,7 +182,7 @@ func TestShouldUnregisterWorkerGivenActiveSubscriptionWhenUnsubscribeCalled(t *t
 		require.True(t, iter.Next())
 		require.NoError(t, iter.Close())
 
-		sub.Unsubscribe()
+		sub.Deregister()
 		deadCtx, deadCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer deadCancel()
 		_, err = fCaller.Client().RPC().Call(deadCtx, route, []byte("dead"))

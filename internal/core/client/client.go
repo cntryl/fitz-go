@@ -12,6 +12,7 @@ import (
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
+	"github.com/cntryl/fitz-go/internal/core/retry"
 	"github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/domains/kv"
@@ -21,11 +22,12 @@ import (
 	"github.com/cntryl/fitz-go/internal/domains/rpc"
 	"github.com/cntryl/fitz-go/internal/domains/schedule"
 	"github.com/cntryl/fitz-go/internal/domains/stream"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
+	traceNoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 // TransportType specifies the transport protocol.
@@ -83,17 +85,18 @@ type Config struct {
 	AsyncHandlerMaxConcurrency int
 
 	// Reconnection
-	ReconnectEnabled bool
-	ReconnectBackoff time.Duration
-	MaxReconnects    int
+	ReconnectEnabled  bool
+	ReconnectBackoff  time.Duration // initial interval; grows exponentially up to ReconnectMaxDelay
+	ReconnectMaxDelay time.Duration // ceiling for exponential backoff; default 30s
+	MaxReconnects     int
 
 	// Transport
 	TransportType TransportType // Auto, WebSocket, or TCP
 
 	// Observability (optional)
 	Logger *slog.Logger // When nil, no logging.
-	Tracer trace.Tracer // When nil, otel.Tracer(module) is used for spans.
-	Meter  metric.Meter // When nil, otel.Meter(module) is used for metrics.
+	Tracer trace.Tracer // When nil, a noop tracer is used (zero-cost spans).
+	Meter  metric.Meter // When nil, a noop meter is used (zero-cost instruments).
 }
 
 // defaultConfig returns default client configuration.
@@ -152,6 +155,13 @@ func WithReconnect(enabled bool, backoff time.Duration, maxAttempts int) Option 
 	}
 }
 
+// WithReconnectMaxDelay sets the ceiling for exponential reconnect backoff.
+// After each failed attempt the delay doubles (with jitter) until it reaches
+// this maximum. Defaults to 30s when not set.
+func WithReconnectMaxDelay(d time.Duration) Option {
+	return func(c *Config) { c.ReconnectMaxDelay = d }
+}
+
 // WithTransport sets the transport type.
 func WithTransport(transportType TransportType) Option {
 	return func(c *Config) { c.TransportType = transportType }
@@ -164,13 +174,13 @@ func WithLogger(logger *slog.Logger) Option {
 }
 
 // WithTracer sets the OpenTelemetry tracer for spans.
-// When nil or not set, otel.Tracer(module) is used (no-op if no TracerProvider is set).
+// When nil or not set, a noop tracer is used (zero-cost, no global side effects).
 func WithTracer(tracer trace.Tracer) Option {
 	return func(c *Config) { c.Tracer = tracer }
 }
 
 // WithMeter sets the OpenTelemetry meter for metrics.
-// When nil or not set, otel.Meter(module) is used (no-op if no MeterProvider is set).
+// When nil or not set, a noop meter is used (zero-cost, no global side effects).
 func WithMeter(meter metric.Meter) Option {
 	return func(c *Config) { c.Meter = meter }
 }
@@ -210,7 +220,7 @@ func (c *Client) initMetrics() {
 	}
 	meter := c.config.Meter
 	if meter == nil {
-		meter = otel.Meter("github.com/cntryl/fitz-go")
+		meter = noop.NewMeterProvider().Meter("")
 	}
 	c.meter = meter
 	if counter, err := meter.Int64Counter(
@@ -253,7 +263,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 	tracer := c.config.Tracer
 	if tracer == nil {
-		tracer = otel.Tracer("github.com/cntryl/fitz-go")
+		tracer = traceNoop.NewTracerProvider().Tracer("")
 	}
 	transportType := c.config.TransportType
 	if transportType == TransportAuto {
@@ -557,9 +567,19 @@ func (c *Client) beginReconnect(cause error) {
 	if transportType == TransportAuto {
 		transportType = detectTransport(c.addr)
 	}
-	backoff := c.config.ReconnectBackoff
-	if backoff <= 0 {
-		backoff = 250 * time.Millisecond
+	initialBackoff := c.config.ReconnectBackoff
+	if initialBackoff <= 0 {
+		initialBackoff = 250 * time.Millisecond
+	}
+	maxDelay := c.config.ReconnectMaxDelay
+	if maxDelay <= 0 {
+		maxDelay = 30 * time.Second
+	}
+	boCfg := retry.BackoffConfig{
+		InitialDelay: initialBackoff,
+		MaxDelay:     maxDelay,
+		Multiplier:   2.0,
+		JitterFactor: 0.1,
 	}
 	maxAttempts := c.config.MaxReconnects
 	if maxAttempts <= 0 {
@@ -568,7 +588,7 @@ func (c *Client) beginReconnect(cause error) {
 
 	tracer := c.config.Tracer
 	if tracer == nil {
-		tracer = otel.Tracer("github.com/cntryl/fitz-go")
+		tracer = traceNoop.NewTracerProvider().Tracer("")
 	}
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -624,7 +644,7 @@ func (c *Client) beginReconnect(cause error) {
 		}
 		attemptSpan.End()
 
-		timer := time.NewTimer(backoff)
+		timer := time.NewTimer(retry.CalculateDelay(boCfg, attempt-1))
 		select {
 		case <-c.lifecycleCtx.Done():
 			timer.Stop()

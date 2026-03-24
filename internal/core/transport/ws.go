@@ -53,7 +53,7 @@ type WebSocketTransport struct {
 func DialWebSocket(ctx context.Context, urlStr string) (Transport, error) {
 	u, err := url.Parse(urlStr)
 	if err != nil {
-		return nil, fmt.Errorf("parse url: %w", err)
+		return nil, newTransportError("dial", fmt.Errorf("parse url: %w", err))
 	}
 
 	// Determine host and port
@@ -70,13 +70,13 @@ func DialWebSocket(ctx context.Context, urlStr string) (Transport, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", host)
 	if err != nil {
-		return nil, fmt.Errorf("dial tcp: %w", err)
+		return nil, newTransportError("dial", err)
 	}
 
 	// Perform WebSocket handshake
 	if err := performHandshake(conn, u); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("websocket handshake: %w", err)
+		return nil, newTransportError("handshake", err)
 	}
 
 	return &WebSocketTransport{
@@ -282,8 +282,8 @@ func (w *WebSocketTransport) Read(ctx context.Context) ([]byte, error) {
 			return payload, nil
 
 		case opcodeText:
-			// Skip text frames (CLIENT_SPEC.md: binary only)
-			continue
+			// Reject text frames — the protocol requires binary-only transport (CLIENT_SPEC.md §2).
+			return nil, fmt.Errorf("fitz: received WebSocket text frame: protocol requires binary-only transport")
 
 		case opcodePing:
 			// Respond with pong
