@@ -4,6 +4,7 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -35,7 +36,15 @@ type Metadata struct {
 
 // CommitNotification is a notification of stream data availability.
 type CommitNotification struct {
-	Route string
+	Route               string
+	Event               string
+	FirstResourceOffset uint64
+	LastResourceOffset  uint64
+	FirstAreaOffset     uint64
+	LastAreaOffset      uint64
+	FirstRealmOffset    uint64
+	LastRealmOffset     uint64
+	BatchSize           uint64
 }
 
 // CommitHandler handles stream commit notifications.
@@ -65,7 +74,7 @@ type StreamSession interface {
 	// Append adds a record to the stream. Returns the assigned offset when available.
 	Append(ctx context.Context, body []byte) (offset uint64, err error)
 	// Commit finalizes the write session and makes appends durable.
-	Commit(ctx context.Context) error
+	Commit(ctx context.Context, mode CommitMode) error
 	// Rollback discards uncommitted appends.
 	Rollback(ctx context.Context) error
 }
@@ -229,13 +238,13 @@ func (s *session) Append(ctx context.Context, body []byte) (uint64, error) {
 
 // Commit per server stream_codec.rs:
 // Request: [u64 session_id][u8 mode] where mode: 0=Buffered, 1=Sync
-func (s *session) Commit(ctx context.Context) error {
+func (s *session) Commit(ctx context.Context, mode CommitMode) error {
 	ctx, span := s.conn.Tracer().Start(ctx, "fitz.stream.Commit", trace.WithAttributes(
 		attribute.String("fitz.route", s.route),
 		attribute.Int64("fitz.session_id", int64(s.sessionID)),
 	))
 	defer span.End()
-	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamCommit, streamCommitPayloadWriter(s.sessionID, 0))
+	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamCommit, streamCommitPayloadWriter(s.sessionID, mode))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -551,6 +560,28 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 
 	notif := CommitNotification{
 		Route: route,
+	}
+	if len(payload) > 0 {
+		var decoded struct {
+			Event               string `json:"event"`
+			FirstResourceOffset uint64 `json:"first_resource_offset"`
+			LastResourceOffset  uint64 `json:"last_resource_offset"`
+			FirstAreaOffset     uint64 `json:"first_area_offset"`
+			LastAreaOffset      uint64 `json:"last_area_offset"`
+			FirstRealmOffset    uint64 `json:"first_realm_offset"`
+			LastRealmOffset     uint64 `json:"last_realm_offset"`
+			BatchSize           uint64 `json:"batch_size"`
+		}
+		if err := json.Unmarshal(payload, &decoded); err == nil {
+			notif.Event = decoded.Event
+			notif.FirstResourceOffset = decoded.FirstResourceOffset
+			notif.LastResourceOffset = decoded.LastResourceOffset
+			notif.FirstAreaOffset = decoded.FirstAreaOffset
+			notif.LastAreaOffset = decoded.LastAreaOffset
+			notif.FirstRealmOffset = decoded.FirstRealmOffset
+			notif.LastRealmOffset = decoded.LastRealmOffset
+			notif.BatchSize = decoded.BatchSize
+		}
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 

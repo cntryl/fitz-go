@@ -73,7 +73,7 @@ func TestShouldConnectGivenJWTWithoutSchedulePermissionWhenConnectCalled(t *test
 		require.NoError(t, client.Connect(ctx))
 
 		route := fmt.Sprintf("kv://test-%d/area/resource", time.Now().UnixNano())
-		tx, err := client.KV().Begin(ctx, route)
+		tx, err := client.KV().Begin(ctx, route, fitz.KVDurabilitySync)
 		require.NoError(t, err)
 		require.NoError(t, tx.Rollback(ctx))
 
@@ -300,7 +300,7 @@ func TestShouldReturnErrorGivenOperationAfterCloseWhenDomainMethodCalled(t *test
 		route := f.UniqueRoute("kv")
 		require.NoError(t, f.Client().Close())
 
-		_, err := f.Client().KV().Begin(ctx, route)
+		_, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 		require.Error(t, err)
 	})
 }

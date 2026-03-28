@@ -111,7 +111,7 @@ func TestShouldReturnServerScheduleIDGivenPresentWhenCreateCalled(t *testing.T) 
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleCreate, payload)
 
 	// Act
-	id, err := client.Create(context.Background(), "schedule://realm/area/resource", "0 0 * * *", []byte("payload"))
+	id, err := client.Create(context.Background(), "schedule://realm/area/resource/run", "0 0 * * *", []byte("payload"))
 
 	// Assert
 	require.NoError(t, err)
@@ -122,7 +122,7 @@ func TestShouldReturnRouteGivenNoServerScheduleIDWhenCreateCalled(t *testing.T) 
 	// Arrange
 	client, transport := newStartedScheduleClient(t)
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleCreate, []byte{0})
-	route := "schedule://realm/area/resource"
+	route := "schedule://realm/area/resource/run"
 
 	// Act
 	id, err := client.Create(context.Background(), route, "0 0 * * *", []byte("payload"))
@@ -138,11 +138,11 @@ func TestShouldParseEntriesGivenValidListResponseWhenListCalled(t *testing.T) {
 	buf := connection.GetBuffer()
 	connection.WriteU64BE(buf, 2)
 	connection.WriteU8(buf, 1)
-	connection.WriteString(buf, "schedule://realm/area/one")
+	connection.WriteString(buf, "schedule://realm/area/one/run")
 	connection.WriteString(buf, "0 0 * * *")
 	connection.WriteBytes(buf, []byte("first"))
 	connection.WriteU8(buf, 1)
-	connection.WriteString(buf, "schedule://realm/area/two")
+	connection.WriteString(buf, "schedule://realm/area/two/run")
 	connection.WriteString(buf, "*/5 * * * *")
 	connection.WriteBytes(buf, []byte("second"))
 	connection.WriteU8(buf, 0)
@@ -157,7 +157,7 @@ func TestShouldParseEntriesGivenValidListResponseWhenListCalled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), totalCount)
 	require.Len(t, entries, 2)
-	assert.Equal(t, "schedule://realm/area/one", entries[0].Route)
+	assert.Equal(t, "schedule://realm/area/one/run", entries[0].Route)
 	assert.Equal(t, []byte("second"), entries[1].Payload)
 }
 
@@ -186,7 +186,7 @@ func TestShouldUseServerSubscriptionIDGivenPresentWhenSubscribeCalled(t *testing
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleSubscribe, payload)
 
 	// Act
-	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) error {
+	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/resource/run", func(context.Context, Notification) error {
 		return nil
 	})
 
@@ -201,7 +201,7 @@ func TestShouldReturnErrorGivenMissingServerSubscriptionIDWhenSubscribeCalled(t 
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleSubscribe, nil)
 
 	// Act
-	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) error {
+	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/resource/run", func(context.Context, Notification) error {
 		return nil
 	})
 
@@ -210,11 +210,23 @@ func TestShouldReturnErrorGivenMissingServerSubscriptionIDWhenSubscribeCalled(t 
 	assert.Nil(t, sub)
 }
 
+func TestShouldRejectWildcardPatternGivenSubscribeCalled(t *testing.T) {
+	client, _ := newStartedScheduleClient(t)
+
+	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) error {
+		return nil
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, sub)
+	assert.Contains(t, err.Error(), "invalid pattern")
+}
+
 func TestShouldDispatchNotificationGivenMatchingSubscriptionWhenHandleScheduleNotifyCalled(t *testing.T) {
 	// Arrange
 	client, _ := newStartedScheduleClient(t)
 	received := make(chan Notification, 1)
-	_, _, err := client.subscriptions.Subscribe("schedule://realm/area/*", func(_ context.Context, n Notification) error {
+	_, _, err := client.subscriptions.Subscribe("schedule://realm/area/resource/run", func(_ context.Context, n Notification) error {
 		received <- n
 		return nil
 	}, func(string) (uint64, error) {
@@ -246,13 +258,13 @@ func TestShouldFanOutHandlersGivenDuplicatePatternWhenSubscribeCalled(t *testing
 	first := make(chan Notification, 1)
 	second := make(chan Notification, 1)
 
-	sub1, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(_ context.Context, n Notification) error {
+	sub1, err := client.Subscribe(context.Background(), "schedule://realm/area/resource/run", func(_ context.Context, n Notification) error {
 		first <- n
 		return nil
 	})
 	require.NoError(t, err)
 
-	sub2, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(_ context.Context, n Notification) error {
+	sub2, err := client.Subscribe(context.Background(), "schedule://realm/area/resource/run", func(_ context.Context, n Notification) error {
 		second <- n
 		return nil
 	})
@@ -279,7 +291,7 @@ func TestShouldFanOutHandlersGivenDuplicatePatternWhenSubscribeCalled(t *testing
 func TestShouldContinueFanOutGivenHandlerErrorWhenHandleScheduleNotifyCalled(t *testing.T) {
 	client, _ := newStartedScheduleClient(t)
 
-	_, _, err := client.subscriptions.Subscribe("schedule://realm/area/*", func(_ context.Context, _ Notification) error {
+	_, _, err := client.subscriptions.Subscribe("schedule://realm/area/resource/run", func(_ context.Context, _ Notification) error {
 		return assert.AnError
 	}, func(string) (uint64, error) {
 		return 77, nil
@@ -287,7 +299,7 @@ func TestShouldContinueFanOutGivenHandlerErrorWhenHandleScheduleNotifyCalled(t *
 	require.NoError(t, err)
 
 	received := make(chan Notification, 1)
-	_, _, err = client.subscriptions.Subscribe("schedule://realm/area/*", func(_ context.Context, n Notification) error {
+	_, _, err = client.subscriptions.Subscribe("schedule://realm/area/resource/run", func(_ context.Context, n Notification) error {
 		received <- n
 		return nil
 	}, func(string) (uint64, error) {
@@ -305,14 +317,42 @@ func TestShouldContinueFanOutGivenHandlerErrorWhenHandleScheduleNotifyCalled(t *
 	}
 }
 
-func TestShouldReturnErrorGivenInvalidRouteWhenCancelCalled(t *testing.T) {
+func TestShouldReturnErrorGivenEmptyRouteWhenCancelCalled(t *testing.T) {
 	// Arrange
 	client, _ := newStartedScheduleClient(t)
 
 	// Act
-	err := client.Cancel(context.Background(), "schedule://realm/area")
+	err := client.Cancel(context.Background(), "")
 
 	// Assert
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid route")
+}
+
+func TestShouldFilterEntriesGivenAreaWildcardSelectorWhenListBySelectorMatches(t *testing.T) {
+	entries := []ScheduleEntry{
+		{Route: "schedule://realm/area/one/run"},
+		{Route: "schedule://realm/area/two/send"},
+		{Route: "schedule://realm/other/three/run"},
+	}
+
+	filtered := filterScheduleEntries(entries, "schedule://realm/area/*")
+
+	require.Len(t, filtered, 2)
+	assert.Equal(t, "schedule://realm/area/one/run", filtered[0].Route)
+	assert.Equal(t, "schedule://realm/area/two/send", filtered[1].Route)
+}
+
+func TestShouldFilterEntriesGivenResourceWildcardSelectorWhenListBySelectorMatches(t *testing.T) {
+	entries := []ScheduleEntry{
+		{Route: "schedule://realm/area/resource/run"},
+		{Route: "schedule://realm/area/resource/send"},
+		{Route: "schedule://realm/area/other/run"},
+	}
+
+	filtered := filterScheduleEntries(entries, "schedule://realm/area/resource/*")
+
+	require.Len(t, filtered, 2)
+	assert.Equal(t, "schedule://realm/area/resource/run", filtered[0].Route)
+	assert.Equal(t, "schedule://realm/area/resource/send", filtered[1].Route)
 }

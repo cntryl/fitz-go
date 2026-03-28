@@ -20,8 +20,8 @@ import (
 // non-transactional use.
 type Client interface {
 	// Begin opens a transaction scoped to the provided route.
-	// Optional functional options can configure mode and durability.
-	Begin(ctx context.Context, route string, opts ...BeginOption) (Tx, error)
+	// Durability is explicit; optional functional options can configure mode.
+	Begin(ctx context.Context, route string, durability uint8, opts ...BeginOption) (Tx, error)
 }
 
 // BeginOption configures transaction BEGIN parameters.
@@ -29,23 +29,13 @@ type BeginOption func(*beginConfig)
 
 // beginConfig holds configuration for BEGIN operations.
 type beginConfig struct {
-	mode       uint8
-	durability uint8
+	mode uint8
 }
 
 // WithMode sets the transaction mode.
 func WithMode(mode uint8) BeginOption {
 	return func(cfg *beginConfig) {
 		cfg.mode = mode
-	}
-}
-
-// WithDurability sets the transaction durability mode.
-// Default is DurabilityBuffered (faster, best-effort persistence).
-// Use DurabilitySync for guaranteed durability (slower, fsync on commit).
-func WithDurability(mode uint8) BeginOption {
-	return func(cfg *beginConfig) {
-		cfg.durability = mode
 	}
 }
 
@@ -61,9 +51,9 @@ func NewClient(conn *connection.Connection) Client {
 	}
 }
 
-// Begin opens a read/write transaction scoped to the provided route.
+// Begin opens a transaction scoped to the provided route.
 // Per CLIENT_SPEC.md: Server assigns tx_id and returns it in response.
-func (c *client) Begin(ctx context.Context, route string, opts ...BeginOption) (Tx, error) {
+func (c *client) Begin(ctx context.Context, route string, durability uint8, opts ...BeginOption) (Tx, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.kv.Begin", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
@@ -79,8 +69,7 @@ func (c *client) Begin(ctx context.Context, route string, opts ...BeginOption) (
 
 	// Apply options
 	cfg := beginConfig{
-		mode:       TxModeReadWrite,
-		durability: DurabilityBuffered,
+		mode: TxModeReadWrite,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -88,7 +77,7 @@ func (c *client) Begin(ctx context.Context, route string, opts ...BeginOption) (
 
 	// Encode BEGIN request per CLIENT_SPEC.md
 	// Send request and wait for response
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, cfg.mode, cfg.durability))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, cfg.mode, durability))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

@@ -73,16 +73,39 @@ func TestShouldCleanupPendingResponseGivenStreamEndWhenHandleRPCResponseCalled(t
 	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
 	var correlationID [16]byte
 	correlationID[0] = 2
-	ch := make(chan ResponseFrame)
+	ch := make(chan ResponseFrame, 1)
 	c.pendingRPCs[correlationID] = ch
 
 	// Act
-	c.handleRPCResponse(correlationID, rpcResponsePayload(4, []byte("ignored"), true))
+	c.handleRPCResponse(correlationID, rpcResponsePayload(4, nil, true))
 
 	// Assert
 	_, stillPending := c.pendingRPCs[correlationID]
 	assert.False(t, stillPending)
 	_, ok := <-ch
+	assert.False(t, ok)
+}
+
+func TestShouldDeliverTerminalResponseFrameGivenBodyWhenHandleRPCResponseCalled(t *testing.T) {
+	// Arrange
+	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
+	var correlationID [16]byte
+	correlationID[0] = 3
+	ch := make(chan ResponseFrame, 1)
+	c.pendingRPCs[correlationID] = ch
+
+	// Act
+	c.handleRPCResponse(correlationID, rpcResponsePayload(5, []byte("final"), true))
+
+	// Assert
+	frame, ok := <-ch
+	require.True(t, ok)
+	assert.Equal(t, uint64(5), frame.Sequence)
+	assert.Equal(t, []byte("final"), frame.Body)
+
+	_, stillPending := c.pendingRPCs[correlationID]
+	assert.False(t, stillPending)
+	_, ok = <-ch
 	assert.False(t, ok)
 }
 

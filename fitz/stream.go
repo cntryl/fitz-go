@@ -17,8 +17,23 @@ type StreamMetadata struct {
 	RecordCount uint64
 }
 
+type StreamCommitMode uint8
+
+const (
+	StreamCommitBuffered StreamCommitMode = StreamCommitMode(internalstream.CommitModeBuffered)
+	StreamCommitSync     StreamCommitMode = StreamCommitMode(internalstream.CommitModeSync)
+)
+
 type StreamCommitNotification struct {
-	Route string
+	Route               string
+	Event               string
+	FirstResourceOffset uint64
+	LastResourceOffset  uint64
+	FirstAreaOffset     uint64
+	LastAreaOffset      uint64
+	FirstRealmOffset    uint64
+	LastRealmOffset     uint64
+	BatchSize           uint64
 }
 
 type StreamCommitHandler func(context.Context, StreamCommitNotification) error
@@ -35,7 +50,7 @@ func (s *StreamSubscription) Unsubscribe() {
 
 type StreamSession interface {
 	Append(ctx context.Context, body []byte) (offset uint64, err error)
-	Commit(ctx context.Context) error
+	Commit(ctx context.Context, mode StreamCommitMode) error
 	Rollback(ctx context.Context) error
 }
 
@@ -101,7 +116,17 @@ func (c *streamClient) Metadata(ctx context.Context, route string) (*StreamMetad
 
 func (c *streamClient) Subscribe(ctx context.Context, pattern string, handler StreamCommitHandler) (*StreamSubscription, error) {
 	subscription, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notif internalstream.CommitNotification) error {
-		return handler(ctx, StreamCommitNotification{Route: notif.Route})
+		return handler(ctx, StreamCommitNotification{
+			Route:               notif.Route,
+			Event:               notif.Event,
+			FirstResourceOffset: notif.FirstResourceOffset,
+			LastResourceOffset:  notif.LastResourceOffset,
+			FirstAreaOffset:     notif.FirstAreaOffset,
+			LastAreaOffset:      notif.LastAreaOffset,
+			FirstRealmOffset:    notif.FirstRealmOffset,
+			LastRealmOffset:     notif.LastRealmOffset,
+			BatchSize:           notif.BatchSize,
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -113,8 +138,8 @@ func (s *streamSession) Append(ctx context.Context, body []byte) (offset uint64,
 	return s.inner.Append(ctx, body)
 }
 
-func (s *streamSession) Commit(ctx context.Context) error {
-	return s.inner.Commit(ctx)
+func (s *streamSession) Commit(ctx context.Context, mode StreamCommitMode) error {
+	return s.inner.Commit(ctx, internalstream.CommitMode(mode))
 }
 
 func (s *streamSession) Rollback(ctx context.Context) error {

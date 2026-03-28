@@ -25,7 +25,7 @@ func TestShouldAppendRecordsGivenValidSessionWhenAppendCalled(t *testing.T) {
 		require.NoError(t, err)
 		_, err = sess.Append(ctx, []byte("record-2"))
 		require.NoError(t, err)
-		require.NoError(t, sess.Commit(ctx))
+		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 	})
 }
 
@@ -43,7 +43,7 @@ func TestShouldReadRecordsInOrderGivenOffsetRangeWhenReadCalled(t *testing.T) {
 			_, err := sess.Append(ctx, []byte{byte(i)})
 			require.NoError(t, err)
 		}
-		require.NoError(t, sess.Commit(ctx))
+		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
 		iter, err := f.Client().Stream().Read(ctx, route, 0, 10)
 		require.NoError(t, err)
@@ -72,7 +72,7 @@ func TestShouldRejectBeginGivenMismatchedExpectedOffsetWhenOptimisticConcurrency
 		require.NoError(t, err)
 		_, err = sess.Append(ctx, []byte("first"))
 		require.NoError(t, err)
-		require.NoError(t, sess.Commit(ctx))
+		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
 		_, err = f.Client().Stream().Begin(ctx, route, 99999)
 		assert.Error(t, err)
@@ -119,7 +119,7 @@ func TestShouldReturnLastRecordGivenExistingStreamWhenLastCalled(t *testing.T) {
 		require.NoError(t, err)
 		_, err = sess.Append(ctx, []byte("last-one"))
 		require.NoError(t, err)
-		require.NoError(t, sess.Commit(ctx))
+		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
 		rec, err := f.Client().Stream().Peek(ctx, route)
 		require.NoError(t, err)
@@ -141,7 +141,7 @@ func TestShouldGetMetadataGivenExistingStreamWhenMetadataCalled(t *testing.T) {
 		require.NoError(t, err)
 		_, err = sess.Append(ctx, []byte("data"))
 		require.NoError(t, err)
-		require.NoError(t, sess.Commit(ctx))
+		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
 		meta, err := f.Client().Stream().Metadata(ctx, route)
 		require.NoError(t, err)
@@ -161,7 +161,7 @@ func TestShouldRejectReadGivenOffsetBeyondWatermarkWhenConsumeCalled(t *testing.
 		require.NoError(t, err)
 		_, err = sess.Append(ctx, []byte("only"))
 		require.NoError(t, err)
-		require.NoError(t, sess.Commit(ctx))
+		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
 		iter, err := f.Client().Stream().Read(ctx, route, 999999, 10)
 		if err != nil {
@@ -186,11 +186,11 @@ func TestShouldNotifyGivenSubscriptionWhenCommitAppends(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("stream")
-		notifications := make(chan struct{}, 1)
+		notifications := make(chan fitz.StreamCommitNotification, 1)
 
 		sub, err := f.Client().Stream().Subscribe(ctx, route, func(_ context.Context, n fitz.StreamCommitNotification) error {
-			t.Logf("stream commit notification received: route=%s", n.Route)
-			notifications <- struct{}{}
+			t.Logf("stream commit notification received: route=%s event=%s", n.Route, n.Event)
+			notifications <- n
 			return nil
 		})
 		require.NoError(t, err)
@@ -200,10 +200,15 @@ func TestShouldNotifyGivenSubscriptionWhenCommitAppends(t *testing.T) {
 		require.NoError(t, err)
 		_, err = sess.Append(ctx, []byte("notify"))
 		require.NoError(t, err)
-		require.NoError(t, sess.Commit(ctx))
+		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
 		select {
-		case <-notifications:
+		case notification := <-notifications:
+			assert.Equal(t, route, notification.Route)
+			assert.Equal(t, "committed", notification.Event)
+			assert.Equal(t, uint64(1), notification.BatchSize)
+			assert.Equal(t, uint64(0), notification.FirstResourceOffset)
+			assert.Equal(t, uint64(0), notification.LastResourceOffset)
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for stream commit notification")
 		}

@@ -22,6 +22,13 @@ const (
 	StreamNotify      uint16 = 609 // Server -> Client only
 )
 
+type CommitMode uint8
+
+const (
+	CommitModeBuffered CommitMode = 0
+	CommitModeSync     CommitMode = 1
+)
+
 // Domain-specific errors. Returned when the server rejects a stream operation.
 //   - ErrStreamNotFound: the stream route does not exist.
 //   - ErrStreamConflict: Begin failed due to expected-offset mismatch (OCC).
@@ -80,10 +87,10 @@ func EncodeStreamAppend(sessionID uint64, body []byte, metadata []byte) ([]byte,
 // EncodeStreamCommit encodes a STREAM COMMIT request per CLIENT_SPEC.md.
 // Wire format: [u64 session_id][u8 mode]
 // mode: 0=Buffered, 1=Sync
-func EncodeStreamCommit(sessionID uint64, mode uint8) ([]byte, error) {
+func EncodeStreamCommit(sessionID uint64, mode CommitMode) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
-		buf.WriteByte(mode)
+		buf.WriteByte(byte(mode))
 	}), nil
 }
 
@@ -173,10 +180,10 @@ func streamAppendPayloadWriter(sessionID uint64, body []byte, metadata []byte) f
 	}
 }
 
-func streamCommitPayloadWriter(sessionID uint64, mode uint8) func(*bytes.Buffer) {
+func streamCommitPayloadWriter(sessionID uint64, mode CommitMode) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
-		buf.WriteByte(mode)
+		buf.WriteByte(byte(mode))
 	}
 }
 

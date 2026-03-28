@@ -25,7 +25,7 @@ func TestShouldReturnExpectedDomainErrorsGivenRejectedOperations(t *testing.T) {
 
 		t.Run("kv read-only write rejected", func(t *testing.T) {
 			route := f1.UniqueRoute("kv")
-			tx, err := f1.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
+			tx, err := f1.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
 			require.NoError(t, err)
 			err = tx.Put(ctx, []byte("k"), []byte("v"))
 			assert.ErrorIs(t, err, fitz.ErrKVReadOnly)

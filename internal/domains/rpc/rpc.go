@@ -157,17 +157,17 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 			streamEnd = payload[offset] == 1
 		}
 
-		if streamEnd {
-			// End-of-stream: close channel and clean up; do not push a frame (caller sees N data frames then done).
-			c.mu.Lock()
-			delete(c.pendingRPCs, correlationID)
-			c.mu.Unlock()
-			close(ch)
-		} else {
+		if !streamEnd || len(body) > 0 {
 			select {
 			case ch <- ResponseFrame{Body: body, Sequence: seq}:
 			case <-c.conn.LifecycleContext().Done():
 			}
+		}
+		if streamEnd {
+			c.mu.Lock()
+			delete(c.pendingRPCs, correlationID)
+			c.mu.Unlock()
+			close(ch)
 		}
 		return
 	}
@@ -398,29 +398,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		correlationID: correlationID,
 		client:        c,
 	}
-
-	// Wait for first response or context cancellation
-	// This ensures Request() returns error if context is canceled before any responses arrive
-	select {
-	case frame, ok := <-ch:
-		if ok {
-			// Store first frame directly on iterator to avoid a forwarding goroutine.
-			iterator.firstFrame = frame
-			iterator.hasFirst = true
-		}
-		return iterator, nil
-	case <-ctx.Done():
-		// Context canceled before any response
-		c.mu.Lock()
-		delete(c.pendingRPCs, correlationID)
-		c.mu.Unlock()
-		iterator.mu.Lock()
-		iterator.done = true
-		iterator.err = ctx.Err()
-		iterator.mu.Unlock()
-		close(ch)
-		return nil, ctx.Err()
-	}
+	return iterator, nil
 }
 
 // responseWriter implements ResponseWriter for workers.
@@ -464,8 +442,6 @@ type rpcIterator struct {
 	ctx           context.Context
 	correlationID [16]byte
 	client        *client
-	firstFrame    ResponseFrame
-	hasFirst      bool
 	current       ResponseFrame
 	err           error
 	done          bool
@@ -474,12 +450,6 @@ type rpcIterator struct {
 
 func (it *rpcIterator) Next() bool {
 	it.mu.Lock()
-	if it.hasFirst {
-		it.current = it.firstFrame
-		it.hasFirst = false
-		it.mu.Unlock()
-		return true
-	}
 	if it.done {
 		it.mu.Unlock()
 		return false

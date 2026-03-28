@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
@@ -37,6 +38,25 @@ type AvailabilityNotification struct {
 
 // AvailabilityHandler is called when availability notification arrives.
 type AvailabilityHandler func(ctx context.Context, notif AvailabilityNotification) error
+
+type reserveConfig struct {
+	batchSize   uint32
+	waitSeconds uint64
+}
+
+type ReserveOption func(*reserveConfig)
+
+func WithBatchSize(batchSize uint32) ReserveOption {
+	return func(cfg *reserveConfig) {
+		cfg.batchSize = batchSize
+	}
+}
+
+func WithWaitSeconds(waitSeconds uint64) ReserveOption {
+	return func(cfg *reserveConfig) {
+		cfg.waitSeconds = waitSeconds
+	}
+}
 
 // Subscription represents an active queue availability subscription.
 // Call Unsubscribe to stop receiving and release the subscription.
@@ -124,6 +144,9 @@ type Client interface {
 	// Each returned QueueItem has Extend and Complete methods.
 	Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error)
 
+	// ReserveWithOptions reserves queue items with explicit batch size and long-poll settings.
+	ReserveWithOptions(ctx context.Context, route string, leaseSecs uint64, opts ...ReserveOption) ([]*QueueItem, error)
+
 	// Subscribe registers a handler for availability notifications (empty -> non-empty transition).
 	// Returns a Subscription that can be used to unsubscribe.
 	// Per CLIENT_SPEC.md, the pattern parameter is optional; if provided, it will be used to filter notifications.
@@ -207,14 +230,31 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 // Request: [route_len][route][lease_seconds][has_batch_size][batch_size?][has_wait_seconds][wait_seconds?]
 // Response: [status][lease_count(u32)][{message_id, lease_token, body_len, body}...]
 func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error) {
+	return c.ReserveWithOptions(ctx, route, leaseSecs, WithBatchSize(batchSize))
+}
+
+// ReserveWithOptions per CLIENT_SPEC.md:
+// Request: [route_len][route][lease_seconds][has_batch_size][batch_size?][has_wait_seconds][wait_seconds?]
+// Response: [status][lease_count(u32)][{message_id, lease_token, body_len, body}...]
+func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs uint64, opts ...ReserveOption) ([]*QueueItem, error) {
+	cfg := reserveConfig{
+		batchSize: 1,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.queue.Reserve", trace.WithAttributes(
 		attribute.String("fitz.route", route),
 		attribute.Int64("fitz.lease_secs", int64(leaseSecs)),
-		attribute.Int("fitz.batch_size", int(batchSize)),
+		attribute.Int("fitz.batch_size", int(cfg.batchSize)),
+		attribute.Int64("fitz.wait_seconds", int64(cfg.waitSeconds)),
 	))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("queue.Reserve", "route", route, "lease_secs", leaseSecs, "batch_size", batchSize)
+		log.Debug("queue.Reserve", "route", route, "lease_secs", leaseSecs, "batch_size", cfg.batchSize, "wait_seconds", cfg.waitSeconds)
 	}
 
 	// Validate route format
@@ -224,24 +264,79 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint64, ba
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueReserve, reservePayloadWriter(route, leaseSecs, batchSize, 0))
+	if cfg.waitSeconds == 0 {
+		return c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize, 0)
+	}
+
+	items, err := c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize, 0)
+	if err != nil || len(items) > 0 {
+		return items, err
+	}
+
+	availability := make(chan struct{}, 1)
+	sub, err := c.Subscribe(ctx, route, func(_ context.Context, _ AvailabilityNotification) error {
+		select {
+		case availability <- struct{}{}:
+		default:
+		}
+		return nil
+	})
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	defer sub.Unsubscribe()
+
+	deadline := time.Now().Add(time.Duration(cfg.waitSeconds) * time.Second)
+	for {
+		items, err = c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize, 0)
+		if err != nil || len(items) > 0 {
+			return items, err
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return items, nil
+		}
+
+		timer := time.NewTimer(remaining)
+		select {
+		case <-availability:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+			return c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize, 0)
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (c *client) reserveOnce(
+	ctx context.Context,
+	route string,
+	leaseSecs uint64,
+	batchSize uint32,
+	waitSeconds uint64,
+) ([]*QueueItem, error) {
+	resp, err := c.conn.SendRequestWithWriter(
+		ctx,
+		protocol.MessageTypeQueueReserve,
+		reservePayloadWriter(route, leaseSecs, batchSize, waitSeconds),
+	)
+	if err != nil {
 		return nil, fmt.Errorf("RESERVE request failed: %w", err)
 	}
 
 	success, remaining, err := parseQueueResponse(resp)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("RESERVE failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("RESERVE failed: unexpected status")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return nil, recordErr
+		return nil, fmt.Errorf("RESERVE failed: unexpected status")
 	}
 
 	if len(remaining) < 4 {
@@ -250,8 +345,6 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint64, ba
 
 	count, offset, err := connection.ReadU32BE(remaining, 0)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("parse lease_count: %w", err)
 	}
 
@@ -261,23 +354,17 @@ func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint64, ba
 
 		item.ID, offset, err = connection.ReadU64BE(remaining, offset)
 		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("parse message_id at item %d: %w", i, err)
 		}
 
 		item.Token, offset, err = connection.ReadU64BE(remaining, offset)
 		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("parse lease_token at item %d: %w", i, err)
 		}
 
 		var bodyData []byte
 		bodyData, offset, err = connection.ReadBytes(remaining, offset)
 		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("parse body at item %d: %w", i, err)
 		}
 		item.Body = make([]byte, len(bodyData))

@@ -70,7 +70,7 @@ type Client interface {
 	// ListBySelector retrieves schedules matching a canonical schedule selector.
 	ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error)
 
-	// Subscribe subscribes to schedule fire notifications for the given route pattern.
+	// Subscribe subscribes to schedule fire notifications for the given exact schedule route.
 	// When a schedule fires, the handler is invoked with the schedule's payload.
 	// Subscriptions are session-scoped and lost on disconnect.
 	Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*Subscription, error)
@@ -357,7 +357,7 @@ func (c *client) ListBySelector(ctx context.Context, selector string, offset, li
 	return window, totalCount, nil
 }
 
-// Subscribe per CLIENT_SPEC.md (703): Request [route_pattern]. Response: [status][optional u64 subscription_id].
+// Subscribe per CLIENT_SPEC.md (703): Request [route]. Response: [status][optional u64 subscription_id].
 func (c *client) Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*Subscription, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
@@ -365,7 +365,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 		log.Debug("schedule.Subscribe", "pattern", pattern)
 	}
 	c.initScheduleNotifyHandler()
-	if err := types.ValidateScheduleSelector(pattern); err != nil {
+	if err := types.ValidateScheduleRoute(pattern); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid pattern: %w", err)
@@ -388,7 +388,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 }
 
 // Unsubscribe per CLIENT_SPEC.md (704):
-// Request: [string route_pattern]
+// Request: [string route]
 func (c *client) unsubscribe(sub *Subscription) {
 	if !c.subscriptions.Unsubscribe(sub.pattern, sub.handlerID) {
 		return
@@ -471,30 +471,61 @@ func (c *client) listAll(ctx context.Context) ([]ScheduleEntry, error) {
 }
 
 func filterScheduleEntries(entries []ScheduleEntry, selector string) []ScheduleEntry {
-	if strings.HasSuffix(selector, "/*") {
-		prefix := strings.TrimSuffix(selector, "*")
-		return filterScheduleEntriesByPrefix(entries, prefix)
-	}
-
-	if len(strings.Split(strings.TrimPrefix(selector, "schedule://"), "/")) == 3 {
-		filtered := make([]ScheduleEntry, 0, len(entries))
-		for _, entry := range entries {
-			if entry.Route == selector {
-				filtered = append(filtered, entry)
-			}
-		}
-		return filtered
-	}
-
-	return filterScheduleEntriesByPrefix(entries, selector+"/")
-}
-
-func filterScheduleEntriesByPrefix(entries []ScheduleEntry, prefix string) []ScheduleEntry {
 	filtered := make([]ScheduleEntry, 0, len(entries))
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Route, prefix) {
+		if scheduleSelectorMatches(selector, entry.Route) {
 			filtered = append(filtered, entry)
 		}
 	}
 	return filtered
+}
+
+func scheduleSelectorMatches(selector string, route string) bool {
+	selectorSegments, ok := scheduleSegments(selector)
+	if !ok {
+		return false
+	}
+	routeSegments, ok := scheduleSegments(route)
+	if !ok || len(routeSegments) != 4 {
+		return false
+	}
+
+	switch len(selectorSegments) {
+	case 2:
+		return selectorSegments[1] == "**" && selectorSegments[0] == routeSegments[0]
+	case 3:
+		return selectorSegments[2] == "*" &&
+			selectorSegments[0] == routeSegments[0] &&
+			selectorSegments[1] == routeSegments[1]
+	case 4:
+		if selectorSegments[3] == "*" {
+			return selectorSegments[0] == routeSegments[0] &&
+				selectorSegments[1] == routeSegments[1] &&
+				selectorSegments[2] == routeSegments[2]
+		}
+		return selectorSegments[0] == routeSegments[0] &&
+			selectorSegments[1] == routeSegments[1] &&
+			selectorSegments[2] == routeSegments[2] &&
+			selectorSegments[3] == routeSegments[3]
+	default:
+		return false
+	}
+}
+
+func scheduleSegments(route string) ([]string, bool) {
+	if !strings.HasPrefix(route, "schedule://") {
+		return nil, false
+	}
+
+	path := strings.TrimPrefix(route, "schedule://")
+	segments := strings.Split(path, "/")
+	if len(segments) == 0 {
+		return nil, false
+	}
+	for _, segment := range segments {
+		if segment == "" {
+			return nil, false
+		}
+	}
+	return segments, true
 }

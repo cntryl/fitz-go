@@ -288,7 +288,7 @@ func TestShouldEncodeStreamCommitGivenSessionAndModeWhenPayloadWritten(t *testin
 	t.Run("buffered mode", func(t *testing.T) {
 		// Arrange
 		sessionID := uint64(999)
-		mode := uint8(0)
+		mode := CommitModeBuffered
 
 		// Act
 		payload, err := EncodeStreamCommit(sessionID, mode)
@@ -505,7 +505,7 @@ func BenchmarkEncodeStreamAppend(b *testing.B) {
 
 func BenchmarkEncodeStreamCommit(b *testing.B) {
 	sessionID := uint64(10)
-	mode := uint8(0)
+	mode := CommitModeBuffered
 
 	b.ReportAllocs()
 	b.ResetTimer()
