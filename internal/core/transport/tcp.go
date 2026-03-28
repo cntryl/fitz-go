@@ -33,6 +33,11 @@ func DialTCP(ctx context.Context, addr string) (Transport, error) {
 		return nil, newTransportError("dial", err)
 	}
 
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	return &TCPTransport{
 		conn:   conn,
 		addr:   addr,

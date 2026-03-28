@@ -203,6 +203,24 @@ func TestShouldCloseGracefullyGivenRegisteredRequestWhenCloseCalledTwice(t *test
 	// Assert
 }
 
+// TestShouldCancelPendingRequestsGivenCancelFuncsWhenCloseCalled tests that pending cancel callbacks run on shutdown.
+func TestShouldCancelPendingRequestsGivenCancelFuncsWhenCloseCalled(t *testing.T) {
+	// Arrange
+	mux := connection.NewMultiplexer()
+	var cancelCount int
+	ch := make(chan []byte, 1)
+	mux.RegisterRequest(100, ch, func() { cancelCount++ })
+
+	// Act
+	err := mux.Close()
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, 1, cancelCount)
+	metrics := mux.Metrics()
+	assert.Equal(t, int64(0), metrics.RequestsInFlight)
+}
+
 // TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead tests metric updates across dispatch.
 func TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead(t *testing.T) {
 	// Arrange

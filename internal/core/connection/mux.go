@@ -99,6 +99,9 @@ func (m *Multiplexer) UnregisterRequest(msgType uint16, responseChan chan []byte
 		if req.responseChan == responseChan {
 			queue.Remove(e)
 			m.requestsInFlight.Add(-1)
+			if queue.Len() == 0 {
+				delete(m.pending, msgType)
+			}
 			return
 		}
 	}
@@ -163,6 +166,9 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	// Pop oldest pending request (FIFO order)
 	elem := queue.Front()
 	req := queue.Remove(elem).(*pendingRequest)
+	if queue.Len() == 0 {
+		delete(m.pending, msgType)
+	}
 	m.mu.Unlock()
 
 	m.requestsInFlight.Add(-1)
@@ -314,6 +320,10 @@ func (m *Multiplexer) Close() error {
 	for _, queue := range m.pending {
 		for e := queue.Front(); e != nil; e = e.Next() {
 			req := e.Value.(*pendingRequest)
+			if req.cancelFunc != nil {
+				req.cancelFunc()
+			}
+			m.requestsInFlight.Add(-1)
 			close(req.responseChan)
 		}
 	}
