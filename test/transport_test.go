@@ -330,8 +330,15 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 		callCtx, callCancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			_, err := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
-			done <- err
+			iter, err := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
+			if err != nil {
+				done <- err
+				return
+			}
+			defer func() { _ = iter.Close() }()
+
+			_ = iter.Next()
+			done <- iter.Err()
 		}()
 
 		time.Sleep(50 * time.Millisecond)
@@ -342,7 +349,7 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 			require.Error(t, err)
 			assert.True(t, errors.Is(err, context.Canceled))
 		case <-time.After(5 * time.Second):
-			t.Fatal("Call did not return after context cancel")
+			t.Fatal("RPC iterator did not stop after context cancel")
 		}
 	})
 }

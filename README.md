@@ -65,6 +65,23 @@ Use one control plane for request lifetime: `context.Context`.
 - Schedule/Notice/Queue/Lease/Stream subscription handlers return `error`.
 - Streaming iterators should be closed when no longer needed.
 
+Connection lifecycle is part of the stable public API:
+
+- `Disconnected`: before `Connect` and after an unrecoverable disconnect
+- `Connecting`: transport dial/handshake in progress
+- `Connected`: transport established, auth not yet settled
+- `Authenticating`: CONNECT/auth exchange in progress
+- `Authenticated`: ready for domain traffic
+- `Reconnecting`: automatic reconnect loop is actively retrying
+- `Closed`: client has been closed and will not reconnect
+
+Reconnect guarantees:
+
+- Automatic reconnect only runs when configured with `fitz.WithReconnect(...)`.
+- Notice, stream, lease, queue, and schedule subscriptions are restored after reconnect.
+- RPC worker registrations are restored after reconnect.
+- `Close()` is idempotent and permanently ends reconnect activity.
+
 RPC timeout pattern:
 
 ```go
@@ -148,6 +165,12 @@ Run the full suite with:
 ```bash
 go test ./test/...
 go test ./...
+```
+
+Or use the repo-local verification script:
+
+```powershell
+./scripts/verify.ps1
 ```
 
 Run the repo-local spec-compliance conformance suite with:

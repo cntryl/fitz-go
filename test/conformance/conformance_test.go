@@ -189,6 +189,9 @@ func uniqueRoute(scheme string) string {
 	routeCounterMu.Unlock()
 
 	id := fmt.Sprintf("%d-%d-%d", time.Now().UnixNano(), n, rand.IntN(1_000_000))
+	if scheme == "schedule" {
+		return fmt.Sprintf("%s://conformance/%s/res/run", scheme, id)
+	}
 	return fmt.Sprintf("%s://conformance/%s/res", scheme, id)
 }
 
@@ -1160,7 +1163,7 @@ func TestConformanceSuite(t *testing.T) {
 			ev = append(ev, fmt.Sprintf("schedule created id=%q", scheduleID))
 
 			// Cancel before unsubscribing
-			if err := f.Client().Schedule().Cancel(ctx, scheduleID); err != nil {
+			if err := f.Client().Schedule().Cancel(ctx, route); err != nil {
 				sub.Unsubscribe()
 				return VerdictFail, ev, fmt.Errorf("cancel: %w", err)
 			}

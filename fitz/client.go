@@ -54,6 +54,9 @@ func (c *Client) Close() error {
 
 // State returns the current lifecycle state of the broker connection.
 func (c *Client) State() ConnectionState {
+	if c.inner.IsReconnecting() {
+		return ConnectionStateReconnecting
+	}
 	return fromCoreConnectionState(c.inner.State())
 }
 

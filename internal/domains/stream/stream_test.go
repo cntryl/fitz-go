@@ -299,7 +299,7 @@ func TestShouldEncodeStreamCommitGivenSessionAndModeWhenPayloadWritten(t *testin
 		require.NoError(t, err)
 		assert.Equal(t, sessionID, actualSessionID)
 		require.Less(t, offset, len(payload))
-		assert.Equal(t, mode, payload[offset])
+		assert.Equal(t, byte(mode), payload[offset])
 	})
 }
 

@@ -362,6 +362,12 @@ func (c *Client) State() connection.State {
 	return connection.StateDisconnected
 }
 
+func (c *Client) IsReconnecting() bool {
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+	return c.reconnecting
+}
+
 // SendRequest is a low-level API for domain implementations.
 // Sends a synchronous request and waits for response.
 // Per CLIENT_SPEC.md: Responses matched via FIFO correlation.

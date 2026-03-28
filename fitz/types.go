@@ -36,6 +36,7 @@ const (
 	ConnectionStateConnected
 	ConnectionStateAuthenticating
 	ConnectionStateAuthenticated
+	ConnectionStateReconnecting
 	ConnectionStateClosed
 )
 

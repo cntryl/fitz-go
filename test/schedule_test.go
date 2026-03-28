@@ -48,9 +48,9 @@ func TestShouldCancelScheduleGivenExistingScheduleWhenCancelCalled(t *testing.T)
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("schedule")
-		id, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("weekly"))
+		_, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("weekly"))
 		require.NoError(t, err)
-		require.NoError(t, f.Client().Schedule().Cancel(ctx, id))
+		require.NoError(t, f.Client().Schedule().Cancel(ctx, route))
 	})
 }
 
