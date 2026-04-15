@@ -190,9 +190,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 	c.conn.AddSubscriptions(-1)
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
-	// Server expects [string pattern] (the original subscription pattern).
+	// Server expects [u64 subscription_id].
 	ctx := c.conn.LifecycleContext()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeUnsubscribe, unsubscribePayloadWriter(sub.route))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeUnsubscribe, unsubscribePayloadWriter(sub.subID))
 	if err != nil {
 		return
 	}

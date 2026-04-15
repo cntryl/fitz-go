@@ -237,12 +237,12 @@ func BenchmarkEncodeSubscribe(b *testing.B) {
 }
 
 func BenchmarkEncodeUnsubscribe(b *testing.B) {
-	pattern := "notice://acme/app/events/published"
+	subID := uint64(42)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = encodeUnsubscribe(pattern)
+		_ = encodeUnsubscribe(subID)
 	}
 }
 

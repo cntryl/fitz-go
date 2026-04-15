@@ -77,12 +77,16 @@ func subscribePayloadWriter(route string) func(*bytes.Buffer) {
 	}
 }
 
-func encodeUnsubscribe(route string) []byte {
-	return encodeSubscribe(route)
+func encodeUnsubscribe(subID uint64) []byte {
+	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
+		encoding.WriteU64(buf, subID)
+	})
 }
 
-func unsubscribePayloadWriter(route string) func(*bytes.Buffer) {
-	return subscribePayloadWriter(route)
+func unsubscribePayloadWriter(subID uint64) func(*bytes.Buffer) {
+	return func(buf *bytes.Buffer) {
+		encoding.WriteU64(buf, subID)
+	}
 }
 
 func DecodeNotify(body []byte) (string, []byte, bool) {
