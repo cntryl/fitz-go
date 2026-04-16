@@ -181,10 +181,9 @@ func TestShouldEncodeStreamBeginGivenRouteAndOffsetWhenPayloadWritten(t *testing
 	t.Run("without ingest metadata", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/logs/app"
-		expectedOffset := uint64(42)
 
 		// Act
-		payload, err := EncodeStreamBegin(route, expectedOffset, nil)
+		payload, err := EncodeStreamBegin(route, nil)
 
 		// Assert
 		require.NoError(t, err)
@@ -196,10 +195,6 @@ func TestShouldEncodeStreamBeginGivenRouteAndOffsetWhenPayloadWritten(t *testing
 		offset = newOffset
 		assert.Equal(t, route, string(payload[offset:offset+int(routeLen)]))
 		offset += int(routeLen)
-		actualExpected, newOffset, err := connection.ReadU64BE(payload, offset)
-		require.NoError(t, err)
-		assert.Equal(t, expectedOffset, actualExpected)
-		offset = newOffset
 		require.Less(t, offset, len(payload))
 		assert.Equal(t, byte(0), payload[offset])
 	})
@@ -207,11 +202,10 @@ func TestShouldEncodeStreamBeginGivenRouteAndOffsetWhenPayloadWritten(t *testing
 	t.Run("with ingest metadata", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/logs/app"
-		expectedOffset := uint64(7)
 		metadata := []byte("meta")
 
 		// Act
-		payload, err := EncodeStreamBegin(route, expectedOffset, metadata)
+		payload, err := EncodeStreamBegin(route, metadata)
 
 		// Assert
 		require.NoError(t, err)
@@ -220,9 +214,6 @@ func TestShouldEncodeStreamBeginGivenRouteAndOffsetWhenPayloadWritten(t *testing
 		routeLen, newOffset, err := connection.ReadU32BE(payload, offset)
 		require.NoError(t, err)
 		offset = newOffset + int(routeLen)
-		_, newOffset, err = connection.ReadU64BE(payload, offset)
-		require.NoError(t, err)
-		offset = newOffset
 		require.Less(t, offset, len(payload))
 		assert.Equal(t, byte(1), payload[offset])
 		offset++
@@ -237,10 +228,11 @@ func TestShouldEncodeStreamAppendGivenSessionAndBodyWhenPayloadWritten(t *testin
 	t.Run("without metadata", func(t *testing.T) {
 		// Arrange
 		sessionID := uint64(123)
+		expectedOffset := uint64(456)
 		body := []byte("payload")
 
 		// Act
-		payload, err := EncodeStreamAppend(sessionID, body, nil)
+		payload, err := EncodeStreamAppend(sessionID, expectedOffset, body, nil)
 
 		// Assert
 		require.NoError(t, err)
@@ -248,6 +240,10 @@ func TestShouldEncodeStreamAppendGivenSessionAndBodyWhenPayloadWritten(t *testin
 		actualSessionID, newOffset, err := connection.ReadU64BE(payload, offset)
 		require.NoError(t, err)
 		assert.Equal(t, sessionID, actualSessionID)
+		offset = newOffset
+		actualExpectedOffset, newOffset, err := connection.ReadU64BE(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, expectedOffset, actualExpectedOffset)
 		offset = newOffset
 		actualBody, newOffset, err := connection.ReadBytes(payload, offset)
 		require.NoError(t, err)
@@ -260,17 +256,23 @@ func TestShouldEncodeStreamAppendGivenSessionAndBodyWhenPayloadWritten(t *testin
 	t.Run("with metadata", func(t *testing.T) {
 		// Arrange
 		sessionID := uint64(456)
+		expectedOffset := uint64(789)
 		body := []byte("payload")
 		metadata := []byte("meta")
 
 		// Act
-		payload, err := EncodeStreamAppend(sessionID, body, metadata)
+		payload, err := EncodeStreamAppend(sessionID, expectedOffset, body, metadata)
 
 		// Assert
 		require.NoError(t, err)
 		offset := 0
-		_, newOffset, err := connection.ReadU64BE(payload, offset)
+		actualSessionID, newOffset, err := connection.ReadU64BE(payload, offset)
 		require.NoError(t, err)
+		assert.Equal(t, sessionID, actualSessionID)
+		offset = newOffset
+		actualExpectedOffset, newOffset, err := connection.ReadU64BE(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, expectedOffset, actualExpectedOffset)
 		offset = newOffset
 		_, newOffset, err = connection.ReadBytes(payload, offset)
 		require.NoError(t, err)
@@ -456,24 +458,22 @@ func TestShouldEncodeStreamUnsubscribeGivenPatternWhenPayloadWritten(t *testing.
 func BenchmarkEncodeStreamBegin(b *testing.B) {
 	b.Run("without metadata", func(b *testing.B) {
 		route := "stream://acme/logs/app"
-		expectedOffset := uint64(1)
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = EncodeStreamBegin(route, expectedOffset, nil)
+			_, _ = EncodeStreamBegin(route, nil)
 		}
 	})
 
 	b.Run("with metadata", func(b *testing.B) {
 		route := "stream://acme/logs/app"
-		expectedOffset := uint64(1)
 		metadata := []byte("meta")
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = EncodeStreamBegin(route, expectedOffset, metadata)
+			_, _ = EncodeStreamBegin(route, metadata)
 		}
 	})
 }
@@ -481,24 +481,26 @@ func BenchmarkEncodeStreamBegin(b *testing.B) {
 func BenchmarkEncodeStreamAppend(b *testing.B) {
 	b.Run("without metadata", func(b *testing.B) {
 		sessionID := uint64(10)
+		expectedOffset := uint64(11)
 		body := []byte("payload")
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = EncodeStreamAppend(sessionID, body, nil)
+			_, _ = EncodeStreamAppend(sessionID, expectedOffset, body, nil)
 		}
 	})
 
 	b.Run("with metadata", func(b *testing.B) {
 		sessionID := uint64(10)
+		expectedOffset := uint64(11)
 		body := []byte("payload")
 		metadata := []byte("meta")
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = EncodeStreamAppend(sessionID, body, metadata)
+			_, _ = EncodeStreamAppend(sessionID, expectedOffset, body, metadata)
 		}
 	})
 }

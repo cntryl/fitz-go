@@ -717,14 +717,16 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("stream")
-			sess, err := f.Client().Stream().Begin(ctx, route, 0)
+			sess, err := f.Client().Stream().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("stream begin: %w", err)
 			}
+			var expectedOffset uint64
 			for i := range 3 {
-				if _, err := sess.Append(ctx, []byte{byte(i * 10)}); err != nil {
+				if _, err := sess.Append(ctx, expectedOffset, []byte{byte(i * 10)}); err != nil {
 					return VerdictFail, ev, fmt.Errorf("append %d: %w", i, err)
 				}
+				expectedOffset++
 			}
 			if err := sess.Commit(ctx, fitz.StreamCommitSync); err != nil {
 				return VerdictFail, ev, fmt.Errorf("commit: %w", err)
@@ -772,12 +774,12 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("stream")
-			sess, err := f.Client().Stream().Begin(ctx, route, 0)
+			sess, err := f.Client().Stream().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("begin: %w", err)
 			}
-			_, _ = sess.Append(ctx, []byte("first"))
-			_, _ = sess.Append(ctx, []byte("last"))
+			_, _ = sess.Append(ctx, 0, []byte("first"))
+			_, _ = sess.Append(ctx, 1, []byte("last"))
 			if err := sess.Commit(ctx, fitz.StreamCommitSync); err != nil {
 				return VerdictFail, ev, fmt.Errorf("commit: %w", err)
 			}
@@ -814,22 +816,26 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("stream")
-			sess, err := f.Client().Stream().Begin(ctx, route, 0)
+			sess, err := f.Client().Stream().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("begin: %w", err)
 			}
-			_, _ = sess.Append(ctx, []byte("record-1"))
+			_, _ = sess.Append(ctx, 0, []byte("record-1"))
 			if err := sess.Commit(ctx, fitz.StreamCommitSync); err != nil {
 				return VerdictFail, ev, fmt.Errorf("commit: %w", err)
 			}
 			ev = append(ev, "written first record at offset 0")
 
-			// begin with wrong expected offset â€” server should reject
-			_, beginErr := f.Client().Stream().Begin(ctx, route, 0)
-			if beginErr == nil {
+			// append with wrong expected offset â€” server should reject
+			wrongSession, err := f.Client().Stream().Begin(ctx, route)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("second begin: %w", err)
+			}
+			_, appendErr := wrongSession.Append(ctx, 0, []byte("record-2"))
+			if appendErr == nil {
 				return VerdictFail, ev, fmt.Errorf("expected error on wrong expected offset, got nil")
 			}
-			ev = append(ev, fmt.Sprintf("begin with wrong offset errored: %v", beginErr))
+			ev = append(ev, fmt.Sprintf("append with wrong offset errored: %v", appendErr))
 
 			// Client must remain usable
 			kvRoute := uniqueRoute("kv")

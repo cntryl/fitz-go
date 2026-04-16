@@ -41,7 +41,7 @@
 | REQ-PROTO-013 | T1 | **PASS** | `MaxTLVValueLen = 65535` enforced in encoder. Frame size is configurable (TCP/WS transports honour `MaxFrameSize`). |
 | REQ-PROTO-014 | T1 | **PASS** | `KVTx.Insert` is a distinct method; `Put` overwrites unconditionally. Correct server error code `1006` (ERR_KEY_EXISTS) mapped to `ErrKVKeyExists`. |
 | REQ-PROTO-015 | T1 | **PASS** | `KVScanQuery.EndKey` and `DeleteRange` encode end key as exclusive per spec. |
-| REQ-PROTO-016 | T1 | **PASS** | `StreamClient.Begin(ctx, route, expectedOffset)` — `expectedOffset` is a required parameter, encoded on every Begin frame. |
+| REQ-PROTO-016 | T1 | **PASS** | `StreamClient.Begin(ctx, route)` begins a session; `StreamSession.Append(ctx, expectedOffset, body)` requires `expectedOffset` on every append. |
 | REQ-PROTO-017 | T1 | **PASS** | RPC Call generates a unique `[16]byte` UUID per call; inbound RESPONSE frames are matched by `correlation_id`, not by arrival order. |
 | REQ-PROTO-018 | T1 | **PASS** | `Notice.Publish` sends the frame and returns; it does not register a pending response channel. Fire-and-forget. |
 
@@ -68,7 +68,7 @@
 | REQ-ERGON-002 | T0 | **PASS** | TLV, frame length prefix, and transport framing are never exposed in the public `fitz` package. |
 | REQ-ERGON-003 | T0 | **PASS** | All public symbols use canonical terms (`realm`, `area`, `resource`, `route`). No forbidden synonyms found. |
 | REQ-ERGON-004 | T1 | **PASS** | `KVClient.Begin(ctx, route, ...KVBeginOption) (KVTx, error)` returns a transaction interface. All operations are methods on `KVTx`. |
-| REQ-ERGON-005 | T1 | **PASS** | `StreamClient.Begin(ctx, route, expectedOffset) (StreamSession, error)` returns a session interface with `Append`, `Commit`, `Rollback`. |
+| REQ-ERGON-005 | T1 | **PASS** | `StreamClient.Begin(ctx, route) (StreamSession, error)` returns a session interface with `Append(expectedOffset, body)`, `Commit`, `Rollback`. |
 | REQ-ERGON-006 | T1 | **PASS** | All subscription-capable domains return typed subscription objects with `Unsubscribe()`: `*NoticeSubscription`, `*QueueSubscription`, `*LeaseSubscription`, `*StreamSubscription`, `*ScheduleSubscription`. |
 | REQ-ERGON-007 | T1 | **PASS** | `KVTx.Get(ctx, key) (KVGetResult, error)` returns `KVGetResult{Found bool; Value []byte}` — explicit discriminant, not nil-means-missing. |
 | REQ-ERGON-008 | T1 | **PASS** | Functional options pattern: `type Option func(*clientConfig)`. All non-essential config flows through named options (`WithReconnect`, `WithLogger`, `WithTracer`, etc.). |

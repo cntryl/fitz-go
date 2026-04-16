@@ -53,12 +53,11 @@ func mapStreamError(msg string) error {
 }
 
 // EncodeStreamBegin encodes a STREAM BEGIN request per CLIENT_SPEC.md.
-// Wire format: [string route][u64 expected_offset][u8 has_ingest_metadata][bytes? ingest_metadata]
+// Wire format: [string route][u8 has_ingest_metadata][bytes? ingest_metadata]
 // ingestMetadata is optional; pass nil to omit.
-func EncodeStreamBegin(route string, expectedOffset uint64, ingestMetadata []byte) ([]byte, error) {
+func EncodeStreamBegin(route string, ingestMetadata []byte) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
-		encoding.WriteU64(buf, expectedOffset)
 		if ingestMetadata != nil {
 			buf.WriteByte(1)
 			encoding.WriteBytes(buf, ingestMetadata)
@@ -69,11 +68,12 @@ func EncodeStreamBegin(route string, expectedOffset uint64, ingestMetadata []byt
 }
 
 // EncodeStreamAppend encodes a STREAM APPEND request per CLIENT_SPEC.md.
-// Wire format: [u64 session_id][bytes body][u8 has_metadata][bytes? metadata]
+// Wire format: [u64 session_id][u64 expected_offset][bytes body][u8 has_metadata][bytes? metadata]
 // metadata is optional; pass nil to omit.
-func EncodeStreamAppend(sessionID uint64, body []byte, metadata []byte) ([]byte, error) {
+func EncodeStreamAppend(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
+		encoding.WriteU64(buf, expectedOffset)
 		encoding.WriteBytes(buf, body)
 		if metadata != nil {
 			buf.WriteByte(1)
@@ -154,10 +154,9 @@ func EncodeStreamUnsubscribe(route string) ([]byte, error) {
 
 // Payload writer helpers for zero-copy frame encoding
 
-func streamBeginPayloadWriter(route string, expectedOffset uint64, ingestMetadata []byte) func(*bytes.Buffer) {
+func streamBeginPayloadWriter(route string, ingestMetadata []byte) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
-		encoding.WriteU64(buf, expectedOffset)
 		if ingestMetadata != nil {
 			buf.WriteByte(1)
 			encoding.WriteBytes(buf, ingestMetadata)
@@ -167,9 +166,10 @@ func streamBeginPayloadWriter(route string, expectedOffset uint64, ingestMetadat
 	}
 }
 
-func streamAppendPayloadWriter(sessionID uint64, body []byte, metadata []byte) func(*bytes.Buffer) {
+func streamAppendPayloadWriter(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
+		encoding.WriteU64(buf, expectedOffset)
 		encoding.WriteBytes(buf, body)
 		if metadata != nil {
 			buf.WriteByte(1)

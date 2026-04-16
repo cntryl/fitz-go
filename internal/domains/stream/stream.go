@@ -67,12 +67,11 @@ func (sub *Subscription) Unsubscribe() {
 
 // StreamSession is a write session for appending to a stream.
 // Obtained from Begin; use Append, then Commit or Rollback.
-// Expected offset (OCC) is established at Begin and tracked by the session/server;
-// Append does not take or send expected_offset.
+// Expected offset (OCC) is provided on each Append call and tracked by the session/server.
 // Per CLIENT_SPEC.md, operations on a session MUST be sequential.
 type StreamSession interface {
 	// Append adds a record to the stream. Returns the assigned offset when available.
-	Append(ctx context.Context, body []byte) (offset uint64, err error)
+	Append(ctx context.Context, expectedOffset uint64, body []byte) (offset uint64, err error)
 	// Commit finalizes the write session and makes appends durable.
 	Commit(ctx context.Context, mode CommitMode) error
 	// Rollback discards uncommitted appends.
@@ -82,9 +81,8 @@ type StreamSession interface {
 // Client is the Stream domain client interface.
 type Client interface {
 	// Begin starts a write session on the given route.
-	// expectedOffset is the client's view of the stream's next offset; server rejects on mismatch (OCC).
 	// Returns a session on which to call Append, then Commit or Rollback.
-	Begin(ctx context.Context, route string, expectedOffset uint64) (StreamSession, error)
+	Begin(ctx context.Context, route string) (StreamSession, error)
 
 	// Read reads records from the given route starting at fromOffset.
 	Read(ctx context.Context, route string, fromOffset uint64, limit uint64) (iter.Iterator[Record], error)
@@ -126,17 +124,16 @@ func NewClient(conn *connection.Connection) Client {
 var _ reconnect.DomainRestorer = (*client)(nil)
 
 // Begin per server stream_codec.rs:
-// Request: [string route][u64 expected_offset][optional bytes ingest_metadata]
+// Request: [string route][optional bytes ingest_metadata]
 // Response: [status][u8 has_session_id][u64 session_id if has=1][bytes data]
-// Expected offset (OCC) is sent only here; the session tracks it internally on the server.
-func (c *client) Begin(ctx context.Context, route string, expectedOffset uint64) (StreamSession, error) {
+// Expected offset (OCC) is sent on Append; Begin creates session state only.
+func (c *client) Begin(ctx context.Context, route string) (StreamSession, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Begin", trace.WithAttributes(
 		attribute.String("fitz.route", route),
-		attribute.Int64("fitz.expected_offset", int64(expectedOffset)),
 	))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("stream.Begin", "route", route, "expected_offset", expectedOffset)
+		log.Debug("stream.Begin", "route", route)
 	}
 
 	// Validate route format
@@ -146,7 +143,7 @@ func (c *client) Begin(ctx context.Context, route string, expectedOffset uint64)
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamBegin, streamBeginPayloadWriter(route, expectedOffset, nil))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamBegin, streamBeginPayloadWriter(route, nil))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -190,15 +187,16 @@ func (c *client) Begin(ctx context.Context, route string, expectedOffset uint64)
 	return &session{route: route, sessionID: sessionID, conn: c.conn}, nil
 }
 
-// Append per server stream_codec.rs. Expected offset is tracked by the session (established at Begin).
-// Request: [u64 session_id][bytes body][optional bytes metadata]
-func (s *session) Append(ctx context.Context, body []byte) (uint64, error) {
+// Append per server stream_codec.rs. Expected offset is supplied on every call.
+// Request: [u64 session_id][u64 expected_offset][bytes body][optional bytes metadata]
+func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte) (uint64, error) {
 	ctx, span := s.conn.Tracer().Start(ctx, "fitz.stream.Append", trace.WithAttributes(
 		attribute.String("fitz.route", s.route),
 		attribute.Int64("fitz.session_id", int64(s.sessionID)),
+		attribute.Int64("fitz.expected_offset", int64(expectedOffset)),
 	))
 	defer span.End()
-	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, body, nil))
+	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, expectedOffset, body, nil))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

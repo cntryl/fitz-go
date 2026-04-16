@@ -18,12 +18,12 @@ func TestShouldAppendRecordsGivenValidSessionWhenAppendCalled(t *testing.T) {
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		sess, err := f.Client().Stream().Begin(ctx, f.UniqueRoute("stream"), 0)
+		sess, err := f.Client().Stream().Begin(ctx, f.UniqueRoute("stream"))
 		require.NoError(t, err)
 
-		_, err = sess.Append(ctx, []byte("record-1"))
+		_, err = sess.Append(ctx, 0, []byte("record-1"))
 		require.NoError(t, err)
-		_, err = sess.Append(ctx, []byte("record-2"))
+		_, err = sess.Append(ctx, 1, []byte("record-2"))
 		require.NoError(t, err)
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 	})
@@ -37,11 +37,13 @@ func TestShouldReadRecordsInOrderGivenOffsetRangeWhenReadCalled(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("stream")
-		sess, err := f.Client().Stream().Begin(ctx, route, 0)
+		sess, err := f.Client().Stream().Begin(ctx, route)
 		require.NoError(t, err)
+		expectedOffset := uint64(0)
 		for i := 0; i < 3; i++ {
-			_, err := sess.Append(ctx, []byte{byte(i)})
+			_, err := sess.Append(ctx, expectedOffset, []byte{byte(i)})
 			require.NoError(t, err)
+			expectedOffset++
 		}
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
@@ -60,7 +62,7 @@ func TestShouldReadRecordsInOrderGivenOffsetRangeWhenReadCalled(t *testing.T) {
 	})
 }
 
-func TestShouldRejectBeginGivenMismatchedExpectedOffsetWhenOptimisticConcurrency(t *testing.T) {
+func TestShouldRejectAppendGivenMismatchedExpectedOffsetWhenOptimisticConcurrency(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -68,13 +70,15 @@ func TestShouldRejectBeginGivenMismatchedExpectedOffsetWhenOptimisticConcurrency
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("stream")
-		sess, err := f.Client().Stream().Begin(ctx, route, 0)
+		sess, err := f.Client().Stream().Begin(ctx, route)
 		require.NoError(t, err)
-		_, err = sess.Append(ctx, []byte("first"))
+		_, err = sess.Append(ctx, 0, []byte("first"))
 		require.NoError(t, err)
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
-		_, err = f.Client().Stream().Begin(ctx, route, 99999)
+		sess, err = f.Client().Stream().Begin(ctx, route)
+		require.NoError(t, err)
+		_, err = sess.Append(ctx, 0, []byte("second"))
 		assert.Error(t, err)
 	})
 }
@@ -87,9 +91,9 @@ func TestShouldRollbackUncommittedAppendsGivenActiveSessionWhenRollbackCalled(t 
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("stream")
-		sess, err := f.Client().Stream().Begin(ctx, route, 0)
+		sess, err := f.Client().Stream().Begin(ctx, route)
 		require.NoError(t, err)
-		_, err = sess.Append(ctx, []byte("ephemeral"))
+		_, err = sess.Append(ctx, 0, []byte("ephemeral"))
 		require.NoError(t, err)
 		require.NoError(t, sess.Rollback(ctx))
 
@@ -113,11 +117,11 @@ func TestShouldReturnLastRecordGivenExistingStreamWhenLastCalled(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("stream")
-		sess, err := f.Client().Stream().Begin(ctx, route, 0)
+		sess, err := f.Client().Stream().Begin(ctx, route)
 		require.NoError(t, err)
-		_, err = sess.Append(ctx, []byte("first"))
+		_, err = sess.Append(ctx, 0, []byte("first"))
 		require.NoError(t, err)
-		_, err = sess.Append(ctx, []byte("last-one"))
+		_, err = sess.Append(ctx, 1, []byte("last-one"))
 		require.NoError(t, err)
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
@@ -137,9 +141,9 @@ func TestShouldGetMetadataGivenExistingStreamWhenMetadataCalled(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("stream")
-		sess, err := f.Client().Stream().Begin(ctx, route, 0)
+		sess, err := f.Client().Stream().Begin(ctx, route)
 		require.NoError(t, err)
-		_, err = sess.Append(ctx, []byte("data"))
+		_, err = sess.Append(ctx, 0, []byte("data"))
 		require.NoError(t, err)
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
@@ -157,9 +161,9 @@ func TestShouldRejectReadGivenOffsetBeyondWatermarkWhenConsumeCalled(t *testing.
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("stream")
-		sess, err := f.Client().Stream().Begin(ctx, route, 0)
+		sess, err := f.Client().Stream().Begin(ctx, route)
 		require.NoError(t, err)
-		_, err = sess.Append(ctx, []byte("only"))
+		_, err = sess.Append(ctx, 0, []byte("only"))
 		require.NoError(t, err)
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
@@ -196,9 +200,9 @@ func TestShouldNotifyGivenSubscriptionWhenCommitAppends(t *testing.T) {
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 
-		sess, err := f.Client().Stream().Begin(ctx, route, 0)
+		sess, err := f.Client().Stream().Begin(ctx, route)
 		require.NoError(t, err)
-		_, err = sess.Append(ctx, []byte("notify"))
+		_, err = sess.Append(ctx, 0, []byte("notify"))
 		require.NoError(t, err)
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
