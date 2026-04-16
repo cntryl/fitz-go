@@ -130,7 +130,7 @@ defer sub.Unsubscribe()
 Integration tests target a running Fitz broker and are part of the default
 verification bar for this repo.
 
-Use the local compose stack in [compose.yml](/D:/repos/cntryl/fitz/fitz-go/compose.yml):
+Use the local compose stack in [compose.yml](compose.yml):
 
 ```bash
 docker compose -f compose.yml up -d
@@ -232,8 +232,14 @@ Install `benchstat` once if needed with `go install golang.org/x/perf/cmd/benchs
 This repo does not maintain an independent copy of the protocol specification.
 Use the canonical server-owned docs referenced from:
 
-- `docs/CLIENT_SPEC.md`
-- `docs/CLIENT_ACCEPTANCE_CRITERIA.md`
+- [docs/CLIENT_SPEC.md](docs/CLIENT_SPEC.md)
+- [docs/CLIENT_ACCEPTANCE_CRITERIA.md](docs/CLIENT_ACCEPTANCE_CRITERIA.md)
+
+## Documentation
+
+- [docs/README.md](docs/README.md)
+- [docs/CLIENT_SPEC.md](docs/CLIENT_SPEC.md)
+- [docs/CLIENT_ACCEPTANCE_CRITERIA.md](docs/CLIENT_ACCEPTANCE_CRITERIA.md)
 
 ## Message type and conformance coverage map
 
