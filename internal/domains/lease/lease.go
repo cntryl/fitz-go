@@ -397,7 +397,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 }
 
 // Subscribe registers a handler for lease change notifications.
-// Pattern should be a wildcard pattern (e.g., "lease://realm/area/resource/changed" or "lease://realm/area/**/changed").
+// Pattern must be an exact lease route (lease://realm/area/resource).
 func (c *client) Subscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.lease.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
