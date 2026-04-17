@@ -287,14 +287,15 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("rpc.RegisterWorker", "route", route)
 	}
-	c.initRPCHandler()
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "rpc"); err != nil {
+	if err := types.ValidateConcreteRoute(route, "rpc"); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
+
+	c.initRPCHandler()
 
 	sub, err := c.subscribeWorker(ctx, route, handler)
 	if err != nil {
@@ -332,7 +333,6 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("rpc.Call", "route", route)
 	}
-	c.initRPCHandler()
 
 	// Check if context is already canceled
 	select {
@@ -342,11 +342,13 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "rpc"); err != nil {
+	if err := types.ValidateConcreteRoute(route, "rpc"); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
+
+	c.initRPCHandler()
 
 	// Generate correlation ID
 	var correlationID [16]byte

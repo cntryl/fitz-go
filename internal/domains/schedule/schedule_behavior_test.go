@@ -219,7 +219,7 @@ func TestShouldRejectWildcardPatternGivenSubscribeCalled(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, sub)
-	assert.Contains(t, err.Error(), "invalid pattern")
+	assert.Contains(t, err.Error(), "invalid schedule route")
 }
 
 func TestShouldDispatchNotificationGivenMatchingSubscriptionWhenHandleScheduleNotifyCalled(t *testing.T) {
@@ -326,7 +326,7 @@ func TestShouldReturnErrorGivenEmptyRouteWhenCancelCalled(t *testing.T) {
 
 	// Assert
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid route")
+	assert.Contains(t, err.Error(), "invalid schedule route")
 }
 
 func TestShouldFilterEntriesGivenAreaWildcardSelectorWhenListBySelectorMatches(t *testing.T) {

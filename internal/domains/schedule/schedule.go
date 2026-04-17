@@ -163,7 +163,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 	if err := types.ValidateScheduleRoute(route); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return "", fmt.Errorf("invalid route: %w", err)
+		return "", fmt.Errorf("invalid schedule route: %w", err)
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreate, scheduleCreatePayloadWriter(route, cronExpr, payload))
@@ -210,7 +210,7 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 	if err := types.ValidateScheduleRoute(route); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("invalid route: %w", err)
+		return fmt.Errorf("invalid schedule route: %w", err)
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCancel, scheduleCancelPayloadWriter(route))
@@ -368,7 +368,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 	if err := types.ValidateScheduleRoute(pattern); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("invalid pattern: %w", err)
+		return nil, fmt.Errorf("invalid schedule route: %w", err)
 	}
 
 	subID, handlerID, err := c.subscriptions.Subscribe(pattern, handler, func(pattern string) (uint64, error) {

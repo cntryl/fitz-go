@@ -183,7 +183,7 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "queue"); err != nil {
+	if err := types.ValidateFixedRoute(route, "queue", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("invalid route: %w", err)
@@ -258,7 +258,7 @@ func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "queue"); err != nil {
+	if err := types.ValidateSelectorRoute(route, "queue", 3, false); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -442,6 +442,11 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Availabi
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("queue.Subscribe", "pattern", pattern)
+	}
+	if err := types.ValidateSelectorRoute(pattern, "queue", 3, true); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	c.initNotifyHandler()
 

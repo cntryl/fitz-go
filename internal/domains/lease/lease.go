@@ -46,7 +46,7 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 	))
 	defer span.End()
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRenew, leaseRenewPayloadWriter(l.route, tokenToU64(token), ttlSecs))
-	if err != nil {
+			if isLeaseHeldError(err) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("EXTEND request failed: %w", err)
@@ -188,7 +188,7 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "lease"); err != nil {
+	if err := types.ValidateFixedRoute(route, "lease", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -253,6 +253,11 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("lease.Query", "route", route)
+	}
+	if err := types.ValidateFixedRoute(route, "lease", 3); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseQuery, leaseQueryPayloadWriter(route))
 	if err != nil {
@@ -370,7 +375,6 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 			),
 		)
 		defer cancel()
-		defer span.End()
 
 		release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
 		if !ok {
@@ -399,6 +403,11 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler ChangeHa
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("lease.Subscribe", "pattern", pattern)
+	}
+	if err := types.ValidateFixedRoute(pattern, "lease", 3); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	c.initNotifyHandler()
 

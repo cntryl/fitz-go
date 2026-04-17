@@ -61,7 +61,7 @@ func (c *client) Begin(ctx context.Context, route string, durability uint8, opts
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "kv"); err != nil {
+	if err := types.ValidateFixedRoute(route, "kv", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)

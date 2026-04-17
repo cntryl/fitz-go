@@ -15,16 +15,144 @@ import (
 // unauthenticated connections.
 type TokenProvider func(ctx context.Context) (string, error)
 
-// ValidateRoute checks that a route string is usable by the client.
+// ValidateRoute checks that a route string is a concrete route for the expected scheme.
 //
-// The Fitz server treats routes as opaque strings on the wire, so client-side
-// validation intentionally avoids imposing segment-count or scheme rules that
-// the server does not enforce.
+// This validates the scheme prefix and rejects empty segments and wildcards.
+// Domain-specific helpers apply stricter segment-count or selector rules.
 func ValidateRoute(route string, expectedScheme string) error {
-	if route == "" {
-		return fmt.Errorf("route must be non-empty")
+	return ValidateConcreteRoute(route, expectedScheme)
+}
+
+// ValidateConcreteRoute validates a concrete route with the expected scheme.
+// It allows any non-empty segment count but rejects wildcards.
+func ValidateConcreteRoute(route string, expectedScheme string) error {
+	segments, err := parseRoutePath(route, expectedScheme)
+	if err != nil {
+		return err
+	}
+	if hasWildcardSegment(segments) {
+		return fmt.Errorf("%s route %q must not contain wildcards", expectedScheme, route)
 	}
 	return nil
+}
+
+// ValidateFixedRoute validates an exact route with a required segment count.
+func ValidateFixedRoute(route string, expectedScheme string, segmentCount int) error {
+	segments, err := parseRoutePath(route, expectedScheme)
+	if err != nil {
+		return err
+	}
+	if len(segments) != segmentCount {
+		return fmt.Errorf("%s route %q must be %s", expectedScheme, route, routeShape(expectedScheme, segmentCount))
+	}
+	if hasWildcardSegment(segments) {
+		return fmt.Errorf("%s route %q must not contain wildcards", expectedScheme, route)
+	}
+	return nil
+}
+
+// ValidateSelectorRoute validates exact-or-wildcard selector forms for a route.
+func ValidateSelectorRoute(route string, expectedScheme string, segmentCount int, allowRealmWildcard bool) error {
+	segments, err := parseRoutePath(route, expectedScheme)
+	if err != nil {
+		return err
+	}
+
+	if len(segments) == segmentCount {
+		if segmentsAreConcrete(segments) {
+			return nil
+		}
+
+		if segments[segmentCount-1] == "*" && segmentsAreConcrete(segments[:segmentCount-1]) {
+			return nil
+		}
+	}
+
+	if allowRealmWildcard && len(segments) == 2 && segments[0] != "*" && segments[0] != "**" && segments[1] == "**" {
+		return nil
+	}
+
+	return fmt.Errorf("%s route %q must be one of %s", expectedScheme, route, selectorRouteShapes(expectedScheme, segmentCount, allowRealmWildcard))
+}
+
+func parseRoutePath(route string, expectedScheme string) ([]string, error) {
+	if route == "" {
+		return nil, fmt.Errorf("%s route must be non-empty", expectedScheme)
+	}
+
+	prefix := expectedScheme + "://"
+	if !strings.HasPrefix(route, prefix) {
+		return nil, fmt.Errorf("%s route %q must start with %s", expectedScheme, route, prefix)
+	}
+
+	path := strings.TrimPrefix(route, prefix)
+	rawSegments := strings.Split(path, "/")
+	segments := make([]string, 0, len(rawSegments))
+	for _, segment := range rawSegments {
+		if segment == "" {
+			return nil, fmt.Errorf("%s route %q segments must be non-empty", expectedScheme, route)
+		}
+		segments = append(segments, segment)
+	}
+
+	return segments, nil
+}
+
+func hasWildcardSegment(segments []string) bool {
+	for _, segment := range segments {
+		if segment == "*" || segment == "**" {
+			return true
+		}
+	}
+	return false
+}
+
+func segmentsAreConcrete(segments []string) bool {
+	for _, segment := range segments {
+		if segment == "*" || segment == "**" {
+			return false
+		}
+	}
+	return true
+}
+
+func routeShape(expectedScheme string, segmentCount int) string {
+	parts := make([]string, 0, segmentCount)
+	for i := 0; i < segmentCount; i++ {
+		parts = append(parts, placeholderForIndex(i))
+	}
+	return fmt.Sprintf("%s://%s", expectedScheme, strings.Join(parts, "/"))
+}
+
+func selectorRouteShapes(expectedScheme string, segmentCount int, allowRealmWildcard bool) string {
+	exact := routeShape(expectedScheme, segmentCount)
+	if segmentCount == 3 {
+		if allowRealmWildcard {
+			return fmt.Sprintf("%s, %s://{realm}/{area}/*, or %s://{realm}/**", exact, expectedScheme, expectedScheme)
+		}
+		return fmt.Sprintf("%s or %s://{realm}/{area}/*", exact, expectedScheme)
+	}
+
+	if allowRealmWildcard {
+		return fmt.Sprintf("%s or %s://{realm}/**", exact, expectedScheme)
+	}
+
+	return exact
+}
+
+func placeholderForIndex(index int) string {
+	switch index {
+	case 0:
+		return "{realm}"
+	case 1:
+		return "{area}"
+	case 2:
+		return "{resource}"
+	case 3:
+		return "{operation}"
+	default:
+		return fmt.Sprintf("{segment%d}", index+1)
+	}
 }
 
 // ValidateScheduleRoute validates that a schedule route is an exact
@@ -35,11 +163,11 @@ func ValidateScheduleRoute(route string) error {
 		return err
 	}
 	if len(segments) != 4 {
-		return fmt.Errorf("schedule route must be schedule://{realm}/{area}/{resource}/{operation}")
+		return fmt.Errorf("schedule route %q must be schedule://{realm}/{area}/{resource}/{operation}", route)
 	}
 	for _, segment := range segments {
 		if segment == "*" || segment == "**" {
-			return fmt.Errorf("schedule route must not contain wildcards")
+			return fmt.Errorf("schedule route %q must not contain wildcards", route)
 		}
 	}
 	return nil
@@ -85,7 +213,7 @@ func parseSchedulePath(route string) ([]string, error) {
 		return nil, fmt.Errorf("schedule route must be non-empty")
 	}
 	if !strings.HasPrefix(route, "schedule://") {
-		return nil, fmt.Errorf("schedule route scheme must be schedule")
+		return nil, fmt.Errorf("schedule route %q must start with schedule://", route)
 	}
 
 	path := strings.TrimPrefix(route, "schedule://")
@@ -93,7 +221,7 @@ func parseSchedulePath(route string) ([]string, error) {
 	segments := make([]string, 0, len(rawSegments))
 	for _, segment := range rawSegments {
 		if segment == "" {
-			return nil, fmt.Errorf("schedule route segments must be non-empty")
+			return nil, fmt.Errorf("schedule route %q segments must be non-empty", route)
 		}
 		segments = append(segments, segment)
 	}

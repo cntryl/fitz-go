@@ -105,7 +105,7 @@ if err := iter.Err(); err != nil {
 Schedule subscription handler pattern:
 
 ```go
-sub, err := client.Schedule().Subscribe(ctx, "schedule://realm/area/*", func(ctx context.Context, n fitz.ScheduleNotification) error {
+sub, err := client.Schedule().Subscribe(ctx, "schedule://realm/area/resource/run", func(ctx context.Context, n fitz.ScheduleNotification) error {
 	_ = n
 	return nil
 })

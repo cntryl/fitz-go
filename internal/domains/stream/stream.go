@@ -137,7 +137,7 @@ func (c *client) Begin(ctx context.Context, route string) (StreamSession, error)
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "stream"); err != nil {
+	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -307,6 +307,11 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("stream.Read", "route", route, "from_offset", fromOffset, "limit", limit)
 	}
+	if err := types.ValidateSelectorRoute(route, "stream", 3, true); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
+	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRead, streamReadPayloadWriter(route, fromOffset, limit, nil))
 	if err != nil {
 		span.RecordError(err)
@@ -349,6 +354,11 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("stream.Peek", "route", route)
+	}
+	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamLast, streamLastPayloadWriter(route))
 	if err != nil {
@@ -396,6 +406,11 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("stream.Metadata", "route", route)
+	}
+	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamGetMetadata, streamGetMetadataPayloadWriter(route))
 	if err != nil {
@@ -627,6 +642,11 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler CommitHa
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("stream.Subscribe", "pattern", pattern)
+	}
+	if err := types.ValidateSelectorRoute(pattern, "stream", 3, true); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	c.initNotifyHandler()
 
