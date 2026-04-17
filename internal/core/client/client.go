@@ -40,8 +40,9 @@ const (
 )
 
 var (
-	dialTCPTransport       = transport.DialTCP
-	dialWebSocketTransport = transport.DialWebSocket
+	dialTCPTransport          = transport.DialTCP
+	dialWebSocketTransport    = transport.DialWebSocket
+	ErrClientAlreadyConnected = errors.New("client already connected")
 )
 
 // Client implements the Fitz client with connection management.
@@ -52,8 +53,8 @@ type Client struct {
 	config        *Config
 	meter         metric.Meter
 
-	mu     sync.RWMutex
-	conn   *connection.Connection
+	mu     sync.Mutex
+	conn   atomic.Pointer[connection.Connection]
 	closed atomic.Bool
 
 	// Domain clients
@@ -188,16 +189,7 @@ func WithMeter(meter metric.Meter) Option {
 // NewClient creates a new Fitz client targeting the given address.
 // Call Connect() to establish the connection.
 func NewClient(addr string, tokenProvider types.TokenProvider) *Client {
-	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	cfg := defaultConfig()
-	cfg.URL = addr
-	client := &Client{
-		addr:            addr,
-		tokenProvider:   tokenProvider,
-		config:          cfg,
-		lifecycleCtx:    lifecycleCtx,
-		lifecycleCancel: lifecycleCancel,
-	}
+	client := newClientBase(addr, tokenProvider)
 	client.initMetrics()
 	return client
 }
@@ -205,13 +197,25 @@ func NewClient(addr string, tokenProvider types.TokenProvider) *Client {
 // NewClientWithOptions creates a new Fitz client targeting the given address
 // and applies functional options before the first Connect call.
 func NewClientWithOptions(addr string, tokenProvider types.TokenProvider, opts ...Option) *Client {
-	c := NewClient(addr, tokenProvider)
-	c.config.URL = addr
+	c := newClientBase(addr, tokenProvider)
 	for _, opt := range opts {
 		opt(c.config)
 	}
 	c.initMetrics()
 	return c
+}
+
+func newClientBase(addr string, tokenProvider types.TokenProvider) *Client {
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	cfg := defaultConfig()
+	cfg.URL = addr
+	return &Client{
+		addr:            addr,
+		tokenProvider:   tokenProvider,
+		config:          cfg,
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
+	}
 }
 
 func (c *Client) initMetrics() {
@@ -261,6 +265,9 @@ func (c *Client) Connect(ctx context.Context) error {
 	if c.closed.Load() {
 		return connection.ErrConnectionClosed
 	}
+	if c.currentConnection() != nil {
+		return ErrClientAlreadyConnected
+	}
 	tracer := c.config.Tracer
 	if tracer == nil {
 		tracer = traceNoop.NewTracerProvider().Tracer("")
@@ -289,10 +296,13 @@ func (c *Client) Connect(ctx context.Context) error {
 		return err
 	}
 
+	if err := c.attachConnection(conn, false); err != nil {
+		return err
+	}
+
 	if c.config.Logger != nil {
 		c.config.Logger.Info("connect success", "addr", c.addr)
 	}
-	c.attachConnection(conn)
 	return nil
 }
 
@@ -442,9 +452,7 @@ func (c *Client) Schedule() schedule.Client {
 }
 
 func (c *Client) currentConnection() *connection.Connection {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.conn
+	return c.conn.Load()
 }
 
 func (c *Client) dialConnection(ctx context.Context, transportType TransportType) (*connection.Connection, error) {
@@ -493,9 +501,19 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 	return conn, nil
 }
 
-func (c *Client) attachConnection(conn *connection.Connection) {
+func (c *Client) attachConnection(conn *connection.Connection, replace bool) error {
 	c.mu.Lock()
-	c.conn = conn
+	if c.closed.Load() {
+		c.mu.Unlock()
+		_ = conn.Close()
+		return connection.ErrConnectionClosed
+	}
+	if !replace && c.conn.Load() != nil {
+		c.mu.Unlock()
+		_ = conn.Close()
+		return ErrClientAlreadyConnected
+	}
+	c.conn.Store(conn)
 	if c.kvClient == nil {
 		c.kvClient = kv.NewClient(conn)
 	}
@@ -521,6 +539,7 @@ func (c *Client) attachConnection(conn *connection.Connection) {
 
 	c.replaceDomainConnections(conn)
 	go c.monitorConnection(conn)
+	return nil
 }
 
 func (c *Client) replaceDomainConnections(conn *connection.Connection) {
@@ -616,7 +635,14 @@ func (c *Client) beginReconnect(cause error) {
 
 		conn, err := c.dialConnection(attemptCtx, transportType)
 		if err == nil {
-			c.attachConnection(conn)
+			if err := c.attachConnection(conn, true); err != nil {
+				attemptSpan.RecordError(err)
+				attemptSpan.SetStatus(codes.Error, err.Error())
+				c.recordReconnectAttempt("attach_error", transportType, started)
+				_ = conn.Close()
+				attemptSpan.End()
+				return
+			}
 			restoreCtx, restoreSpan := tracer.Start(attemptCtx, "fitz.reconnect.restore_subscriptions")
 			err := c.restoreDomainSubscriptions(restoreCtx)
 			restoreSpan.End()

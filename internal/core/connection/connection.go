@@ -73,9 +73,11 @@ type Connection struct {
 	mux *Multiplexer
 
 	// Dispatch loop control
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{} // Closed when dispatch loop exits
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{} // Closed when dispatch loop exits
+	started atomic.Bool   // Set once Start has launched the dispatch loop
+	closed  atomic.Bool   // Set once Close has begun shutdown
 
 	// Connection error (set when connection closes)
 	connError atomic.Value // stores error
@@ -128,10 +130,11 @@ func DefaultConfig() Config {
 
 // Common errors
 var (
-	ErrNotAuthenticated      = errors.New("not authenticated")
-	ErrAuthenticationFailed  = errors.New("authentication failed")
-	ErrAuthenticationTimeout = errors.New("authentication timeout")
-	ErrConnectionClosed      = errors.New("connection closed")
+	ErrNotAuthenticated         = errors.New("not authenticated")
+	ErrAuthenticationFailed     = errors.New("authentication failed")
+	ErrAuthenticationTimeout    = errors.New("authentication timeout")
+	ErrConnectionClosed         = errors.New("connection closed")
+	ErrConnectionAlreadyStarted = errors.New("connection already started")
 )
 
 // New creates a new connection with the given transport.
@@ -270,6 +273,13 @@ func (c *Connection) initAsyncHandlerMetrics() {
 // Starts dispatch loop and performs CONNECT handshake.
 // Blocks until authentication is confirmed or fails.
 func (c *Connection) Start(ctx context.Context) error {
+	if c.closed.Load() {
+		return ErrConnectionClosed
+	}
+	if !c.started.CompareAndSwap(false, true) {
+		return ErrConnectionAlreadyStarted
+	}
+
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.start")
 	defer span.End()
 
@@ -746,6 +756,13 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 
 // Close cleanly shuts down the connection.
 func (c *Connection) Close() error {
+	if c == nil {
+		return nil
+	}
+	if !c.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+
 	// Cancel context (signals dispatch loop to stop)
 	c.cancel()
 
@@ -754,8 +771,10 @@ func (c *Connection) Close() error {
 	// because the TCP read is a blocking I/O call that ignores context cancellation.
 	err := c.transport.Close()
 
-	// Wait for dispatch loop to exit (now guaranteed to return since transport is closed)
-	<-c.done
+	// Wait for dispatch loop to exit if it has been started.
+	if c.started.Load() {
+		<-c.done
+	}
 
 	c.setState(StateClosed)
 	if c.logger != nil {

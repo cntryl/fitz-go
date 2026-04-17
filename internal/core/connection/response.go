@@ -120,6 +120,7 @@ func WriteU8(buf *bytes.Buffer, val uint8) {
 
 // WriteU16BE writes a u16 in big-endian format.
 func WriteU16BE(buf *bytes.Buffer, val uint16) {
+	buf.Grow(2)
 	var b [2]byte
 	binary.BigEndian.PutUint16(b[:], val)
 	buf.Write(b[:])
@@ -127,6 +128,7 @@ func WriteU16BE(buf *bytes.Buffer, val uint16) {
 
 // WriteU32BE writes a u32 in big-endian format.
 func WriteU32BE(buf *bytes.Buffer, val uint32) {
+	buf.Grow(4)
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], val)
 	buf.Write(b[:])
@@ -134,6 +136,7 @@ func WriteU32BE(buf *bytes.Buffer, val uint32) {
 
 // WriteU64BE writes a u64 in big-endian format.
 func WriteU64BE(buf *bytes.Buffer, val uint64) {
+	buf.Grow(8)
 	var b [8]byte
 	binary.BigEndian.PutUint64(b[:], val)
 	buf.Write(b[:])
@@ -141,18 +144,21 @@ func WriteU64BE(buf *bytes.Buffer, val uint64) {
 
 // WriteString writes [u32 BE length][bytes] per CLIENT_SPEC.md.
 func WriteString(buf *bytes.Buffer, s string) {
+	buf.Grow(4 + len(s))
 	WriteU32BE(buf, uint32(len(s)))
 	buf.WriteString(s)
 }
 
 // WriteBytes writes [u32 BE length][bytes] per CLIENT_SPEC.md.
 func WriteBytes(buf *bytes.Buffer, b []byte) {
+	buf.Grow(4 + len(b))
 	WriteU32BE(buf, uint32(len(b)))
 	buf.Write(b)
 }
 
 // WriteUUID writes a fixed 16-byte UUID.
 func WriteUUID(buf *bytes.Buffer, uuid [16]byte) {
+	buf.Grow(16)
 	buf.Write(uuid[:])
 }
 

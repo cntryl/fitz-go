@@ -111,6 +111,31 @@ func TestShouldReturnNilGivenNoConnectionWhenCloseCalledTwice(t *testing.T) {
 	require.NoError(t, err2)
 }
 
+func TestShouldRejectSecondConnectGivenExistingConnectionWhenConnectCalled(t *testing.T) {
+	originalDialTCP := dialTCPTransport
+	defer func() {
+		dialTCPTransport = originalDialTCP
+	}()
+
+	scripted := newScriptedTransport()
+	dialCalls := 0
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		dialCalls++
+		return scripted, nil
+	}
+
+	c := NewClient("localhost:4091", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	require.NoError(t, c.Connect(ctx))
+	defer c.Close()
+
+	err := c.Connect(ctx)
+	require.ErrorIs(t, err, ErrClientAlreadyConnected)
+	assert.Equal(t, 1, dialCalls)
+}
+
 func TestShouldValidateTransportLabelGivenKnownValueWhenTransportTypeStringCalled(t *testing.T) {
 	// Arrange / Act / Assert
 	assert.Equal(t, "websocket", transportTypeString(TransportWebSocket))
