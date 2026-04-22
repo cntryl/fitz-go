@@ -503,12 +503,13 @@ func (c *Connection) handleReadError(err error) {
 func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []byte) (_ []byte, retErr error) {
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
 	defer span.End()
+	metricCtx := c.LifecycleContext()
 
 	reqStart := time.Now()
 	defer func() {
 		attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
 		if c.requestDuration != nil {
-			c.requestDuration.Record(context.Background(), time.Since(reqStart).Milliseconds(), attrs)
+			c.requestDuration.Record(metricCtx, time.Since(reqStart).Milliseconds(), attrs)
 		}
 		if retErr != nil && c.requestErrors != nil {
 			errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
@@ -518,7 +519,7 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 			} else {
 				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
 			}
-			c.requestErrors.Add(context.Background(), 1, metric.WithAttributes(errorAttrs...))
+			c.requestErrors.Add(metricCtx, 1, metric.WithAttributes(errorAttrs...))
 		}
 	}()
 
@@ -591,12 +592,13 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, writePayload func(*bytes.Buffer)) (_ []byte, retErr error) {
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
 	defer span.End()
+	metricCtx := c.LifecycleContext()
 
 	reqStart := time.Now()
 	defer func() {
 		attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
 		if c.requestDuration != nil {
-			c.requestDuration.Record(context.Background(), time.Since(reqStart).Milliseconds(), attrs)
+			c.requestDuration.Record(metricCtx, time.Since(reqStart).Milliseconds(), attrs)
 		}
 		if retErr != nil && c.requestErrors != nil {
 			errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
@@ -606,7 +608,7 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 			} else {
 				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
 			}
-			c.requestErrors.Add(context.Background(), 1, metric.WithAttributes(errorAttrs...))
+			c.requestErrors.Add(metricCtx, 1, metric.WithAttributes(errorAttrs...))
 		}
 	}()
 
@@ -889,8 +891,9 @@ func (c *Connection) AcquireAsyncHandlerSlot(ctx context.Context) (release func(
 		return noop, true
 	}
 	if ctx == nil {
-		ctx = context.Background()
+		ctx = c.LifecycleContext()
 	}
+	metricCtx := c.LifecycleContext()
 
 	start := time.Now()
 	recordWait := func(recordCtx context.Context) {
@@ -908,16 +911,16 @@ func (c *Connection) AcquireAsyncHandlerSlot(ctx context.Context) (release func(
 	case c.asyncHandlerSem <- struct{}{}:
 		recordWait(ctx)
 		if c.asyncHandlersActive != nil {
-			c.asyncHandlersActive.Add(context.Background(), 1)
+			c.asyncHandlersActive.Add(metricCtx, 1)
 		}
 		acquiredAt := time.Now()
 		return func() {
 			<-c.asyncHandlerSem
 			if c.asyncHandlersActive != nil {
-				c.asyncHandlersActive.Add(context.Background(), -1)
+				c.asyncHandlersActive.Add(metricCtx, -1)
 			}
 			if c.asyncSlotOccupancyMs != nil {
-				c.asyncSlotOccupancyMs.Record(context.Background(), time.Since(acquiredAt).Milliseconds())
+				c.asyncSlotOccupancyMs.Record(metricCtx, time.Since(acquiredAt).Milliseconds())
 			}
 		}, true
 	case <-ctx.Done():

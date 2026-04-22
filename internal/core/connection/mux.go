@@ -181,14 +181,25 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	m.requestsInFlight.Add(-1)
 	m.responsesTotal.Add(1)
 
-	// Non-blocking send (prevents dispatch loop from stalling)
+	// Deliver on a fast path first; if the consumer is slow, wait off the
+	// dispatch loop so response routing stays responsive under backpressure.
 	select {
 	case req.responseChan <- payload:
-		// Success - response delivered
-	case <-time.After(100 * time.Millisecond):
-		// Slow consumer - drop response and close channel
+		// Success - response delivered immediately.
+	default:
+		go m.deliverResponse(req.responseChan, append([]byte(nil), payload...))
+	}
+}
+
+func (m *Multiplexer) deliverResponse(responseChan chan []byte, payload []byte) {
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case responseChan <- payload:
+	case <-timer.C:
 		m.responsesDropped.Add(1)
-		close(req.responseChan)
+		close(responseChan)
 	}
 }
 

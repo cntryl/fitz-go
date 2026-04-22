@@ -182,16 +182,6 @@ func NoticeWaitKey(op uint16) string {
 	return fmt.Sprintf("%d", op)
 }
 
-// ---------------------------------------------------------------------------
-// Binary helpers
-// ---------------------------------------------------------------------------
-
-func appendU64(buf []byte, v uint64) []byte {
-	return append(buf,
-		byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32),
-		byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
-}
-
 func appendU32(buf []byte, v uint32) []byte {
 	return append(buf, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }

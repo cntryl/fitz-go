@@ -4,7 +4,7 @@ package rpc
 
 import (
 	"context"
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"sync"
@@ -40,6 +40,16 @@ type RPCHandler func(ctx context.Context, req InboundRequest, w ResponseWriter) 
 type ResponseFrame struct {
 	Body     []byte
 	Sequence uint64
+}
+
+var readRandom = crand.Read
+
+func generateCorrelationID() ([16]byte, error) {
+	var correlationID [16]byte
+	if _, err := readRandom(correlationID[:]); err != nil {
+		return [16]byte{}, fmt.Errorf("generate correlation id: %w", err)
+	}
+	return correlationID, nil
 }
 
 // Subscription represents an active worker registration.
@@ -350,9 +360,12 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 
 	c.initRPCHandler()
 
-	// Generate correlation ID
-	var correlationID [16]byte
-	rand.Read(correlationID[:])
+	correlationID, err := generateCorrelationID()
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
 
 	// Create response channel
 	ch := make(chan ResponseFrame, 32)

@@ -103,6 +103,42 @@ func TestShouldUnblockWaiterGivenPendingRequestWhenDispatchCalled(t *testing.T) 
 	assert.True(t, success)
 }
 
+func TestShouldReturnPromptlyGivenSlowConsumerWhenDispatchCalled(t *testing.T) {
+	// Arrange
+	mux := connection.NewMultiplexer()
+	defer mux.Close()
+
+	ch := make(chan []byte)
+	mux.RegisterRequest(100, ch, nil)
+
+	received := make(chan []byte, 1)
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		received <- <-ch
+	}()
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		mux.Dispatch(100, []byte("response"))
+		close(done)
+	}()
+
+	// Assert dispatch returns quickly instead of parking the loop for the slow consumer window.
+	select {
+	case <-done:
+	case <-time.After(20 * time.Millisecond):
+		t.Fatalf("dispatch blocked for %s", time.Since(start))
+	}
+
+	select {
+	case resp := <-received:
+		assert.Equal(t, []byte("response"), resp)
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("slow consumer did not receive response")
+	}
+}
+
 // TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCalled tests concurrent dispatch behavior.
 func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCalled(t *testing.T) {
 	t.Run("10 concurrent requests", func(t *testing.T) {

@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -155,6 +156,33 @@ func TestShouldIgnoreMalformedWorkerPayloadGivenShortPayloadWhenHandleWorkerRequ
 
 	// Assert
 	assert.False(t, called)
+}
+
+func TestShouldReturnErrorGivenCorrelationIDGenerationFailureWhenCallCalled(t *testing.T) {
+	// Arrange
+	conn, transport := newStartedRPCConnection(t)
+	client := &client{
+		conn:        conn,
+		workers:     make(map[string]RPCHandler),
+		pendingRPCs: make(map[[16]byte]chan ResponseFrame),
+	}
+	originalReadRandom := readRandom
+	readRandom = func([]byte) (int, error) {
+		return 0, errors.New("entropy unavailable")
+	}
+	t.Cleanup(func() {
+		readRandom = originalReadRandom
+	})
+
+	// Act
+	iter, err := client.Call(context.Background(), "rpc://realm/area/resource", []byte("payload"))
+
+	// Assert
+	require.Error(t, err)
+	require.Nil(t, iter)
+	assert.Contains(t, err.Error(), "generate correlation id")
+	assert.Len(t, transport.GetWrittenFrames(), 1)
+	assert.Empty(t, client.pendingRPCs)
 }
 
 func TestShouldCleanupPendingRPCGivenContextDeadlineWhenNextCalled(t *testing.T) {
