@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"io"
 	"testing"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
@@ -453,6 +454,144 @@ func TestShouldEncodeStreamUnsubscribeGivenPatternWhenPayloadWritten(t *testing.
 	})
 }
 
+// TestShouldParseStreamRecord tests the stream record wire format parser.
+func TestShouldParseStreamRecordGivenFullPayloadWhenParseRecordCalled(t *testing.T) {
+	body := []byte("record-body")
+	metadata := []byte("meta")
+	areaOffset := uint64(11)
+	realmOffset := uint64(17)
+	timestamp := uint64(23)
+
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteU64BE(buf, 7)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, areaOffset)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, realmOffset)
+	connection.WriteBytes(buf, body)
+	buf.WriteByte(1)
+	connection.WriteBytes(buf, metadata)
+	connection.WriteU64BE(buf, timestamp)
+
+	payload := make([]byte, buf.Len())
+	copy(payload, buf.Bytes())
+
+	record, err := parseRecord(payload, 0)
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	assert.Equal(t, uint64(7), record.Offset)
+	require.NotNil(t, record.AreaOffset)
+	assert.Equal(t, areaOffset, *record.AreaOffset)
+	require.NotNil(t, record.RealmOffset)
+	assert.Equal(t, realmOffset, *record.RealmOffset)
+	assert.Equal(t, body, record.Body)
+	assert.Equal(t, metadata, record.Metadata)
+	assert.Equal(t, timestamp, record.Timestamp)
+}
+
+// TestShouldParseStreamReadResponse tests the count-prefixed stream read envelope.
+func TestShouldParseStreamReadResponseGivenTrailerWhenParseReadResponseCalled(t *testing.T) {
+	body := []byte("record-body")
+	metadata := []byte("meta")
+	areaOffset := uint64(11)
+	realmOffset := uint64(17)
+	timestamp := uint64(23)
+
+	recordBuf := connection.GetBuffer()
+	defer connection.PutBuffer(recordBuf)
+	connection.WriteU64BE(recordBuf, 7)
+	recordBuf.WriteByte(1)
+	connection.WriteU64BE(recordBuf, areaOffset)
+	recordBuf.WriteByte(1)
+	connection.WriteU64BE(recordBuf, realmOffset)
+	connection.WriteBytes(recordBuf, body)
+	recordBuf.WriteByte(1)
+	connection.WriteBytes(recordBuf, metadata)
+	connection.WriteU64BE(recordBuf, timestamp)
+
+	dataBuf := connection.GetBuffer()
+	defer connection.PutBuffer(dataBuf)
+	connection.WriteU32BE(dataBuf, 1)
+	dataBuf.Write(recordBuf.Bytes())
+	connection.WriteU64BE(dataBuf, 99)
+	dataBuf.WriteByte(1)
+	connection.WriteU64BE(dataBuf, 101)
+	dataBuf.WriteByte(0)
+	dataBuf.WriteByte(1)
+
+	payload := make([]byte, dataBuf.Len())
+	copy(payload, dataBuf.Bytes())
+
+	records, err := parseReadResponse(payload)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, uint64(7), records[0].Offset)
+	assert.Equal(t, body, records[0].Body)
+	require.NotNil(t, records[0].AreaOffset)
+	assert.Equal(t, areaOffset, *records[0].AreaOffset)
+	require.NotNil(t, records[0].RealmOffset)
+	assert.Equal(t, realmOffset, *records[0].RealmOffset)
+	assert.Equal(t, metadata, records[0].Metadata)
+	assert.Equal(t, timestamp, records[0].Timestamp)
+}
+
+// TestShouldParseStreamMetadata tests the metadata payload parser.
+func TestShouldParseStreamMetadataGivenFullPayloadWhenParseMetadataPayloadCalled(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+
+	connection.WriteU8(buf, 1)
+	connection.WriteU64BE(buf, 3)
+	connection.WriteU8(buf, 0)
+	connection.WriteU64BE(buf, 5)
+	connection.WriteU64BE(buf, 7)
+	connection.WriteU64BE(buf, 9)
+	connection.WriteU8(buf, 1)
+	connection.WriteU64BE(buf, 11)
+	connection.WriteU64BE(buf, 13)
+	connection.WriteU64BE(buf, 17)
+
+	payload := make([]byte, buf.Len())
+	copy(payload, buf.Bytes())
+
+	meta, err := parseMetadataPayload(payload)
+	require.NoError(t, err)
+	require.NotNil(t, meta)
+	assert.Equal(t, uint64(3), meta.FirstOffset)
+	assert.Equal(t, uint64(0), meta.LastOffset)
+	assert.Equal(t, uint64(5), meta.RecordCount)
+	assert.Equal(t, uint64(7), meta.MaxBatchEvents)
+	assert.Equal(t, uint64(9), meta.MaxBatchBytes)
+	require.NotNil(t, meta.TTLSeconds)
+	assert.Equal(t, uint64(11), *meta.TTLSeconds)
+	assert.Equal(t, uint64(13), meta.AreaWatermark)
+	assert.Equal(t, uint64(17), meta.RealmWatermark)
+}
+
+func TestShouldRejectMalformedStreamEnvelopeWhenSkipOptionalSessionIDAndGetDataCalled(t *testing.T) {
+	t.Run("incomplete optional session id", func(t *testing.T) {
+		payload := []byte{1, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}
+
+		data, err := skipOptionalSessionIDAndGetData(payload)
+
+		require.Error(t, err)
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		assert.Nil(t, data)
+	})
+
+	t.Run("truncated data blob", func(t *testing.T) {
+		payload := []byte{0}
+		payload = append(payload, []byte{0, 0, 0, 5, 0x01, 0x02}...)
+
+		data, err := skipOptionalSessionIDAndGetData(payload)
+
+		require.Error(t, err)
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		assert.Nil(t, data)
+	})
+}
+
 // Benchmarks
 
 func BenchmarkEncodeStreamBegin(b *testing.B) {
@@ -595,12 +734,26 @@ func BenchmarkEncodeStreamUnsubscribe(b *testing.B) {
 }
 
 func BenchmarkParseStreamReadResponse(b *testing.B) {
-	// data blob: [u32 count=1][u64 offset][u32 body_len][body]
+	// data blob: [u32 count=1][record][u64 last_resource_offset][opt area][opt realm][u8 has_more]
+	recordBuf := connection.GetBuffer()
+	defer connection.PutBuffer(recordBuf)
+	connection.WriteU64BE(recordBuf, 1)
+	recordBuf.WriteByte(1)
+	connection.WriteU64BE(recordBuf, 2)
+	recordBuf.WriteByte(1)
+	connection.WriteU64BE(recordBuf, 3)
+	connection.WriteBytes(recordBuf, []byte("record1"))
+	recordBuf.WriteByte(0)
+	connection.WriteU64BE(recordBuf, 4)
+
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	connection.WriteU32BE(buf, 1)
-	connection.WriteU64BE(buf, 1)
-	connection.WriteBytes(buf, []byte("record1"))
+	buf.Write(recordBuf.Bytes())
+	connection.WriteU64BE(buf, 9)
+	buf.WriteByte(0)
+	buf.WriteByte(0)
+	buf.WriteByte(1)
 	payload := make([]byte, buf.Len())
 	copy(payload, buf.Bytes())
 	b.ReportAllocs()
@@ -611,11 +764,15 @@ func BenchmarkParseStreamReadResponse(b *testing.B) {
 }
 
 func BenchmarkParseStreamLastResponse(b *testing.B) {
-	// single record: [u64 offset][u32 body_len][body]
+	// single record: [u64 offset][opt area][opt realm][bytes body][opt metadata][u64 timestamp]
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	connection.WriteU64BE(buf, 1)
+	buf.WriteByte(0)
+	buf.WriteByte(0)
 	connection.WriteBytes(buf, []byte("last"))
+	buf.WriteByte(0)
+	connection.WriteU64BE(buf, 5)
 	payload := make([]byte, buf.Len())
 	copy(payload, buf.Bytes())
 	b.ReportAllocs()

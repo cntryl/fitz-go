@@ -111,8 +111,15 @@ func (m *Multiplexer) UnregisterRequest(msgType uint16, responseChan chan []byte
 // Called by the connection's dispatch loop when a frame arrives.
 func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	// Handle async deliveries (per CLIENT_SPEC.md MessageType ranges)
-	// Queue NOTIFY (209), Lease NOTIFY (409), Notice NOTIFY (504), Stream NOTIFY (609) use same payload format
-	if msgType == 209 || msgType == 409 || msgType == 504 || msgType == 609 {
+	// Queue NOTIFY (209) uses a queue-specific payload shape.
+	if msgType == 209 {
+		if handler := m.notifyHandlers[msgType]; handler != nil {
+			m.handleQueueNotify(payload, handler)
+		}
+		return
+	}
+	// Lease NOTIFY (409), Notice NOTIFY (504), Stream NOTIFY (609) use the shared route/payload shape.
+	if msgType == 409 || msgType == 504 || msgType == 609 {
 		if handler := m.notifyHandlers[msgType]; handler != nil {
 			m.handleNotify(payload, handler)
 		}
@@ -224,6 +231,33 @@ func (m *Multiplexer) handleNotify(payload []byte, handler func(subID uint64, ro
 	msgPayload := payload[offset : offset+int(payloadLen)]
 
 	handler(subID, route, msgPayload)
+}
+
+// handleQueueNotify processes Queue NOTIFY messages (209).
+// Per queue sink wire format: [u64 BE subscription_id][u32 route_len][route][u64 ready][u64 delayed][u64 inflight]
+func (m *Multiplexer) handleQueueNotify(payload []byte, handler func(subID uint64, route string, payload []byte)) {
+	if len(payload) < 8+4 {
+		return
+	}
+
+	offset := 0
+	subID := binary.BigEndian.Uint64(payload[offset : offset+8])
+	offset += 8
+
+	routeLen := binary.BigEndian.Uint32(payload[offset : offset+4])
+	offset += 4
+	if len(payload) < offset+int(routeLen) {
+		return
+	}
+	route := string(payload[offset : offset+int(routeLen)])
+	offset += int(routeLen)
+
+	// Queue watch notifications carry three u64 counters after the route.
+	if len(payload) < offset+24 {
+		return
+	}
+
+	handler(subID, route, payload[offset:])
 }
 
 // handleScheduleNotify processes Schedule NOTIFY messages (705).

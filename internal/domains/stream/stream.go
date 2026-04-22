@@ -23,15 +23,24 @@ import (
 
 // Record represents a single stream record.
 type Record struct {
-	Offset uint64
-	Body   []byte
+	Offset      uint64
+	AreaOffset  *uint64
+	RealmOffset *uint64
+	Body        []byte
+	Metadata    []byte
+	Timestamp   uint64
 }
 
 // Metadata holds stream metadata.
 type Metadata struct {
-	FirstOffset uint64
-	LastOffset  uint64
-	RecordCount uint64
+	FirstOffset    uint64
+	LastOffset     uint64
+	RecordCount    uint64
+	MaxBatchEvents uint64
+	MaxBatchBytes  uint64
+	TTLSeconds     *uint64
+	AreaWatermark  uint64
+	RealmWatermark uint64
 }
 
 // CommitNotification is a notification of stream data availability.
@@ -332,8 +341,13 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 		return nil, recordErr
 	}
 
-	// Skip optional session_id and extract data blob
-	data := skipOptionalSessionIDAndGetData(remaining)
+	// Skip optional session_id and extract data blob.
+	data, err := skipOptionalSessionIDAndGetData(remaining)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("parse READ response envelope: %w", err)
+	}
 
 	// Parse records from data
 	records, err := parseReadResponse(data)
@@ -380,8 +394,13 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 		return nil, recordErr
 	}
 
-	// Skip optional session_id and extract data blob
-	data := skipOptionalSessionIDAndGetData(remaining)
+	// Skip optional session_id and extract data blob.
+	data, err := skipOptionalSessionIDAndGetData(remaining)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("parse PEEK response envelope: %w", err)
+	}
 
 	// Empty data means no record (stream empty or server stub)
 	if len(data) == 0 {
@@ -432,54 +451,48 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 		return nil, recordErr
 	}
 
-	// Skip optional session_id and extract data blob
-	data := skipOptionalSessionIDAndGetData(remaining)
-
-	meta := &Metadata{}
-	offset := 0
-
-	// Parse metadata fields from data
-	if offset+8 <= len(data) {
-		meta.FirstOffset, offset, _ = connection.ReadU64BE(data, offset)
+	// Skip optional session_id and extract data blob.
+	data, err := skipOptionalSessionIDAndGetData(remaining)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("parse GET_METADATA response envelope: %w", err)
 	}
-	if offset+8 <= len(data) {
-		meta.LastOffset, offset, _ = connection.ReadU64BE(data, offset)
-	}
-	if offset+8 <= len(data) {
-		meta.RecordCount, _, _ = connection.ReadU64BE(data, offset)
+
+	meta, err := parseMetadataPayload(data)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("parse GET_METADATA response: %w", err)
 	}
 
 	return meta, nil
 }
 
 // skipOptionalSessionIDAndGetData parses the common stream response format:
-// [u8 has_session_id][u64 session_id if has=1][u32 data_len][data]
-// Returns the data portion (after the data_len prefix).
-func skipOptionalSessionIDAndGetData(remaining []byte) []byte {
+// [u8 has_session_id][u64 session_id if has=1][bytes data]
+// Returns the decoded data payload.
+func skipOptionalSessionIDAndGetData(remaining []byte) ([]byte, error) {
 	offset := 0
-	if offset >= len(remaining) {
-		return nil
+	if len(remaining) == 0 {
+		return nil, fmt.Errorf("stream response missing payload")
 	}
 
-	// Skip optional session_id
-	hasSessionID := remaining[offset]
-	offset++
-	if hasSessionID == 1 && offset+8 <= len(remaining) {
-		offset += 8
+	if _, newOffset, err := readOptionalU64(remaining, offset); err != nil {
+		return nil, fmt.Errorf("parse optional session_id: %w", err)
+	} else {
+		offset = newOffset
 	}
 
-	// Read data blob: [u32 data_len][data]
-	if offset+4 > len(remaining) {
-		return nil
-	}
-	dataLen, newOffset, err := connection.ReadU32BE(remaining, offset)
+	data, newOffset, err := connection.ReadBytes(remaining, offset)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("parse response data: %w", err)
 	}
-	if newOffset+int(dataLen) > len(remaining) {
-		return remaining[newOffset:]
+	if newOffset != len(remaining) {
+		return nil, fmt.Errorf("stream response has trailing bytes")
 	}
-	return remaining[newOffset : newOffset+int(dataLen)]
+
+	return data, nil
 }
 
 // parseReadResponse parses records from a READ response data blob.
@@ -488,45 +501,36 @@ func parseReadResponse(data []byte) ([]Record, error) {
 		return nil, nil
 	}
 
-	var records []Record
-	offset := 0
-
-	// Parse record count if available
-	if len(data) >= 4 {
-		count, newOffset, err := connection.ReadU32BE(data, offset)
-		if err == nil {
-			offset = newOffset
-			for i := uint32(0); i < count && offset < len(data); i++ {
-				rec, err := parseRecord(data, offset)
-				if err != nil {
-					break
-				}
-				records = append(records, *rec)
-				// Advance offset past this record
-				offset += 8 // offset field
-				if offset+4 <= len(data) {
-					bodyLen, _, _ := connection.ReadU32BE(data, offset)
-					offset += 4 + int(bodyLen)
-				}
-			}
-			return records, nil
-		}
+	count, offset, err := connection.ReadU32BE(data, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse record count: %w", err)
 	}
 
-	// Fallback: try parsing as a flat sequence of records
-	for offset < len(data) {
-		rec, err := parseRecord(data, offset)
+	records := make([]Record, 0, count)
+	for i := uint32(0); i < count; i++ {
+		rec, newOffset, err := decodeStreamRecordAt(data, offset)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("parse record %d: %w", i, err)
 		}
 		records = append(records, *rec)
-		offset += 8 // offset
-		if offset+4 <= len(data) {
-			bodyLen, _, _ := connection.ReadU32BE(data, offset)
-			offset += 4 + int(bodyLen)
-		} else {
-			break
-		}
+		offset = newOffset
+	}
+
+	if _, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse last_resource_offset: %w", err)
+	}
+	if _, offset, err = readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse last_area_offset: %w", err)
+	}
+	if _, offset, err = readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse last_realm_offset: %w", err)
+	}
+	if offset >= len(data) {
+		return nil, fmt.Errorf("READ response missing has_more flag")
+	}
+	offset++
+	if offset != len(data) {
+		return nil, fmt.Errorf("READ response has trailing bytes")
 	}
 
 	return records, nil
@@ -534,24 +538,143 @@ func parseReadResponse(data []byte) ([]Record, error) {
 
 // parseRecord parses a single record from the payload at the given offset.
 func parseRecord(data []byte, offset int) (*Record, error) {
+	rec, newOffset, err := decodeStreamRecordAt(data, offset)
+	if err != nil {
+		return nil, err
+	}
+	if newOffset != len(data) {
+		return nil, fmt.Errorf("parse record has trailing bytes")
+	}
+	return rec, nil
+}
+
+func decodeStreamRecordAt(data []byte, offset int) (*Record, int, error) {
 	rec := &Record{}
 
-	// Read offset (u64)
 	var err error
 	rec.Offset, offset, err = connection.ReadU64BE(data, offset)
 	if err != nil {
-		return nil, fmt.Errorf("parse record offset: %w", err)
+		return nil, offset, fmt.Errorf("parse record offset: %w", err)
 	}
 
-	// Read body
-	bodyData, _, err := connection.ReadBytes(data, offset)
+	rec.AreaOffset, offset, err = readOptionalU64(data, offset)
 	if err != nil {
-		return nil, fmt.Errorf("parse record body: %w", err)
+		return nil, offset, fmt.Errorf("parse record area_offset: %w", err)
 	}
-	rec.Body = make([]byte, len(bodyData))
-	copy(rec.Body, bodyData)
 
-	return rec, nil
+	rec.RealmOffset, offset, err = readOptionalU64(data, offset)
+	if err != nil {
+		return nil, offset, fmt.Errorf("parse record realm_offset: %w", err)
+	}
+
+	bodyData, offset, err := connection.ReadBytes(data, offset)
+	if err != nil {
+		return nil, offset, fmt.Errorf("parse record body: %w", err)
+	}
+	rec.Body = append([]byte(nil), bodyData...)
+
+	rec.Metadata, offset, err = readOptionalBytes(data, offset)
+	if err != nil {
+		return nil, offset, fmt.Errorf("parse record metadata: %w", err)
+	}
+
+	rec.Timestamp, offset, err = connection.ReadU64BE(data, offset)
+	if err != nil {
+		return nil, offset, fmt.Errorf("parse record timestamp: %w", err)
+	}
+
+	return rec, offset, nil
+}
+
+func parseMetadataPayload(data []byte) (*Metadata, error) {
+	meta := &Metadata{}
+	offset := 0
+	var err error
+
+	if firstOffset, newOffset, err := readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse first_offset: %w", err)
+	} else {
+		if firstOffset != nil {
+			meta.FirstOffset = *firstOffset
+		}
+		offset = newOffset
+	}
+
+	if lastOffset, newOffset, err := readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse last_offset: %w", err)
+	} else {
+		if lastOffset != nil {
+			meta.LastOffset = *lastOffset
+		}
+		offset = newOffset
+	}
+
+	if meta.RecordCount, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse record_count: %w", err)
+	}
+	if meta.MaxBatchEvents, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse max_batch_events: %w", err)
+	}
+	if meta.MaxBatchBytes, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse max_batch_bytes: %w", err)
+	}
+	if meta.TTLSeconds, offset, err = readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse ttl_seconds: %w", err)
+	}
+	if meta.AreaWatermark, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse area_watermark: %w", err)
+	}
+	if meta.RealmWatermark, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse realm_watermark: %w", err)
+	}
+
+	if offset != len(data) {
+		return nil, fmt.Errorf("GET_METADATA response has trailing bytes")
+	}
+
+	return meta, nil
+}
+
+func readOptionalU64(data []byte, offset int) (*uint64, int, error) {
+	if offset >= len(data) {
+		return nil, offset, fmt.Errorf("optional u64 flag missing")
+	}
+
+	flag := data[offset]
+	offset++
+	switch flag {
+	case 0:
+		return nil, offset, nil
+	case 1:
+		value, newOffset, err := connection.ReadU64BE(data, offset)
+		if err != nil {
+			return nil, newOffset, err
+		}
+		return &value, newOffset, nil
+	default:
+		return nil, offset, fmt.Errorf("invalid optional u64 flag: %d", flag)
+	}
+}
+
+func readOptionalBytes(data []byte, offset int) ([]byte, int, error) {
+	if offset >= len(data) {
+		return nil, offset, fmt.Errorf("optional bytes flag missing")
+	}
+
+	flag := data[offset]
+	offset++
+	switch flag {
+	case 0:
+		return nil, offset, nil
+	case 1:
+		value, newOffset, err := connection.ReadBytes(data, offset)
+		if err != nil {
+			return nil, newOffset, err
+		}
+		return append([]byte(nil), value...), newOffset, nil
+	default:
+		return nil, offset, fmt.Errorf("invalid optional bytes flag: %d", flag)
+	}
 }
 
 // initNotifyHandler registers the NOTIFY handler on first use.

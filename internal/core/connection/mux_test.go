@@ -1,11 +1,13 @@
 package connection_test
 
 import (
+	"encoding/binary"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -253,6 +255,53 @@ func TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead(t *testing.T) {
 	metrics = mux.Metrics()
 	assert.Equal(t, int64(0), metrics.RequestsInFlight)
 	assert.Equal(t, uint64(1), metrics.RequestsTotal)
+}
+
+// TestShouldDispatchQueueNotifyGivenQueuePayloadWhenNotifyHandlerRegistered verifies queue watch payload parsing.
+func TestShouldDispatchQueueNotifyGivenQueuePayloadWhenNotifyHandlerRegistered(t *testing.T) {
+	mux := connection.NewMultiplexer()
+	defer mux.Close()
+
+	got := make(chan struct {
+		subID uint64
+		route string
+		body  []byte
+	}, 1)
+
+	mux.SetNotifyHandler(protocol.MessageTypeQueueNotify, func(subID uint64, route string, payload []byte) {
+		copied := append([]byte(nil), payload...)
+		got <- struct {
+			subID uint64
+			route string
+			body  []byte
+		}{subID: subID, route: route, body: copied}
+	})
+
+	route := "queue://realm/area/resource/ready"
+	payload := make([]byte, 8+4+len(route)+24)
+	offset := 0
+	binary.BigEndian.PutUint64(payload[offset:offset+8], 99)
+	offset += 8
+	binary.BigEndian.PutUint32(payload[offset:offset+4], uint32(len(route)))
+	offset += 4
+	copy(payload[offset:offset+len(route)], []byte(route))
+	offset += len(route)
+	binary.BigEndian.PutUint64(payload[offset:offset+8], 3)
+	offset += 8
+	binary.BigEndian.PutUint64(payload[offset:offset+8], 0)
+	offset += 8
+	binary.BigEndian.PutUint64(payload[offset:offset+8], 0)
+
+	mux.Dispatch(protocol.MessageTypeQueueNotify, payload)
+
+	select {
+	case delivered := <-got:
+		assert.Equal(t, uint64(99), delivered.subID)
+		assert.Equal(t, route, delivered.route)
+		assert.Equal(t, payload[8+4+len(route):], delivered.body)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected queue notify delivery")
+	}
 }
 
 // Benchmarks

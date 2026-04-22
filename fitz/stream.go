@@ -7,14 +7,23 @@ import (
 )
 
 type StreamRecord struct {
-	Offset uint64
-	Body   []byte
+	Offset      uint64
+	AreaOffset  *uint64
+	RealmOffset *uint64
+	Body        []byte
+	Metadata    []byte
+	Timestamp   uint64
 }
 
 type StreamMetadata struct {
-	FirstOffset uint64
-	LastOffset  uint64
-	RecordCount uint64
+	FirstOffset    uint64
+	LastOffset     uint64
+	RecordCount    uint64
+	MaxBatchEvents uint64
+	MaxBatchBytes  uint64
+	TTLSeconds     *uint64
+	AreaWatermark  uint64
+	RealmWatermark uint64
 }
 
 type StreamCommitMode uint8
@@ -97,8 +106,12 @@ func (c *streamClient) Peek(ctx context.Context, route string) (*StreamRecord, e
 		return nil, err
 	}
 	return &StreamRecord{
-		Offset: record.Offset,
-		Body:   append([]byte(nil), record.Body...),
+		Offset:      record.Offset,
+		AreaOffset:  cloneUint64Ptr(record.AreaOffset),
+		RealmOffset: cloneUint64Ptr(record.RealmOffset),
+		Body:        append([]byte(nil), record.Body...),
+		Metadata:    append([]byte(nil), record.Metadata...),
+		Timestamp:   record.Timestamp,
 	}, nil
 }
 
@@ -108,9 +121,14 @@ func (c *streamClient) Metadata(ctx context.Context, route string) (*StreamMetad
 		return nil, err
 	}
 	return &StreamMetadata{
-		FirstOffset: meta.FirstOffset,
-		LastOffset:  meta.LastOffset,
-		RecordCount: meta.RecordCount,
+		FirstOffset:    meta.FirstOffset,
+		LastOffset:     meta.LastOffset,
+		RecordCount:    meta.RecordCount,
+		MaxBatchEvents: meta.MaxBatchEvents,
+		MaxBatchBytes:  meta.MaxBatchBytes,
+		TTLSeconds:     cloneUint64Ptr(meta.TTLSeconds),
+		AreaWatermark:  meta.AreaWatermark,
+		RealmWatermark: meta.RealmWatermark,
 	}, nil
 }
 
@@ -152,8 +170,12 @@ func (it *streamRecordIterator) Next() bool {
 	}
 	record := it.inner.Value()
 	it.current = StreamRecord{
-		Offset: record.Offset,
-		Body:   append([]byte(nil), record.Body...),
+		Offset:      record.Offset,
+		AreaOffset:  cloneUint64Ptr(record.AreaOffset),
+		RealmOffset: cloneUint64Ptr(record.RealmOffset),
+		Body:        append([]byte(nil), record.Body...),
+		Metadata:    append([]byte(nil), record.Metadata...),
+		Timestamp:   record.Timestamp,
 	}
 	return true
 }
@@ -168,4 +190,12 @@ func (it *streamRecordIterator) Err() error {
 
 func (it *streamRecordIterator) Close() error {
 	return it.inner.Close()
+}
+
+func cloneUint64Ptr(value *uint64) *uint64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }

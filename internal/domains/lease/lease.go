@@ -46,7 +46,7 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 	))
 	defer span.End()
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRenew, leaseRenewPayloadWriter(l.route, tokenToU64(token), ttlSecs))
-			if isLeaseHeldError(err) {
+	if isLeaseHeldError(err) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("EXTEND request failed: %w", err)

@@ -1,6 +1,6 @@
 # Performance Results (World-Class Validation)
 
-Date: 2026-03-24  
+Date: 2026-04-22  
 Platform: Windows amd64, 12th Gen Intel(R) Core(TM) i9-12900HK
 
 ## Commands
@@ -11,23 +11,23 @@ go test ./bench -run ^$ -bench "Benchmark(KVTransactionLoopback|NoticePublishHot
 
 ## Results Summary
 
-- `BenchmarkKVTransactionLoopback`: ~13.3-14.3 us/op
+- `BenchmarkKVTransactionLoopback`: ~11.5-15.5 us/op, 4914 B/op, 87 allocs/op
   - Target (REQ-PERF-004): < 500 us p99 loopback
   - Result: PASS by large margin on this benchmark environment
 
-- `BenchmarkFrameEncode`: ~28.6-51.1 ns/op
+- `BenchmarkFrameEncode`: ~34.6-38.4 ns/op, 8 B/op, 1 allocs/op
   - Target (REQ-PERF-005): < 500 ns/frame
   - Result: PASS by large margin
 
-- `BenchmarkRPCCorrelation1KInFlight`: ~596-629 ns/op with 1024 in-flight registrations
+- `BenchmarkRPCCorrelation1KInFlight`: ~321.8-349.1 ns/op with 1024 in-flight registrations, 344 B/op, 5 allocs/op
   - Target (REQ-PERF-006): < 2 us lookup with 1,000+ in-flight
   - Result: PASS by large margin
 
-- `BenchmarkNoticePublishHotPath`: ~1652-2048 ns/op
-  - Throughput equivalent: ~488k to ~605k ops/sec
+- `BenchmarkNoticePublishHotPath`: ~1163-1820 ns/op, 945 B/op, 17 allocs/op
+  - Throughput equivalent: ~549k to ~860k ops/sec
   - Target (REQ-PERF-007): > 50,000 ops/sec single goroutine loopback
   - Result: PASS by large margin
 
 ## Allocation Tracking
 
-Current benchmark output includes allocation counters via `-benchmem`, satisfying the measurement/tracking expectation in REQ-PERF-008.
+The benchmark command includes `-benchmem`, and the current output records allocation counts for each hot path. The measurements remain throughput-positive, but they do not justify any zero-allocation or zero-copy claim, so this report keeps those claims out of scope.

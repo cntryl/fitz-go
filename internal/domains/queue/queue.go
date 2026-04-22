@@ -5,6 +5,7 @@ package queue
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -265,10 +266,10 @@ func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs
 	}
 
 	if cfg.waitSeconds == 0 {
-		return c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize, 0)
+		return c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize)
 	}
 
-	items, err := c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize, 0)
+	items, err := c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize)
 	if err != nil || len(items) > 0 {
 		return items, err
 	}
@@ -288,7 +289,7 @@ func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs
 
 	deadline := time.Now().Add(time.Duration(cfg.waitSeconds) * time.Second)
 	for {
-		items, err = c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize, 0)
+		items, err = c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize)
 		if err != nil || len(items) > 0 {
 			return items, err
 		}
@@ -305,7 +306,7 @@ func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs
 				<-timer.C
 			}
 		case <-timer.C:
-			return c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize, 0)
+			return c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize)
 		case <-ctx.Done():
 			if !timer.Stop() {
 				<-timer.C
@@ -320,12 +321,11 @@ func (c *client) reserveOnce(
 	route string,
 	leaseSecs uint64,
 	batchSize uint32,
-	waitSeconds uint64,
 ) ([]*QueueItem, error) {
 	resp, err := c.conn.SendRequestWithWriter(
 		ctx,
 		protocol.MessageTypeQueueReserve,
-		reservePayloadWriter(route, leaseSecs, batchSize, waitSeconds),
+		reservePayloadWriter(route, leaseSecs, batchSize),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("RESERVE request failed: %w", err)
@@ -339,10 +339,15 @@ func (c *client) reserveOnce(
 		return nil, fmt.Errorf("RESERVE failed: unexpected status")
 	}
 
-	if len(remaining) < 4 {
-		return nil, nil
+	items, err := parseReserveItems(remaining, route, c.conn)
+	if err != nil {
+		return nil, err
 	}
 
+	return items, nil
+}
+
+func parseReserveItems(remaining []byte, route string, conn *connection.Connection) ([]*QueueItem, error) {
 	count, offset, err := connection.ReadU32BE(remaining, 0)
 	if err != nil {
 		return nil, fmt.Errorf("parse lease_count: %w", err)
@@ -350,7 +355,7 @@ func (c *client) reserveOnce(
 
 	items := make([]*QueueItem, 0, count)
 	for i := uint32(0); i < count; i++ {
-		item := &QueueItem{route: route, conn: c.conn}
+		item := &QueueItem{route: route, conn: conn}
 
 		item.ID, offset, err = connection.ReadU64BE(remaining, offset)
 		if err != nil {
@@ -371,6 +376,10 @@ func (c *client) reserveOnce(
 		copy(item.Body, bodyData)
 
 		items = append(items, item)
+	}
+
+	if offset != len(remaining) {
+		return nil, fmt.Errorf("RESERVE response has trailing bytes")
 	}
 
 	return items, nil
@@ -394,7 +403,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	}
 
 	notif := AvailabilityNotification{
-		Route: route,
+		Route: publicQueueRoute(route),
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 
@@ -475,7 +484,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
 	ctx := c.conn.LifecycleContext()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(sub.pattern))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(wireWatchPattern(sub.pattern)))
 	if err != nil {
 		return
 	}
@@ -498,7 +507,7 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 }
 
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueSubscribe, subscribePayloadWriter(pattern))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueSubscribe, subscribePayloadWriter(wireWatchPattern(pattern)))
 	if err != nil {
 		return 0, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
@@ -511,20 +520,43 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")
 	}
 
-	if len(remaining) < 1 {
-		return 0, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
-	}
-	if remaining[0] != 1 {
-		return 0, fmt.Errorf("SUBSCRIBE response missing subscription_id")
-	}
-	if len(remaining) < 9 {
-		return 0, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
-	}
-
-	subID, _, err := connection.ReadU64BE(remaining, 1)
+	subID, err := parseSubscriptionID(remaining)
 	if err != nil {
-		return 0, fmt.Errorf("parse subscription_id: %w", err)
+		return 0, err
 	}
 	c.conn.AddSubscriptions(1)
 	return subID, nil
+}
+
+func wireWatchPattern(pattern string) string {
+	if strings.HasSuffix(pattern, "/ready") {
+		return pattern
+	}
+	return pattern + "/ready"
+}
+
+func publicQueueRoute(route string) string {
+	return strings.TrimSuffix(route, "/ready")
+}
+
+func parseSubscriptionID(remaining []byte) (uint64, error) {
+	switch {
+	case len(remaining) == 8:
+		subID, _, err := connection.ReadU64BE(remaining, 0)
+		if err != nil {
+			return 0, fmt.Errorf("parse subscription_id: %w", err)
+		}
+		return subID, nil
+	case len(remaining) >= 9 && remaining[0] == 1:
+		subID, _, err := connection.ReadU64BE(remaining, 1)
+		if err != nil {
+			return 0, fmt.Errorf("parse subscription_id: %w", err)
+		}
+		if len(remaining) != 9 {
+			return 0, fmt.Errorf("SUBSCRIBE response has trailing bytes: got %d bytes", len(remaining))
+		}
+		return subID, nil
+	default:
+		return 0, fmt.Errorf("SUBSCRIBE response missing subscription_id")
+	}
 }

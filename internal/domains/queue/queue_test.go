@@ -2,8 +2,10 @@ package queue
 
 import (
 	"encoding/binary"
+	"io"
 	"testing"
 
+	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -110,17 +112,16 @@ func TestShouldEncodeEnqueueWithDelayGivenDelayedMessageWhenEncodeEnqueueCalled(
 	})
 }
 
-// TestShouldEncodeReserveWithBatchAndWait tests RESERVE encoding with all optional fields.
-func TestShouldEncodeReserveWithBatchAndWaitGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
+// TestShouldEncodeReserve tests RESERVE encoding with the current wire format.
+func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 	t.Run("full reserve request", func(t *testing.T) {
 		// Arrange
 		route := "queue://acme/app/tasks"
 		leaseSeconds := uint64(30)
 		batchSize := uint32(10)
-		waitSeconds := uint64(5)
 
 		// Act
-		payload := EncodeReserve(route, leaseSeconds, batchSize, waitSeconds)
+		payload := EncodeReserve(route, leaseSeconds, batchSize)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -135,18 +136,31 @@ func TestShouldEncodeReserveWithBatchAndWaitGivenOptionsWhenEncodeReserveCalled(
 		offset += int(routeLen)
 		actualLease := binary.BigEndian.Uint64(payload[offset : offset+8])
 		assert.Equal(t, leaseSeconds, actualLease)
+		offset += 8
+		assert.Equal(t, byte(1), payload[offset])
+		offset++
+		actualBatch := binary.BigEndian.Uint32(payload[offset : offset+4])
+		assert.Equal(t, batchSize, actualBatch)
+		offset += 4
+		assert.Equal(t, len(payload), offset)
 	})
 
-	t.Run("reserve without batch or wait", func(t *testing.T) {
+	t.Run("reserve without explicit batch size", func(t *testing.T) {
 		// Arrange
 		route := "queue://acme/app/items"
 		leaseSeconds := uint64(60)
 
 		// Act
-		payload := EncodeReserve(route, leaseSeconds, 0, 0)
+		payload := EncodeReserve(route, leaseSeconds, 0)
 
 		// Assert
 		require.NotNil(t, payload)
+		offset := 0
+		routeLen := binary.BigEndian.Uint32(payload[offset : offset+4])
+		offset += 4 + int(routeLen)
+		offset += 8
+		assert.Equal(t, byte(0), payload[offset])
+		assert.Equal(t, len(payload), offset+1)
 	})
 
 	t.Run("reserve with zero lease", func(t *testing.T) {
@@ -155,7 +169,7 @@ func TestShouldEncodeReserveWithBatchAndWaitGivenOptionsWhenEncodeReserveCalled(
 		leaseSeconds := uint64(0)
 
 		// Act
-		payload := EncodeReserve(route, leaseSeconds, 1, 0)
+		payload := EncodeReserve(route, leaseSeconds, 1)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -253,6 +267,79 @@ func TestShouldParseQueueResponseGivenBrokerPayloadWhenParseQueueResponseCalled(
 		// Assert
 		assert.False(t, success)
 		require.Error(t, err)
+	})
+}
+
+// TestShouldParseQueueSubscriptionID tests queue subscription response parsing.
+func TestShouldParseQueueSubscriptionIDGivenBrokerPayloadWhenParseSubscriptionIDCalled(t *testing.T) {
+	t.Run("raw subscription id", func(t *testing.T) {
+		subID := uint64(42)
+		payload := make([]byte, 8)
+		binary.BigEndian.PutUint64(payload, subID)
+
+		actual, err := parseSubscriptionID(payload)
+		require.NoError(t, err)
+		assert.Equal(t, subID, actual)
+	})
+
+	t.Run("flagged subscription id", func(t *testing.T) {
+		subID := uint64(42)
+		payload := make([]byte, 9)
+		payload[0] = 1
+		binary.BigEndian.PutUint64(payload[1:], subID)
+
+		actual, err := parseSubscriptionID(payload)
+		require.NoError(t, err)
+		assert.Equal(t, subID, actual)
+	})
+}
+
+func TestShouldRejectMalformedQueueReservePayloadWhenParseReserveItemsCalled(t *testing.T) {
+	t.Run("undersized success payload", func(t *testing.T) {
+		_, err := parseReserveItems([]byte{0x00, 0x01, 0x02}, "queue://acme/app/work", nil)
+
+		require.Error(t, err)
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	})
+
+	t.Run("trailing bytes after items", func(t *testing.T) {
+		buf := connection.GetBuffer()
+		defer connection.PutBuffer(buf)
+
+		connection.WriteU32BE(buf, 1)
+		connection.WriteU64BE(buf, 11)
+		connection.WriteU64BE(buf, 22)
+		connection.WriteBytes(buf, []byte("job"))
+		buf.WriteByte(0x99)
+
+		payload := make([]byte, buf.Len())
+		copy(payload, buf.Bytes())
+
+		items, err := parseReserveItems(payload, "queue://acme/app/work", nil)
+
+		require.Error(t, err)
+		assert.Nil(t, items)
+		assert.Contains(t, err.Error(), "trailing bytes")
+	})
+}
+
+func TestShouldWireQueueSubscribePatternGivenBaseRouteWhenWireWatchPatternCalled(t *testing.T) {
+	t.Run("appends ready suffix for base route", func(t *testing.T) {
+		assert.Equal(t, "queue://acme/app/tasks/ready", wireWatchPattern("queue://acme/app/tasks"))
+	})
+
+	t.Run("preserves existing ready route", func(t *testing.T) {
+		assert.Equal(t, "queue://acme/app/tasks/ready", wireWatchPattern("queue://acme/app/tasks/ready"))
+	})
+}
+
+func TestShouldPublicizeQueueNotificationRouteGivenReadyRouteWhenPublicQueueRouteCalled(t *testing.T) {
+	t.Run("strips ready suffix", func(t *testing.T) {
+		assert.Equal(t, "queue://acme/app/tasks", publicQueueRoute("queue://acme/app/tasks/ready"))
+	})
+
+	t.Run("keeps non-ready route unchanged", func(t *testing.T) {
+		assert.Equal(t, "queue://acme/app/tasks", publicQueueRoute("queue://acme/app/tasks"))
 	})
 }
 
@@ -370,7 +457,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_ = EncodeReserve(route, 30, 10, 5)
+			_ = EncodeReserve(route, 30, 10)
 		}
 	})
 
@@ -380,7 +467,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_ = EncodeReserve(route, 30, 0, 0)
+			_ = EncodeReserve(route, 30, 0)
 		}
 	})
 }
