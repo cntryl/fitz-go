@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire opcodes for Stream domain (per CLIENT_SPEC.md). Values are message type identifiers.
@@ -39,16 +40,34 @@ var (
 	ErrStreamReadError = errors.New("stream read error")
 )
 
-// mapStreamError maps a broker error message to a domain-specific Go error.
-func mapStreamError(msg string) error {
-	l := strings.ToLower(msg)
+// mapStreamError maps a broker error to a domain-specific Go error.
+func mapStreamError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		switch uint32(domainErr.Code) {
+		case coreerrors.StreamConcurrencyConflict:
+			return ErrStreamConflict
+		case coreerrors.StreamResourceNotFound:
+			return ErrStreamNotFound
+		case coreerrors.StreamOffsetTooFarAhead, coreerrors.StreamInvalidReadBound, coreerrors.StreamReadBeyondWatermark:
+			return ErrStreamReadError
+		default:
+			return err
+		}
+	}
+
+	l := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(l, "not found"):
 		return ErrStreamNotFound
 	case strings.Contains(l, "conflict"):
 		return ErrStreamConflict
 	default:
-		return errors.New(msg)
+		return err
 	}
 }
 

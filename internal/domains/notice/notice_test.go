@@ -2,9 +2,11 @@ package notice
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -141,6 +143,33 @@ func TestShouldDefineNoticeErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("send failed error", func(t *testing.T) {
 		assert.NotNil(t, ErrNoticeSendFailed)
 		assert.Equal(t, "notice send failed", ErrNoticeSendFailed.Error())
+	})
+}
+
+func TestShouldMapNoticeErrorGivenTypedBrokerMessageWhenMapNoticeErrorCalled(t *testing.T) {
+	t.Run("map invalid route", func(t *testing.T) {
+		mapped := mapNoticeError(coreerrors.NewDomainError(coreerrors.NoticeInvalidRoute, "invalid notice route"))
+		assert.Equal(t, ErrNoticeRouteInvalid, mapped)
+	})
+
+	t.Run("map invalid pattern", func(t *testing.T) {
+		mapped := mapNoticeError(coreerrors.NewDomainError(coreerrors.NoticeInvalidPattern, "invalid notice pattern"))
+		assert.Equal(t, ErrNoticeRouteInvalid, mapped)
+	})
+
+	t.Run("preserve typed transport closed error", func(t *testing.T) {
+		errMsg := coreerrors.NewDomainError(coreerrors.NoticeTransportClosed, "transport closed")
+		mapped := mapNoticeError(errMsg)
+
+		var domainErr *coreerrors.DomainError
+		assert.True(t, errors.As(mapped, &domainErr))
+		assert.Equal(t, uint32(coreerrors.NoticeTransportClosed), uint32(domainErr.Code))
+	})
+
+	t.Run("unknown error returns original error", func(t *testing.T) {
+		errMsg := errors.New("unexpected notice condition")
+		mapped := mapNoticeError(errMsg)
+		assert.Equal(t, errMsg, mapped)
 	})
 }
 

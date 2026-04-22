@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire operation codes for Notice domain. Values are message type identifiers.
@@ -28,9 +29,23 @@ var (
 	ErrNoticeSendFailed   = errors.New("notice send failed")
 )
 
-// mapNoticeError maps a broker error message to a domain-specific Go error.
-func mapNoticeError(msg string) error {
-	l := strings.ToLower(msg)
+// mapNoticeError maps a broker error to a domain-specific Go error.
+func mapNoticeError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		switch uint32(domainErr.Code) {
+		case coreerrors.NoticeInvalidRoute, coreerrors.NoticeInvalidPattern:
+			return ErrNoticeRouteInvalid
+		default:
+			return err
+		}
+	}
+
+	l := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(l, "route") && (strings.Contains(l, "invalid") || strings.Contains(l, "bad")):
 		return ErrNoticeRouteInvalid
@@ -39,7 +54,7 @@ func mapNoticeError(msg string) error {
 	case strings.Contains(l, "send") || strings.Contains(l, "failed"):
 		return ErrNoticeSendFailed
 	default:
-		return errors.New(msg)
+		return err
 	}
 }
 

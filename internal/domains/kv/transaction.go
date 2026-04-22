@@ -88,7 +88,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 	// Parse standard response status
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, false, fmt.Errorf("GET failed: %w", mapKVError(err.Error()))
+		return nil, false, fmt.Errorf("GET failed: %w", mapKVError(err))
 	}
 	if !success {
 		return nil, false, fmt.Errorf("GET failed: unexpected status")
@@ -163,7 +163,7 @@ func (t *transaction) Put(ctx context.Context, key, value []byte) error {
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("PUT failed: %w", mapKVError(err.Error()))
+		return fmt.Errorf("PUT failed: %w", mapKVError(err))
 	}
 	if !success {
 		return fmt.Errorf("PUT failed: unexpected status")
@@ -210,7 +210,7 @@ func (t *transaction) Insert(ctx context.Context, key, value []byte) error {
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("INSERT failed: %w", mapKVError(err.Error()))
+		return fmt.Errorf("INSERT failed: %w", mapKVError(err))
 	}
 	if !success {
 		return fmt.Errorf("INSERT failed: unexpected status")
@@ -254,7 +254,7 @@ func (t *transaction) Delete(ctx context.Context, key []byte) error {
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("DELETE failed: %w", mapKVError(err.Error()))
+		return fmt.Errorf("DELETE failed: %w", mapKVError(err))
 	}
 	if !success {
 		return fmt.Errorf("DELETE failed: unexpected status")
@@ -301,7 +301,7 @@ func (t *transaction) DeleteRange(ctx context.Context, startKey, endKey []byte) 
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("DELETE_RANGE failed: %w", mapKVError(err.Error()))
+		return fmt.Errorf("DELETE_RANGE failed: %w", mapKVError(err))
 	}
 	if !success {
 		return fmt.Errorf("DELETE_RANGE failed: unexpected status")
@@ -341,7 +341,7 @@ func (t *transaction) Scan(ctx context.Context, query ScanQuery) (iter.Iterator[
 	// Parse standard response status
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, false, fmt.Errorf("SCAN failed: %w", mapKVError(err.Error()))
+		return nil, false, fmt.Errorf("SCAN failed: %w", mapKVError(err))
 	}
 	if !success {
 		return nil, false, fmt.Errorf("SCAN failed: unexpected status")
@@ -443,7 +443,7 @@ func (t *transaction) Commit(ctx context.Context) error {
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("COMMIT failed: %w", mapKVError(err.Error()))
+		return fmt.Errorf("COMMIT failed: %w", mapKVError(err))
 	}
 	if !success {
 		return fmt.Errorf("COMMIT failed: unexpected status")
@@ -477,7 +477,7 @@ func (t *transaction) Rollback(ctx context.Context) error {
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("ROLLBACK failed: %w", mapKVError(err.Error()))
+		return fmt.Errorf("ROLLBACK failed: %w", mapKVError(err))
 	}
 	if !success {
 		return fmt.Errorf("ROLLBACK failed: unexpected status")

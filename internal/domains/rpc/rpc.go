@@ -381,7 +381,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		close(ch)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("REQUEST failed: %w", mapRPCError(err.Error()))
+		return nil, fmt.Errorf("REQUEST failed: %w", mapRPCError(err))
 	}
 	if !success {
 		c.mu.Lock()
@@ -552,7 +552,7 @@ func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCH
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err.Error()))
+		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err))
 	}
 	if !success {
 		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: unexpected status")

@@ -2,9 +2,11 @@ package lease
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -141,7 +143,7 @@ func TestShouldEncodeLeaseQueryRequestGivenRouteWhenPayloadWritten(t *testing.T)
 func TestShouldMapLeaseErrorsGivenBrokerMessageWhenMapLeaseErrorCalled(t *testing.T) {
 	t.Run("map held error", func(t *testing.T) {
 		// Arrange
-		errMsg := "the lease is held by another owner"
+		errMsg := coreerrors.NewDomainError(coreerrors.LeaseHeld, "the lease is held by another owner")
 
 		// Act
 		mapped := mapLeaseError(errMsg)
@@ -152,7 +154,7 @@ func TestShouldMapLeaseErrorsGivenBrokerMessageWhenMapLeaseErrorCalled(t *testin
 
 	t.Run("map invalid fence error", func(t *testing.T) {
 		// Arrange
-		errMsg := "invalid fencing token provided"
+		errMsg := coreerrors.NewDomainError(coreerrors.LeaseInvalidFence, "invalid fencing token provided")
 
 		// Act
 		mapped := mapLeaseError(errMsg)
@@ -163,7 +165,7 @@ func TestShouldMapLeaseErrorsGivenBrokerMessageWhenMapLeaseErrorCalled(t *testin
 
 	t.Run("map expired error", func(t *testing.T) {
 		// Arrange
-		errMsg := "lease has expired"
+		errMsg := coreerrors.NewDomainError(coreerrors.LeaseExpired, "lease has expired")
 
 		// Act
 		mapped := mapLeaseError(errMsg)
@@ -174,7 +176,7 @@ func TestShouldMapLeaseErrorsGivenBrokerMessageWhenMapLeaseErrorCalled(t *testin
 
 	t.Run("map not found error", func(t *testing.T) {
 		// Arrange
-		errMsg := "resource not found"
+		errMsg := coreerrors.NewDomainError(coreerrors.LeaseNotFound, "resource not found")
 
 		// Act
 		mapped := mapLeaseError(errMsg)
@@ -185,14 +187,14 @@ func TestShouldMapLeaseErrorsGivenBrokerMessageWhenMapLeaseErrorCalled(t *testin
 
 	t.Run("unknown error returns wrapped message", func(t *testing.T) {
 		// Arrange
-		errMsg := "some unknown error condition"
+		errMsg := errors.New("some unknown error condition")
 
 		// Act
 		mapped := mapLeaseError(errMsg)
 
 		// Assert
 		assert.NotNil(t, mapped)
-		assert.Equal(t, errMsg, mapped.Error())
+		assert.Equal(t, errMsg, mapped)
 	})
 }
 

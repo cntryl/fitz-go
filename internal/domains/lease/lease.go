@@ -55,7 +55,7 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("EXTEND failed: %w", mapLeaseError(err.Error()))
+		return 0, fmt.Errorf("EXTEND failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("EXTEND failed: unexpected status")
@@ -97,7 +97,7 @@ func (l *Lease) releaseWithToken(ctx context.Context, token []byte) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("RELEASE failed: %w", mapLeaseError(err.Error()))
+		return fmt.Errorf("RELEASE failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("RELEASE failed: unexpected status")
@@ -209,7 +209,7 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("ACQUIRE failed: %w", mapLeaseError(err.Error()))
+		return nil, fmt.Errorf("ACQUIRE failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		return nil, ErrLeaseHeld
@@ -270,7 +270,7 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("QUERY failed: %w", mapLeaseError(err.Error()))
+		return nil, fmt.Errorf("QUERY failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("QUERY failed: unexpected status")
@@ -476,7 +476,7 @@ func (c *client) subscribe(ctx context.Context, pattern string, handler ChangeHa
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err.Error()))
+		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		return nil, fmt.Errorf("SUBSCRIBE failed: unexpected status")

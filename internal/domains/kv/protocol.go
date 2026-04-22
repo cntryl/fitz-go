@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire opcodes for KV domain (per CLIENT_SPEC.md: 100+).
@@ -375,9 +376,31 @@ var (
 	ErrReadOnlyTransaction = errors.New("transaction is read-only")
 )
 
-// mapKVError maps a broker error message to a domain-specific Go error.
-func mapKVError(msg string) error {
-	l := strings.ToLower(msg)
+// mapKVError maps a broker error to a domain-specific Go error.
+func mapKVError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		switch uint32(domainErr.Code) {
+		case coreerrors.KvTransactionNotFound, coreerrors.KvKeyNotFound:
+			return ErrNotFound
+		case coreerrors.KvKeyExists:
+			return ErrKeyExists
+		case coreerrors.KvIsolationConflict, coreerrors.KvBackendError:
+			return ErrConcurrencyConflict
+		case coreerrors.KvWriteInReadonly, coreerrors.KvInvalidMode:
+			return ErrReadOnlyTransaction
+		case coreerrors.KvTransactionAborted:
+			return ErrTransactionAborted
+		default:
+			return err
+		}
+	}
+
+	l := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(l, "not found"):
 		return ErrNotFound
@@ -394,6 +417,6 @@ func mapKVError(msg string) error {
 	case strings.Contains(l, "abort"):
 		return ErrTransactionAborted
 	default:
-		return errors.New(msg)
+		return err
 	}
 }

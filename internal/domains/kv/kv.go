@@ -89,7 +89,7 @@ func (c *client) Begin(ctx context.Context, route string, durability uint8, opts
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("BEGIN failed: %w", mapKVError(err.Error()))
+		return nil, fmt.Errorf("BEGIN failed: %w", mapKVError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("BEGIN failed: unexpected status")

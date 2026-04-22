@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire opcodes for RPC domain (per CLIENT_SPEC.md). Values are message type identifiers.
@@ -27,18 +28,36 @@ var (
 	ErrRPCBackpressure = errors.New("rpc backpressure")
 )
 
-// mapRPCError maps a broker error message to a domain-specific Go error.
-func mapRPCError(msg string) error {
-	l := strings.ToLower(msg)
+// mapRPCError maps a broker error to a domain-specific Go error.
+func mapRPCError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		switch uint32(domainErr.Code) {
+		case coreerrors.RpcTimeout:
+			return ErrRPCTimeout
+		case coreerrors.RpcWorkerNotFound, coreerrors.RpcRouteNotRegistered:
+			return ErrNoWorkers
+		case coreerrors.RpcBackpressure:
+			return ErrRPCBackpressure
+		default:
+			return err
+		}
+	}
+
+	l := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(l, "no workers"):
+	case strings.Contains(l, "no workers"), strings.Contains(l, "worker not found"), strings.Contains(l, "route not registered"):
 		return ErrNoWorkers
 	case strings.Contains(l, "timeout"):
 		return ErrRPCTimeout
 	case strings.Contains(l, "backpressure"):
 		return ErrRPCBackpressure
 	default:
-		return errors.New(msg)
+		return err
 	}
 }
 

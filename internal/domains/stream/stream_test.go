@@ -1,10 +1,12 @@
 package stream
 
 import (
+	"errors"
 	"io"
 	"testing"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,7 +15,7 @@ import (
 func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testing.T) {
 	t.Run("map stream not found error", func(t *testing.T) {
 		// Arrange
-		errMsg := "stream not found"
+		errMsg := coreerrors.NewDomainError(coreerrors.StreamResourceNotFound, "stream not found")
 
 		// Act
 		mapped := mapStreamError(errMsg)
@@ -24,7 +26,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 
 	t.Run("map stream not found case insensitive", func(t *testing.T) {
 		// Arrange
-		errMsg := "Stream NOT FOUND in realm"
+		errMsg := coreerrors.NewDomainError(coreerrors.StreamResourceNotFound, "Stream NOT FOUND in realm")
 
 		// Act
 		mapped := mapStreamError(errMsg)
@@ -35,7 +37,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 
 	t.Run("map stream conflict error", func(t *testing.T) {
 		// Arrange
-		errMsg := "stream conflict detected"
+		errMsg := coreerrors.NewDomainError(coreerrors.StreamConcurrencyConflict, "stream conflict detected")
 
 		// Act
 		mapped := mapStreamError(errMsg)
@@ -46,7 +48,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 
 	t.Run("map stream conflict case insensitive", func(t *testing.T) {
 		// Arrange
-		errMsg := "CONFLICT writing to stream"
+		errMsg := coreerrors.NewDomainError(coreerrors.StreamConcurrencyConflict, "CONFLICT writing to stream")
 
 		// Act
 		mapped := mapStreamError(errMsg)
@@ -57,25 +59,38 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 
 	t.Run("unknown error returns wrapped message", func(t *testing.T) {
 		// Arrange
-		errMsg := "unexpected stream condition"
+		errMsg := errors.New("unexpected stream condition")
 
 		// Act
 		mapped := mapStreamError(errMsg)
 
 		// Assert
 		assert.NotNil(t, mapped)
-		assert.Equal(t, errMsg, mapped.Error())
+		assert.Equal(t, errMsg, mapped)
 	})
 
 	t.Run("empty error message", func(t *testing.T) {
 		// Arrange
-		errMsg := ""
+		errMsg := errors.New("")
 
 		// Act
 		mapped := mapStreamError(errMsg)
 
 		// Assert
 		assert.NotNil(t, mapped)
+	})
+
+	t.Run("preserve typed stream limit error", func(t *testing.T) {
+		// Arrange
+		errMsg := coreerrors.NewDomainError(coreerrors.StreamSubscriptionLimit, "subscription limit reached")
+
+		// Act
+		mapped := mapStreamError(errMsg)
+
+		// Assert
+		var domainErr *coreerrors.DomainError
+		assert.True(t, errors.As(mapped, &domainErr))
+		assert.Equal(t, uint32(coreerrors.StreamSubscriptionLimit), uint32(domainErr.Code))
 	})
 }
 

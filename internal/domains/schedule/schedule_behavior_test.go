@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
@@ -130,6 +132,24 @@ func TestShouldReturnRouteGivenNoServerScheduleIDWhenCreateCalled(t *testing.T) 
 	// Assert
 	require.NoError(t, err)
 	assert.Equal(t, route, id)
+}
+
+func TestShouldRejectInvalidCronBeforeSendingRequestWhenCreateCalled(t *testing.T) {
+	client, transport := newStartedScheduleClient(t)
+	route := "schedule://realm/area/resource/run"
+
+	_, err := client.Create(context.Background(), route, "not a cron", []byte("payload"))
+
+	require.Error(t, err)
+	var domainErr *coreerrors.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, coreerrors.ErrorCode(coreerrors.ScheduleInvalidCron), domainErr.Code)
+
+	select {
+	case frame := <-transport.writes:
+		t.Fatalf("unexpected request write: %x", frame)
+	default:
+	}
 }
 
 func TestShouldParseEntriesGivenValidListResponseWhenListCalled(t *testing.T) {

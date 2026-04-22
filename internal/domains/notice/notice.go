@@ -227,7 +227,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapNoticeError(err.Error()))
+		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapNoticeError(err))
 	}
 	if !success {
 		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")

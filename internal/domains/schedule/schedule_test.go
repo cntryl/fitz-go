@@ -2,17 +2,20 @@ package schedule
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldMapScheduleError tests error message mapping.
 func TestShouldMapScheduleErrorGivenBrokerMessageWhenMapScheduleErrorCalled(t *testing.T) {
 	t.Run("map schedule not found error", func(t *testing.T) {
 		// Arrange
-		errMsg := "schedule not found"
+		errMsg := coreerrors.NewDomainError(coreerrors.ScheduleNotFound, "schedule not found")
 
 		// Act
 		mapped := mapScheduleError(errMsg)
@@ -21,38 +24,41 @@ func TestShouldMapScheduleErrorGivenBrokerMessageWhenMapScheduleErrorCalled(t *t
 		assert.Equal(t, ErrScheduleNotFound, mapped)
 	})
 
-	t.Run("map generic error", func(t *testing.T) {
+	t.Run("preserve typed schedule error", func(t *testing.T) {
 		// Arrange
-		errMsg := "invalid cron expression"
+		errMsg := coreerrors.NewDomainError(coreerrors.ScheduleInvalidCron, "Cron expression must have exactly 5 fields")
 
 		// Act
 		mapped := mapScheduleError(errMsg)
 
 		// Assert
-		assert.Equal(t, "invalid cron expression", mapped.Error())
+		var domainErr *coreerrors.DomainError
+		assert.True(t, errors.As(mapped, &domainErr))
+		assert.Equal(t, uint32(coreerrors.ScheduleInvalidCron), uint32(domainErr.Code))
 	})
 
 	t.Run("unknown error returns wrapped message", func(t *testing.T) {
 		// Arrange
-		errMsg := "unexpected schedule condition"
+		errMsg := errors.New("unexpected schedule condition")
 
 		// Act
 		mapped := mapScheduleError(errMsg)
 
 		// Assert
 		assert.NotNil(t, mapped)
-		assert.Equal(t, errMsg, mapped.Error())
+		assert.Equal(t, errMsg, mapped)
 	})
 
 	t.Run("empty error message", func(t *testing.T) {
 		// Arrange
-		errMsg := ""
+		errMsg := errors.New("")
 
 		// Act
 		mapped := mapScheduleError(errMsg)
 
 		// Assert
 		assert.NotNil(t, mapped)
+		assert.Equal(t, errMsg, mapped)
 	})
 }
 
@@ -117,9 +123,23 @@ func TestShouldAcceptCronExpressionsGivenRepresentativeInputsWhenValidatedByCall
 
 	for _, expr := range validExpressions {
 		t.Run("valid: "+expr, func(t *testing.T) {
-			// Just test that the expression can be passed to the domain
-			// without causing errors during mapping
-			_ = expr // Expression format validation would happen server-side
+			require.NoError(t, validateCronExpression(expr))
+		})
+	}
+}
+
+func TestShouldRejectInvalidCronExpressionsGivenMalformedInputsWhenValidatedByCaller(t *testing.T) {
+	invalidExpressions := []string{
+		"not a cron",
+		"",
+		"* * * *",
+		"* * * * * *",
+		"61 * * * *",
+	}
+
+	for _, expr := range invalidExpressions {
+		t.Run("invalid: "+expr, func(t *testing.T) {
+			require.Error(t, validateCronExpression(expr))
 		})
 	}
 }

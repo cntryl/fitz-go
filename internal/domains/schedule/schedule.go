@@ -165,6 +165,11 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 		span.SetStatus(codes.Error, err.Error())
 		return "", fmt.Errorf("invalid schedule route: %w", err)
 	}
+	if err := validateCronExpression(cronExpr); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return "", err
+	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreate, scheduleCreatePayloadWriter(route, cronExpr, payload))
 	if err != nil {
@@ -177,7 +182,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return "", fmt.Errorf("CREATE failed: %w", mapScheduleError(err.Error()))
+		return "", fmt.Errorf("CREATE failed: %w", mapScheduleError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("CREATE failed: unexpected status")
@@ -224,7 +229,7 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("CANCEL failed: %w", mapScheduleError(err.Error()))
+		return fmt.Errorf("CANCEL failed: %w", mapScheduleError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("CANCEL failed: unexpected status")
@@ -256,7 +261,7 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("LIST failed: %w", mapScheduleError(err.Error()))
+		return nil, 0, fmt.Errorf("LIST failed: %w", mapScheduleError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("LIST failed: unexpected status")
@@ -427,7 +432,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapScheduleError(err.Error()))
+		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapScheduleError(err))
 	}
 	if !success {
 		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")

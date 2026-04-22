@@ -163,7 +163,7 @@ func (c *client) Begin(ctx context.Context, route string) (StreamSession, error)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("BEGIN failed: %w", mapStreamError(err.Error()))
+		return nil, fmt.Errorf("BEGIN failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("BEGIN failed: unexpected status")
@@ -216,7 +216,7 @@ func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("SEND failed: %w", mapStreamError(err.Error()))
+		return 0, fmt.Errorf("SEND failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("SEND failed: unexpected status")
@@ -262,7 +262,7 @@ func (s *session) Commit(ctx context.Context, mode CommitMode) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("COMMIT failed: %w", mapStreamError(err.Error()))
+		return fmt.Errorf("COMMIT failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("COMMIT failed: unexpected status")
@@ -292,7 +292,7 @@ func (s *session) Rollback(ctx context.Context) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("ROLLBACK failed: %w", mapStreamError(err.Error()))
+		return fmt.Errorf("ROLLBACK failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("ROLLBACK failed: unexpected status")
@@ -332,7 +332,7 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("READ failed: %w", mapStreamError(err.Error()))
+		return nil, fmt.Errorf("READ failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("READ failed: unexpected status")
@@ -385,7 +385,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("PEEK failed: %w", mapStreamError(err.Error()))
+		return nil, fmt.Errorf("PEEK failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("PEEK failed: unexpected status")
@@ -442,7 +442,7 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("GET_METADATA failed: %w", mapStreamError(err.Error()))
+		return nil, fmt.Errorf("GET_METADATA failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("GET_METADATA failed: unexpected status")
@@ -828,7 +828,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapStreamError(err.Error()))
+		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapStreamError(err))
 	}
 	if !success {
 		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")
