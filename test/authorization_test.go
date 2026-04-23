@@ -15,12 +15,12 @@ import (
 )
 
 const (
-	unauthorizedKV      coreerrors.ErrorCode = 1011
-	unauthorizedStream  coreerrors.ErrorCode = 2009
-	unauthorizedNotice  coreerrors.ErrorCode = 3009
-	unauthorizedQueue   coreerrors.ErrorCode = 4009
-	unauthorizedLease   coreerrors.ErrorCode = 5009
-	unauthorizedRPC     coreerrors.ErrorCode = 6009
+	unauthorizedKV       coreerrors.ErrorCode = 1011
+	unauthorizedStream   coreerrors.ErrorCode = 2009
+	unauthorizedNotice   coreerrors.ErrorCode = 3009
+	unauthorizedQueue    coreerrors.ErrorCode = 4009
+	unauthorizedLease    coreerrors.ErrorCode = 5009
+	unauthorizedRPC      coreerrors.ErrorCode = 6009
 	unauthorizedSchedule coreerrors.ErrorCode = 7009
 )
 
