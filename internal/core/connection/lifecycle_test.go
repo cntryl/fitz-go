@@ -3,6 +3,8 @@ package connection
 import (
 	"context"
 	"io"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +45,35 @@ func TestShouldReturnAuthenticationFailedGivenReadErrorWhenStartCalled(t *testin
 
 	// Assert
 	require.ErrorIs(t, err, ErrAuthenticationFailed)
+}
+
+func TestShouldLogReadErrorGivenLoggerWhenStartCalled(t *testing.T) {
+	transport := testkit.NewMockTransport()
+	transport.SetReadError(io.EOF)
+	recorder := newLogRecorder()
+	cfg := DefaultConfig()
+	cfg.Token = "token"
+	cfg.Logger = slog.New(recorder)
+	conn := New(transport, cfg)
+
+	err := conn.Start(context.Background())
+	require.ErrorIs(t, err, ErrAuthenticationFailed)
+	assertLogEntry(t, recorder.snapshot(), slog.LevelWarn, "read error")
+}
+
+func TestShouldLogDecodeFailureGivenLoggerWhenStartCalled(t *testing.T) {
+	transport := testkit.NewMockTransport()
+	transport.SetReadFrames([][]byte{[]byte{0xFF}})
+	recorder := newLogRecorder()
+	cfg := DefaultConfig()
+	cfg.Token = "token"
+	cfg.AuthSettleDelay = 20 * time.Millisecond
+	cfg.Logger = slog.New(recorder)
+	conn := New(transport, cfg)
+
+	err := conn.Start(context.Background())
+	require.Error(t, err)
+	assertLogEntry(t, recorder.snapshot(), slog.LevelError, "decode frame failed")
 }
 
 func TestShouldConfirmAuthenticationGivenFirstValidResponseWhenStartCalled(t *testing.T) {
@@ -164,4 +195,55 @@ func TestShouldReturnGivenCloseBeforeStartWhenCloseCalled(t *testing.T) {
 
 	require.ErrorIs(t, conn.Start(context.Background()), ErrConnectionClosed)
 	assert.Equal(t, StateClosed, conn.State())
+}
+
+type logRecord struct {
+	level   slog.Level
+	message string
+}
+
+type logRecorder struct {
+	mu      sync.Mutex
+	entries []logRecord
+}
+
+func newLogRecorder() *logRecorder {
+	return &logRecorder{}
+}
+
+func (r *logRecorder) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (r *logRecorder) Handle(_ context.Context, record slog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries = append(r.entries, logRecord{level: record.Level, message: record.Message})
+	return nil
+}
+
+func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler {
+	return r
+}
+
+func (r *logRecorder) WithGroup(string) slog.Handler {
+	return r
+}
+
+func (r *logRecorder) snapshot() []logRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entries := make([]logRecord, len(r.entries))
+	copy(entries, r.entries)
+	return entries
+}
+
+func assertLogEntry(t *testing.T, entries []logRecord, level slog.Level, message string) {
+	t.Helper()
+	for _, entry := range entries {
+		if entry.level == level && entry.message == message {
+			return
+		}
+	}
+	t.Fatalf("expected log entry level=%s message=%q, got %#v", level, message, entries)
 }

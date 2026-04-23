@@ -211,6 +211,9 @@ func EncodeScan(txID uint64, route string, query ScanQuery) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if err := validateScanRange(query.StartKey, query.EndKey); err != nil {
+		return nil, err
+	}
 
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, txID)
@@ -260,6 +263,9 @@ func scanPayloadWriter(txID uint64, route string, query ScanQuery) (func(*bytes.
 			return nil, err
 		}
 	}
+	if err := validateScanRange(query.StartKey, query.EndKey); err != nil {
+		return nil, err
+	}
 
 	return func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, txID)
@@ -296,6 +302,13 @@ func scanPayloadWriter(txID uint64, route string, query ScanQuery) (func(*bytes.
 			buf.WriteByte(0)
 		}
 	}, nil
+}
+
+func validateScanRange(startKey, endKey []byte) error {
+	if startKey != nil && endKey != nil && bytes.Compare(startKey, endKey) > 0 {
+		return ErrInvalidRange
+	}
+	return nil
 }
 
 // EncodeCommit encodes a KV COMMIT request payload per CLIENT_SPEC.md.

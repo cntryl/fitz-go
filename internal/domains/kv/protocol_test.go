@@ -33,3 +33,12 @@ func TestShouldMapKVErrorGivenTypedBrokerMessageWhenMapKVErrorCalled(t *testing.
 		assert.Equal(t, uint32(coreerrors.KvRealmMismatch), uint32(domainErr.Code))
 	})
 }
+
+func TestShouldRejectInvertedRangeGivenScanQueryWhenEncodeScanCalled(t *testing.T) {
+	_, err := EncodeScan(1, "kv://realm/area/resource", ScanQuery{
+		StartKey: []byte("z"),
+		EndKey:   []byte("a"),
+		Limit:    10,
+	})
+	assert.ErrorIs(t, err, ErrInvalidRange)
+}

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/cntryl/fitz-go/fitz"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,7 +38,7 @@ func TestShouldRejectCreateGivenInvalidCronSyntaxWhenCreateCalled(t *testing.T) 
 
 		f.ConnectOrFail(ctx)
 		_, err := f.Client().Schedule().Create(ctx, f.UniqueRoute("schedule"), "not a cron", []byte("payload"))
-		assert.Error(t, err)
+		testkit.AssertDomainErrorCode(t, err, coreerrors.ScheduleInvalidCron)
 	})
 }
 
