@@ -160,6 +160,10 @@ export FITZ_BROKER_JWT_AUDIENCE=fitz
 go test ./...
 ```
 
+Error-path coverage in the broker-backed suite now includes unauthorized operations across all 7 domains, plus invalid KV range and invalid cron cases.
+
+Benchmark thresholds and evidence policy are documented in [docs/PERF_RESULTS.md](docs/PERF_RESULTS.md); treat that report as the source of truth for hot-path gates.
+
 Run the full suite with:
 
 ```bash
@@ -182,6 +186,8 @@ go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
 ## Local performance workflow
 
 Use direct `go test` and `go tool pprof` commands while optimizing hot paths.
+
+The benchmark gates and evidence policy are summarized in [docs/PERF_RESULTS.md](docs/PERF_RESULTS.md).
 
 Run hotpath micro-benchmarks:
 

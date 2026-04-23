@@ -9,6 +9,17 @@ Platform: Windows amd64, 12th Gen Intel(R) Core(TM) i9-12900HK
 go test ./bench -run ^$ -bench "Benchmark(KVTransactionLoopback|NoticePublishHotPath|FrameEncode|RPCCorrelation1KInFlight)" -benchmem -count=3
 ```
 
+## Release Gates
+
+These measurements are used as the release gate for the hot-path benchmark suite:
+
+- KV transaction loopback stays under 500 us/op.
+- Frame encode stays under 500 ns/op.
+- RPC correlation lookup at 1K in-flight stays under 2 us/op.
+- Notice publish hot path stays above 50,000 ops/sec.
+
+All benchmark runs use `-benchmem` so allocation regressions remain visible. This report intentionally does not claim zero-allocation or zero-copy behavior unless a dedicated proof is added later.
+
 ## Results Summary
 
 - `BenchmarkKVTransactionLoopback`: ~11.5-15.5 us/op, 4914 B/op, 87 allocs/op

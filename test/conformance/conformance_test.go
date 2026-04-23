@@ -1,7 +1,7 @@
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
 // Covers all 19 scenarios: the 15 scenarios defined in the cross-language spec plus
-// 4 domain-lifecycle scenarios (CS-016â€“CS-019) added in the Go client to close
+// 4 domain-lifecycle scenarios (CS-016 through CS-019) added in the Go client to close
 // coverage gaps for Queue, Lease, Notice, and Schedule domains:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
