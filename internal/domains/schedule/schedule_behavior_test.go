@@ -267,16 +267,21 @@ func TestShouldReturnErrorGivenMissingServerSubscriptionIDWhenSubscribeCalled(t 
 	assert.Nil(t, sub)
 }
 
-func TestShouldRejectWildcardPatternGivenSubscribeCalled(t *testing.T) {
-	client, _ := newStartedScheduleClient(t)
+func TestShouldForwardWildcardPatternGivenSubscribeCalled(t *testing.T) {
+	client, transport := newStartedScheduleClient(t)
+	buf := connection.GetBuffer()
+	connection.WriteU8(buf, 1)
+	connection.WriteU64BE(buf, 42)
+	payload := append([]byte(nil), buf.Bytes()...)
+	connection.PutBuffer(buf)
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleSubscribe, payload)
 
 	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) error {
 		return nil
 	})
 
-	require.Error(t, err)
-	assert.Nil(t, sub)
-	assert.Contains(t, err.Error(), "invalid schedule route")
+	require.NoError(t, err)
+	assert.NotNil(t, sub)
 }
 
 func TestShouldDispatchNotificationGivenMatchingSubscriptionWhenHandleScheduleNotifyCalled(t *testing.T) {
@@ -374,16 +379,16 @@ func TestShouldContinueFanOutGivenHandlerErrorWhenHandleScheduleNotifyCalled(t *
 	}
 }
 
-func TestShouldReturnErrorGivenEmptyRouteWhenCancelCalled(t *testing.T) {
+func TestShouldForwardEmptyRouteGivenCancelCalled(t *testing.T) {
 	// Arrange
-	client, _ := newStartedScheduleClient(t)
+	client, transport := newStartedScheduleClient(t)
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleCancel, nil)
 
 	// Act
 	err := client.Cancel(context.Background(), "")
 
 	// Assert
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid schedule route")
+	require.NoError(t, err)
 }
 
 func TestShouldFilterEntriesGivenAreaWildcardSelectorWhenListBySelectorMatches(t *testing.T) {

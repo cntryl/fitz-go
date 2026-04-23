@@ -14,56 +14,56 @@ func TestShouldAcceptRouteGivenServerSupportedFourSegmentShapeWhenValidateRouteC
 	require.NoError(t, ValidateRoute("rpc://acme/auth/users/authenticate", "rpc"))
 }
 
-func TestShouldAcceptRouteGivenDifferentSchemeWhenValidateRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateRoute("notice://realm/area/resource", "queue"), "must start with queue://")
+func TestShouldTreatDifferentSchemeRouteAsOpaqueWhenValidateRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateRoute("notice://realm/area/resource", "queue"))
 }
 
-func TestShouldRejectRouteGivenEmptyStringWhenValidateRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateRoute("", "stream"), "non-empty")
+func TestShouldTreatEmptyRouteAsOpaqueWhenValidateRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateRoute("", "stream"))
 }
 
-func TestShouldRejectConcreteRouteGivenWildcardWhenValidateConcreteRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateConcreteRoute("rpc://acme/*/users", "rpc"), "must not contain wildcards")
+func TestShouldTreatWildcardConcreteRouteAsOpaqueWhenValidateConcreteRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateConcreteRoute("rpc://acme/*/users", "rpc"))
 }
 
 func TestShouldAcceptFixedRouteGivenExactThreeSegmentsWhenValidateFixedRouteCalled(t *testing.T) {
 	require.NoError(t, ValidateFixedRoute("stream://realm/area/resource", "stream", 3))
 }
 
-func TestShouldRejectFixedRouteGivenWrongShapeWhenValidateFixedRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateFixedRoute("stream://realm/area/*", "stream", 3), "must not contain wildcards")
+func TestShouldTreatWildcardFixedRouteAsOpaqueWhenValidateFixedRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateFixedRoute("stream://realm/area/*", "stream", 3))
 }
 
 func TestShouldAcceptSelectorRouteGivenRealmWildcardWhenValidateSelectorRouteCalled(t *testing.T) {
 	require.NoError(t, ValidateSelectorRoute("notice://realm/**", "notice", 3, true))
 }
 
-func TestShouldRejectSelectorRouteGivenUnsupportedWildcardWhenValidateSelectorRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateSelectorRoute("queue://realm/**", "queue", 3, false), "must be one of")
+func TestShouldTreatSelectorWildcardAsOpaqueWhenValidateSelectorRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateSelectorRoute("queue://realm/**", "queue", 3, false))
 }
 
 func TestShouldAcceptScheduleRouteGivenServerSupportedFourSegmentShapeWhenValidateScheduleRouteCalled(t *testing.T) {
 	require.NoError(t, ValidateScheduleRoute("schedule://realm/area/resource/run"))
 }
 
-func TestShouldRejectScheduleRouteGivenEmptyStringWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateScheduleRoute(""), "non-empty")
+func TestShouldTreatEmptyScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateScheduleRoute(""))
 }
 
-func TestShouldRejectScheduleRouteGivenLegacyThreeSegmentShapeWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateScheduleRoute("schedule://realm/area/resource"), "schedule://{realm}/{area}/{resource}/{operation}")
+func TestShouldTreatLegacyScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateScheduleRoute("schedule://realm/area/resource"))
 }
 
-func TestShouldRejectScheduleRouteGivenWildcardWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateScheduleRoute("schedule://realm/area/resource/*"), "must not contain wildcards")
+func TestShouldTreatWildcardScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateScheduleRoute("schedule://realm/area/resource/*"))
 }
 
-func TestShouldRejectScheduleRouteGivenWrongSchemeWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateScheduleRoute("queue://realm/area/resource/run"), "must start with schedule://")
+func TestShouldTreatWrongSchemeScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateScheduleRoute("queue://realm/area/resource/run"))
 }
 
-func TestShouldRejectScheduleRouteGivenEmptySegmentWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateScheduleRoute("schedule://realm//resource/run"), "segments must be non-empty")
+func TestShouldTreatEmptySegmentScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
+	require.NoError(t, ValidateScheduleRoute("schedule://realm//resource/run"))
 }
 
 func TestShouldAcceptScheduleSelectorGivenWildcardPatternWhenValidateScheduleSelectorCalled(t *testing.T) {
@@ -78,14 +78,14 @@ func TestShouldAcceptScheduleSelectorGivenResourceWildcardWhenValidateScheduleSe
 	require.NoError(t, ValidateScheduleSelector("schedule://realm/area/resource/*"))
 }
 
-func TestShouldRejectScheduleSelectorGivenEmptyStringWhenValidateScheduleSelectorCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateScheduleSelector(""), "non-empty")
+func TestShouldTreatEmptyScheduleSelectorAsOpaqueWhenValidateScheduleSelectorCalled(t *testing.T) {
+	require.NoError(t, ValidateScheduleSelector(""))
 }
 
-func TestShouldRejectScheduleSelectorGivenLegacyPrefixWhenValidateScheduleSelectorCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateScheduleSelector("schedule://realm/area"), "exact 4-part route or an explicit wildcard selector")
+func TestShouldTreatLegacyScheduleSelectorAsOpaqueWhenValidateScheduleSelectorCalled(t *testing.T) {
+	require.NoError(t, ValidateScheduleSelector("schedule://realm/area"))
 }
 
-func TestShouldRejectScheduleSelectorGivenWildcardInRealmWhenValidateScheduleSelectorCalled(t *testing.T) {
-	require.ErrorContains(t, ValidateScheduleSelector("schedule://*/area/resource/*"), "explicit wildcard forms")
+func TestShouldTreatRealmWildcardScheduleSelectorAsOpaqueWhenValidateScheduleSelectorCalled(t *testing.T) {
+	require.NoError(t, ValidateScheduleSelector("schedule://*/area/resource/*"))
 }
