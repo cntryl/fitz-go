@@ -45,6 +45,10 @@ var (
 	ErrClientAlreadyConnected = errors.New("client already connected")
 )
 
+type domainConnectionReplacer interface {
+	ReplaceConnection(conn *connection.Connection)
+}
+
 // Client implements the Fitz client with connection management.
 // Per CLIENT_SPEC.md: Handles authentication, request/response correlation, and domain routing.
 type Client struct {
@@ -544,6 +548,7 @@ func (c *Client) attachConnection(conn *connection.Connection, replace bool) err
 
 func (c *Client) replaceDomainConnections(conn *connection.Connection) {
 	for _, candidate := range []any{
+		c.kvClient,
 		c.noticeClient,
 		c.queueClient,
 		c.rpcClient,
@@ -551,8 +556,8 @@ func (c *Client) replaceDomainConnections(conn *connection.Connection) {
 		c.leaseClient,
 		c.scheduleClient,
 	} {
-		if restorer, ok := candidate.(reconnect.DomainRestorer); ok {
-			restorer.ReplaceConnection(conn)
+		if replacer, ok := candidate.(domainConnectionReplacer); ok {
+			replacer.ReplaceConnection(conn)
 		}
 	}
 }

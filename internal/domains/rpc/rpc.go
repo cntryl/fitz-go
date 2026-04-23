@@ -439,16 +439,11 @@ func (w *responseWriter) sendEnd() {
 	seq := w.seq
 	w.mu.Unlock()
 
-	payload, err := EncodeRPCResponse(w.correlationID, seq, nil, true)
-	if err != nil {
-		return
-	}
-
 	// sendEnd is called from finalisation paths (worker return, iterator close).
 	// Errors here are intentionally dropped: the correlation ID has already
 	// been removed from the in-flight map, so there is no state to roll back.
 	// The caller observes the cancellation/end via iterator.Err() or context.
-	_ = w.conn.SendFireAndForget(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, payload)
+	_ = w.conn.SendFireAndForgetWithWriter(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, rpcResponsePayloadWriter(w.correlationID, seq, nil, true))
 }
 
 // rpcIterator iterates over response frames from a Call.

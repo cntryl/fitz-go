@@ -116,7 +116,7 @@ func performHandshake(conn net.Conn, u *url.URL) error {
 	)
 
 	// Send upgrade request
-	if _, err := conn.Write([]byte(req)); err != nil {
+	if err := writeAll(conn, []byte(req)); err != nil {
 		return fmt.Errorf("write request: %w", err)
 	}
 
@@ -217,12 +217,14 @@ func (w *WebSocketTransport) writeFrame(opcode byte, payload []byte, mask bool) 
 	// Add masking key if needed
 	var maskKey [4]byte
 	if mask {
-		rand.Read(maskKey[:])
+		if _, err := rand.Read(maskKey[:]); err != nil {
+			return fmt.Errorf("generate websocket mask: %w", err)
+		}
 		header = append(header, maskKey[:]...)
 	}
 
 	// Write header
-	if _, err := w.conn.Write(header); err != nil {
+	if err := writeAll(w.conn, header); err != nil {
 		return err
 	}
 
@@ -237,7 +239,7 @@ func (w *WebSocketTransport) writeFrame(opcode byte, payload []byte, mask bool) 
 			for j := 0; j < chunkLen; j++ {
 				scratch[j] = payload[i+j] ^ maskKey[(i+j)%4]
 			}
-			if _, err := w.conn.Write(scratch[:chunkLen]); err != nil {
+			if err := writeAll(w.conn, scratch[:chunkLen]); err != nil {
 				return err
 			}
 			i += chunkLen
@@ -245,8 +247,7 @@ func (w *WebSocketTransport) writeFrame(opcode byte, payload []byte, mask bool) 
 		return nil
 	}
 
-	_, err := w.conn.Write(payload)
-	return err
+	return writeAll(w.conn, payload)
 }
 
 // Read blocks until next binary WebSocket message arrives.
@@ -317,10 +318,31 @@ func (w *WebSocketTransport) readFrame() (opcode byte, payload []byte, err error
 
 	// Parse byte 0: FIN, RSV, opcode
 	fin := header[0]&0x80 != 0
+	if header[0]&0x70 != 0 {
+		return 0, nil, errors.New("websocket reserved bits not supported")
+	}
 	opcode = header[0] & 0x0F
+	switch opcode {
+	case opcodeBinary, opcodeText, opcodeClose, opcodePing, opcodePong:
+	case opcodeContinuation:
+		return 0, nil, errors.New("websocket continuation frames not supported")
+	default:
+		return 0, nil, fmt.Errorf("unsupported websocket opcode: 0x%x", opcode)
+	}
+	isControl := opcode >= opcodeClose
+	if isControl {
+		if !fin {
+			return 0, nil, errors.New("fragmented control frames not supported")
+		}
+	} else if !fin {
+		return 0, nil, errors.New("fragmented frames not supported")
+	}
 
 	// Parse byte 1: mask bit, payload length
 	masked := header[1]&0x80 != 0
+	if masked {
+		return 0, nil, errors.New("masked server frames not supported")
+	}
 	length := uint64(header[1] & 0x7F)
 
 	// Read extended payload length if needed
@@ -337,31 +359,17 @@ func (w *WebSocketTransport) readFrame() (opcode byte, payload []byte, err error
 		}
 		length = binary.BigEndian.Uint64(extLen[:])
 	}
-
-	// Read masking key if present (server should not mask)
-	var maskKey [4]byte
-	if masked {
-		if _, err := io.ReadFull(w.reader, maskKey[:]); err != nil {
-			return 0, nil, err
-		}
+	if isControl && length > 125 {
+		return 0, nil, errors.New("control frame payload too large")
+	}
+	if !isControl && length > uint64(MaxFrameSize) {
+		return 0, nil, ErrFrameTooLarge
 	}
 
 	// Read payload
 	payload = make([]byte, length)
 	if _, err := io.ReadFull(w.reader, payload); err != nil {
 		return 0, nil, err
-	}
-
-	// Unmask if needed
-	if masked {
-		for i := range payload {
-			payload[i] ^= maskKey[i%4]
-		}
-	}
-
-	// Handle fragmentation (we don't support it for simplicity)
-	if !fin {
-		return 0, nil, errors.New("fragmented frames not supported")
 	}
 
 	return opcode, payload, nil

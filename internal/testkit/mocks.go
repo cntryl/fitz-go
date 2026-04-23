@@ -136,6 +136,7 @@ type MockTCPConn struct {
 	Closed           bool
 	ReadDelay        time.Duration
 	WriteDelay       time.Duration
+	MaxWriteSize     int
 	RemoteAddrString string
 	readDeadline     time.Time
 	writeDeadline    time.Time
@@ -172,8 +173,12 @@ func (m *MockTCPConn) Write(b []byte) (int, error) {
 		}
 	}
 	time.Sleep(m.WriteDelay)
-	m.Written = append(m.Written, b...)
-	return len(b), nil
+	chunk := len(b)
+	if m.MaxWriteSize > 0 && chunk > m.MaxWriteSize {
+		chunk = m.MaxWriteSize
+	}
+	m.Written = append(m.Written, b[:chunk]...)
+	return chunk, nil
 }
 
 func (m *MockTCPConn) Close() error {
@@ -218,6 +223,8 @@ type MockWSConn struct {
 	IsText         bool
 	Blocked        bool
 	Closed         bool
+	ReadBuf        []byte
+	MaxWriteSize   int
 	RemoteAddrHost string
 	readBuf        []byte
 	readPos        int
@@ -239,6 +246,10 @@ func (m *MockWSConn) Read(b []byte) (int, error) {
 			return 0, context.DeadlineExceeded
 		}
 		select {}
+	}
+	if m.ReadBuf != nil {
+		m.readBuf = append(m.readBuf[:0], m.ReadBuf...)
+		m.ReadBuf = nil
 	}
 	if m.readBuf == nil {
 		opcode := byte(2)
@@ -262,7 +273,11 @@ func (m *MockWSConn) Write(b []byte) (int, error) {
 	if !m.writeDeadline.IsZero() && time.Now().After(m.writeDeadline) {
 		return 0, context.DeadlineExceeded
 	}
-	m.writeBuf = append(m.writeBuf, b...)
+	chunk := len(b)
+	if m.MaxWriteSize > 0 && chunk > m.MaxWriteSize {
+		chunk = m.MaxWriteSize
+	}
+	m.writeBuf = append(m.writeBuf, b[:chunk]...)
 	for {
 		payload, remaining, ok, err := parseWSFrame(m.writeBuf)
 		if err != nil {
@@ -274,7 +289,7 @@ func (m *MockWSConn) Write(b []byte) (int, error) {
 		m.Messages = append(m.Messages, payload)
 		m.writeBuf = remaining
 	}
-	return len(b), nil
+	return chunk, nil
 }
 
 func (m *MockWSConn) Close() error {

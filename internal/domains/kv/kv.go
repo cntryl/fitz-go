@@ -51,6 +51,10 @@ func NewClient(conn *connection.Connection) Client {
 	}
 }
 
+func (c *client) ReplaceConnection(conn *connection.Connection) {
+	c.conn = conn
+}
+
 // Begin opens a transaction scoped to the provided route.
 // Per CLIENT_SPEC.md: Server assigns tx_id and returns it in response.
 func (c *client) Begin(ctx context.Context, route string, durability uint8, opts ...BeginOption) (Tx, error) {

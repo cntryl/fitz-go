@@ -69,14 +69,14 @@ func (t *TCPTransport) Write(ctx context.Context, frame []byte) error {
 	binary.BigEndian.PutUint32(header[:], uint32(len(frame)))
 
 	// Atomic write (header + frame together)
-	// Note: We could optimize with writev/sendmsg, but simplicity preferred
-	if _, err := t.conn.Write(header[:]); err != nil {
+	// Note: We could optimize with writev/sendmsg, but simplicity preferred.
+	if err := writeAll(t.conn, header[:]); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return fmt.Errorf("write tcp frame header: %w", err)
 	}
-	if _, err := t.conn.Write(frame); err != nil {
+	if err := writeAll(t.conn, frame); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -141,4 +141,20 @@ func (t *TCPTransport) Close() error {
 // RemoteAddr returns the TCP address (host:port).
 func (t *TCPTransport) RemoteAddr() string {
 	return t.addr
+}
+
+func writeAll(conn net.Conn, buf []byte) error {
+	for len(buf) > 0 {
+		n, err := conn.Write(buf)
+		if n > 0 {
+			buf = buf[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
 }

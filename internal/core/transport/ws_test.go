@@ -26,6 +26,17 @@ func newTestWSTransport(conn *testkit.MockWSConn) *WebSocketTransport {
 	}
 }
 
+func buildMaskedTestWSFrame(opcode byte, payload []byte) []byte {
+	maskKey := [4]byte{0xAA, 0xBB, 0xCC, 0xDD}
+	frame := make([]byte, 0, 2+4+len(payload))
+	frame = append(frame, 0x80|opcode, 0x80|byte(len(payload)))
+	frame = append(frame, maskKey[:]...)
+	for i := range payload {
+		frame = append(frame, payload[i]^maskKey[i%4])
+	}
+	return frame
+}
+
 // TestShouldWriteBinaryFrameGivenPayloadWhenWriteCalled tests WebSocket write framing.
 func TestShouldWriteBinaryFrameGivenPayloadWhenWriteCalled(t *testing.T) {
 	t.Run("valid payload", func(t *testing.T) {
@@ -79,6 +90,24 @@ func TestShouldWriteBinaryFrameGivenPayloadWhenWriteCalled(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, conn.Messages, 1)
 	})
+}
+
+func TestShouldWriteCompleteBinaryFrameGivenShortWritesWhenWriteCalled(t *testing.T) {
+	// Arrange
+	conn := &testkit.MockWSConn{
+		Messages:     make([][]byte, 0),
+		MaxWriteSize: 3,
+	}
+	transport := newTestWSTransport(conn)
+	payload := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
+
+	// Act
+	err := transport.Write(context.Background(), payload)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Len(t, conn.Messages, 1)
+	assert.Equal(t, payload, conn.Messages[0])
 }
 
 // TestShouldReadBinaryFrameGivenBinaryMessageWhenReadCalled tests WebSocket read framing.
@@ -136,6 +165,50 @@ func TestShouldRejectTextFrameGivenTextMessageWhenReadCalled(t *testing.T) {
 	// not silently skipped (REQ-PROTO-003: binary-only transport).
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "text frame")
+}
+
+func TestShouldRejectMaskedServerFrameGivenMaskedBinaryPayloadWhenReadCalled(t *testing.T) {
+	// Arrange
+	conn := &testkit.MockWSConn{
+		ReadBuf: buildMaskedTestWSFrame(opcodeBinary, []byte{0x01, 0x02, 0x03}),
+	}
+	transport := newTestWSTransport(conn)
+
+	// Act
+	_, err := transport.Read(context.Background())
+
+	// Assert
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "masked")
+}
+
+func TestShouldRejectOversizeFrameGivenAnnouncedBinaryLengthWhenReadCalled(t *testing.T) {
+	// Arrange
+	conn := &testkit.MockWSConn{
+		ReadBuf: []byte{0x82, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01},
+	}
+	transport := newTestWSTransport(conn)
+
+	// Act
+	_, err := transport.Read(context.Background())
+
+	// Assert
+	assert.ErrorIs(t, err, ErrFrameTooLarge)
+}
+
+func TestShouldRejectReservedBitsGivenNonZeroRSVWhenReadCalled(t *testing.T) {
+	// Arrange
+	conn := &testkit.MockWSConn{
+		ReadBuf: []byte{0xC2, 0x00},
+	}
+	transport := newTestWSTransport(conn)
+
+	// Act
+	_, err := transport.Read(context.Background())
+
+	// Assert
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "reserved bits")
 }
 
 // TestShouldParseWSURLGivenURLStringWhenURLParsed tests URL parsing assumptions used by dialing.
