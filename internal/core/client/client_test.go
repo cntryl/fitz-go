@@ -524,7 +524,7 @@ func TestShouldLogClientLifecycleGivenReconnectLoggerWhenConnectionRestored(t *t
 
 	initialConn := c.currentConnection()
 	go pushResponseAfterWrite(secondTransport, noticeSubscribeResponseFrame(t, 22), 2)
-	require.NoError(t, initialConn.Close())
+	require.NoError(t, firstTransport.Close())
 	require.Eventually(t, func() bool {
 		return c.currentConnection() != nil && c.currentConnection() != initialConn
 	}, time.Second, 20*time.Millisecond)
@@ -535,6 +535,8 @@ func TestShouldLogClientLifecycleGivenReconnectLoggerWhenConnectionRestored(t *t
 	assertLogEntry(t, entries, slog.LevelInfo, "connect success")
 	assertLogEntry(t, entries, slog.LevelInfo, "connection authenticating")
 	assertLogEntry(t, entries, slog.LevelInfo, "connection authenticated after silent CONNECT window")
+	assertLogEntry(t, entries, slog.LevelWarn, "reconnect attempt")
+	assertLogEntry(t, entries, slog.LevelInfo, "reconnect success")
 	assertLogEntry(t, entries, slog.LevelInfo, "client close")
 }
 

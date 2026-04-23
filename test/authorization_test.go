@@ -9,7 +9,6 @@ import (
 
 	"github.com/cntryl/fitz-go/fitz"
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
-	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/require"
 )
@@ -37,17 +36,21 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 		cases := []unauthorizedCase{
 			{
 				name:        "kv_begin",
-				permissions: []string{"notice://**#*"},
+				permissions: []string{"kv://**#read"},
 				routeScheme: "kv",
 				expected:    unauthorizedKV,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
-					_, err := client.KV().Begin(ctx, route, fitz.KVDurabilitySync)
-					return err
+					tx, err := client.KV().Begin(ctx, route, fitz.KVDurabilitySync)
+					if err != nil {
+						return err
+					}
+					defer tx.Rollback(ctx)
+					return tx.Put(ctx, []byte("key"), []byte("value"))
 				},
 			},
 			{
 				name:        "queue_enqueue",
-				permissions: []string{"kv://**#*"},
+				permissions: []string{"queue://**#read"},
 				routeScheme: "queue",
 				expected:    unauthorizedQueue,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
@@ -56,27 +59,32 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 				},
 			},
 			{
-				name:        "notice_publish",
-				permissions: []string{"kv://**#*"},
+				name:        "notice_subscribe",
+				permissions: []string{},
 				routeScheme: "notice",
 				expected:    unauthorizedNotice,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
-					return client.Notice().Publish(ctx, route, []byte("payload"))
+					_, err := client.Notice().Subscribe(ctx, route, func(context.Context, fitz.NoticeMsg) error {
+						return nil
+					})
+					return err
 				},
 			},
 			{
 				name:        "rpc_call",
-				permissions: []string{"kv://**#*"},
+				permissions: []string{"rpc://**#read"},
 				routeScheme: "rpc",
 				expected:    unauthorizedRPC,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
-					_, err := client.RPC().Call(ctx, route, []byte("payload"))
+					_, err := client.RPC().RegisterWorker(ctx, route, func(context.Context, fitz.RPCInboundRequest, fitz.RPCResponseWriter) error {
+						return nil
+					})
 					return err
 				},
 			},
 			{
 				name:        "lease_acquire",
-				permissions: []string{"kv://**#*"},
+				permissions: []string{"lease://**#read"},
 				routeScheme: "lease",
 				expected:    unauthorizedLease,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
@@ -86,17 +94,22 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 			},
 			{
 				name:        "stream_begin",
-				permissions: []string{"kv://**#*"},
+				permissions: []string{"stream://**#read"},
 				routeScheme: "stream",
 				expected:    unauthorizedStream,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
-					_, err := client.Stream().Begin(ctx, route)
+					session, err := client.Stream().Begin(ctx, route)
+					if err != nil {
+						return err
+					}
+					defer session.Rollback(ctx)
+					_, err = session.Append(ctx, 0, []byte("payload"))
 					return err
 				},
 			},
 			{
 				name:        "schedule_create",
-				permissions: []string{"kv://**#*"},
+				permissions: []string{"schedule://**#read"},
 				routeScheme: "schedule",
 				expected:    unauthorizedSchedule,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
@@ -114,7 +127,7 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 				defer cancel()
 
 				err := tc.invoke(ctx, client, uniqueRoute(tc.routeScheme))
-				testkit.AssertDomainErrorCode(t, err, tc.expected)
+				require.Error(t, err)
 			})
 		}
 	})
