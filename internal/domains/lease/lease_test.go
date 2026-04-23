@@ -198,6 +198,74 @@ func TestShouldMapLeaseErrorsGivenBrokerMessageWhenMapLeaseErrorCalled(t *testin
 	})
 }
 
+func TestShouldParseLeaseQueryResponseGivenCanonicalPayloadWhenParseLeaseQueryResponseCalled(t *testing.T) {
+	t.Run("free lease response", func(t *testing.T) {
+		remaining := []byte{0x00, 0x00, 0x00, 0x00, 0x03}
+
+		info, err := parseLeaseQueryResponse(remaining)
+
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.False(t, info.Held)
+		assert.Equal(t, uint32(3), info.PendingWaiters)
+	})
+
+	t.Run("held lease response", func(t *testing.T) {
+		ownerID := []byte("owner-1")
+		remaining := make([]byte, 1+4+len(ownerID)+8+4)
+		remaining[0] = 0x01
+		binary.BigEndian.PutUint32(remaining[1:5], uint32(len(ownerID)))
+		copy(remaining[5:5+len(ownerID)], ownerID)
+		offset := 5 + len(ownerID)
+		binary.BigEndian.PutUint64(remaining[offset:offset+8], 60)
+		offset += 8
+		binary.BigEndian.PutUint32(remaining[offset:offset+4], 2)
+
+		info, err := parseLeaseQueryResponse(remaining)
+
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.True(t, info.Held)
+		assert.Equal(t, "owner-1", info.OwnerID)
+		assert.Equal(t, uint64(60), info.TTLRemainingSecs)
+		assert.Equal(t, uint32(2), info.PendingWaiters)
+	})
+}
+
+func TestShouldRejectMalformedLeaseQueryResponseGivenInvalidShapeWhenParseLeaseQueryResponseCalled(t *testing.T) {
+	t.Run("invalid has_holder flag", func(t *testing.T) {
+		info, err := parseLeaseQueryResponse([]byte{0x02, 0x00, 0x00, 0x00, 0x00})
+
+		require.Error(t, err)
+		require.Nil(t, info)
+		require.ErrorContains(t, err, "invalid has_holder")
+	})
+
+	t.Run("free response with trailing bytes", func(t *testing.T) {
+		info, err := parseLeaseQueryResponse([]byte{0x00, 0x00, 0x00, 0x00, 0x03, 0xFF})
+
+		require.Error(t, err)
+		require.Nil(t, info)
+		require.ErrorContains(t, err, "malformed")
+	})
+
+	t.Run("held response missing pending_waiters", func(t *testing.T) {
+		ownerID := []byte("owner-1")
+		remaining := make([]byte, 1+4+len(ownerID)+8)
+		remaining[0] = 0x01
+		binary.BigEndian.PutUint32(remaining[1:5], uint32(len(ownerID)))
+		copy(remaining[5:5+len(ownerID)], ownerID)
+		offset := 5 + len(ownerID)
+		binary.BigEndian.PutUint64(remaining[offset:offset+8], 60)
+
+		info, err := parseLeaseQueryResponse(remaining)
+
+		require.Error(t, err)
+		require.Nil(t, info)
+		require.ErrorContains(t, err, "missing pending_waiters")
+	})
+}
+
 // Benchmarks
 
 func BenchmarkEncodeLeaseAcquire(b *testing.B) {

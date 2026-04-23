@@ -413,7 +413,19 @@ func parseScanResponse(remaining []byte) ([]KVPair, bool, error) {
 	if offset+1 > len(remaining) {
 		return nil, false, fmt.Errorf("missing has_more flag")
 	}
-	hasMore := remaining[offset] == 1
+	var hasMore bool
+	switch remaining[offset] {
+	case 0:
+		hasMore = false
+	case 1:
+		hasMore = true
+	default:
+		return nil, false, fmt.Errorf("invalid has_more flag: %d", remaining[offset])
+	}
+	offset++
+	if offset != len(remaining) {
+		return nil, false, fmt.Errorf("unexpected trailing bytes: %d", len(remaining)-offset)
+	}
 
 	return pairs, hasMore, nil
 }

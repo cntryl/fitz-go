@@ -66,6 +66,19 @@ func TestShouldDecodeNotifyGivenEncodedPayloadWhenDecodeNotifyCalled(t *testing.
 		assert.True(t, len(decodedPayload) == 0, "payload should be empty")
 	})
 
+	t.Run("malformed notification with trailing bytes", func(t *testing.T) {
+		// Arrange
+		route := "notice://acme/app/events/published"
+		payload := []byte("user_updated")
+		encoded := append(encodePublish(route, payload), 0xAA)
+
+		// Act
+		_, _, ok := DecodeNotify(encoded)
+
+		// Assert
+		assert.False(t, ok)
+	})
+
 	t.Run("malformed notification too short", func(t *testing.T) {
 		// Arrange
 		payload := []byte{0x00, 0x00} // Too short
@@ -90,6 +103,33 @@ func TestShouldDecodeNotifyGivenEncodedPayloadWhenDecodeNotifyCalled(t *testing.
 
 		// Assert
 		assert.False(t, ok)
+	})
+}
+
+func TestShouldRejectMalformedStatusGivenTrailingOrTruncatedEnvelopeWhenDecodeStatusCalled(t *testing.T) {
+	t.Run("success status with trailing bytes", func(t *testing.T) {
+		status, message, ok := decodeStatus([]byte{0x00, 0xAA})
+
+		assert.False(t, ok)
+		assert.Equal(t, uint8(0), status)
+		assert.Empty(t, message)
+	})
+
+	t.Run("error status with truncated message envelope", func(t *testing.T) {
+		status, message, ok := decodeStatus([]byte{0x01, 0x00, 0x00, 0x00})
+
+		assert.False(t, ok)
+		assert.Equal(t, uint8(0), status)
+		assert.Empty(t, message)
+	})
+
+	t.Run("error status with trailing bytes", func(t *testing.T) {
+		body := []byte{0x01, 0x00, 0x00, 0x00, 0x03, 'b', 'a', 'd', 0xFF}
+		status, message, ok := decodeStatus(body)
+
+		assert.False(t, ok)
+		assert.Equal(t, uint8(0), status)
+		assert.Empty(t, message)
 	})
 }
 

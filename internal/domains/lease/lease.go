@@ -279,42 +279,61 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 		return nil, recordErr
 	}
 
+	info, err := parseLeaseQueryResponse(remaining)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("QUERY failed: %w", err)
+	}
+	return info, nil
+}
+
+func parseLeaseQueryResponse(remaining []byte) (*LeaseInfo, error) {
 	info := &LeaseInfo{}
 	if len(remaining) < 1 {
-		return info, nil
+		return nil, fmt.Errorf("QUERY response too short: got %d bytes", len(remaining))
 	}
 
 	hasHolder := remaining[0]
 	if hasHolder == 0 {
 		// Lease free: [u32 pending_waiters]
-		if len(remaining) >= 5 {
-			info.PendingWaiters = binary.BigEndian.Uint32(remaining[1:5])
+		if len(remaining) != 5 {
+			return nil, fmt.Errorf("QUERY free response malformed: expected 5 bytes, got %d", len(remaining))
 		}
+		info.PendingWaiters = binary.BigEndian.Uint32(remaining[1:5])
 		return info, nil
+	}
+	if hasHolder != 1 {
+		return nil, fmt.Errorf("QUERY response invalid has_holder flag: %d", hasHolder)
 	}
 
 	info.Held = true
 	offset := 1
 	// owner_id (string = u32 len + bytes)
 	if offset+4 > len(remaining) {
-		return info, nil
+		return nil, fmt.Errorf("QUERY held response missing owner_id length")
 	}
 	ownerIDLen := binary.BigEndian.Uint32(remaining[offset : offset+4])
 	offset += 4
 	if offset+int(ownerIDLen) > len(remaining) {
-		return info, nil
+		return nil, fmt.Errorf("QUERY held response truncated owner_id")
 	}
 	info.OwnerID = string(remaining[offset : offset+int(ownerIDLen)])
 	offset += int(ownerIDLen)
 	// ttl_remaining_secs (u64)
 	if offset+8 > len(remaining) {
-		return info, nil
+		return nil, fmt.Errorf("QUERY held response missing ttl_remaining_secs")
 	}
 	info.TTLRemainingSecs = binary.BigEndian.Uint64(remaining[offset : offset+8])
 	offset += 8
 	// pending_waiters (u32)
-	if offset+4 <= len(remaining) {
-		info.PendingWaiters = binary.BigEndian.Uint32(remaining[offset : offset+4])
+	if offset+4 > len(remaining) {
+		return nil, fmt.Errorf("QUERY held response missing pending_waiters")
+	}
+	info.PendingWaiters = binary.BigEndian.Uint32(remaining[offset : offset+4])
+	offset += 4
+	if offset != len(remaining) {
+		return nil, fmt.Errorf("QUERY held response has trailing bytes: %d", len(remaining)-offset)
 	}
 	return info, nil
 }

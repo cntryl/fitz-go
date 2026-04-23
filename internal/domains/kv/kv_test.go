@@ -423,6 +423,39 @@ func TestShouldEncodeEmptyValueGivenZeroLengthValueWhenPutPayloadWritten(t *test
 	require.Equal(t, uint32(0), valueLen)
 }
 
+func TestShouldRejectTrailingBytesGivenExtraDataWhenParseScanResponseCalled(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteU32BE(buf, 1)
+	connection.WriteBytes(buf, []byte("key"))
+	connection.WriteBytes(buf, []byte("value"))
+	buf.WriteByte(0)
+	buf.WriteByte(0xAA)
+
+	pairs, hasMore, err := parseScanResponse(append([]byte(nil), buf.Bytes()...))
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "unexpected trailing bytes")
+	require.Nil(t, pairs)
+	require.False(t, hasMore)
+}
+
+func TestShouldRejectInvalidHasMoreGivenNonBooleanFlagWhenParseScanResponseCalled(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteU32BE(buf, 1)
+	connection.WriteBytes(buf, []byte("key"))
+	connection.WriteBytes(buf, []byte("value"))
+	buf.WriteByte(2)
+
+	pairs, hasMore, err := parseScanResponse(append([]byte(nil), buf.Bytes()...))
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "invalid has_more flag")
+	require.Nil(t, pairs)
+	require.False(t, hasMore)
+}
+
 // Benchmarks
 
 func BenchmarkEncodeBegin(b *testing.B) {

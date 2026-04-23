@@ -141,6 +141,9 @@ func decodePayload(body []byte) ([]byte, bool) {
 	if int(idx+int(plen)) > len(body) {
 		return nil, false
 	}
+	if idx+int(plen) != len(body) {
+		return nil, false
+	}
 	payload := append([]byte(nil), body[idx:idx+int(plen)]...)
 	return payload, true
 }
@@ -151,14 +154,17 @@ func decodeStatus(body []byte) (uint8, string, bool) {
 	}
 	status := body[0]
 	if status == 0 {
+		if len(body) != 1 {
+			return 0, "", false
+		}
 		return 0, "", true
 	}
 	if len(body) < 5 {
-		return status, "", true
+		return 0, "", false
 	}
 	msgLen := uint32(body[1])<<24 | uint32(body[2])<<16 | uint32(body[3])<<8 | uint32(body[4])
-	if int(5+msgLen) > len(body) {
-		return status, "", true
+	if int(5+msgLen) != len(body) {
+		return 0, "", false
 	}
 	return status, string(body[5 : 5+msgLen]), true
 }

@@ -283,35 +283,50 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 		span.SetStatus(codes.Error, err.Error())
 		return nil, 0, fmt.Errorf("LIST failed to parse total_count: %w", err)
 	}
-	remaining = remaining[bytesRead:]
+	entries, err := parseScheduleListEntries(remaining[bytesRead:])
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, 0, fmt.Errorf("LIST failed: %w", err)
+	}
 
-	var entries []ScheduleEntry
-	pos := 0 // Parse position in remaining bytes
-	for pos < len(remaining) {
-		if pos+1 > len(remaining) {
-			break
+	return entries, totalCount, nil
+}
+
+func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
+	entries := make([]ScheduleEntry, 0)
+	pos := 0
+	for {
+		if pos >= len(remaining) {
+			return nil, fmt.Errorf("LIST response missing entry terminator")
 		}
 		hasEntry := remaining[pos]
 		pos++
 
-		if hasEntry == 0 {
-			break
+		switch hasEntry {
+		case 0:
+			if pos != len(remaining) {
+				return nil, fmt.Errorf("LIST response has trailing bytes: %d", len(remaining)-pos)
+			}
+			return entries, nil
+		case 1:
+		default:
+			return nil, fmt.Errorf("LIST response invalid has_entry flag: %d", hasEntry)
 		}
 
-		// Per spec: route_len, route, cron_len, cron, payload_len, payload
 		routeStr, newPos, err := connection.ReadString(remaining, pos)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("LIST response invalid route: %w", err)
 		}
 		pos = newPos
 		cronStr, newPos, err := connection.ReadString(remaining, pos)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("LIST response invalid cron: %w", err)
 		}
 		pos = newPos
 		payloadBytes, newPos, err := connection.ReadBytes(remaining, pos)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("LIST response invalid payload: %w", err)
 		}
 		pos = newPos
 		payloadCopy := make([]byte, len(payloadBytes))
@@ -323,8 +338,6 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 			Payload: payloadCopy,
 		})
 	}
-
-	return entries, totalCount, nil
 }
 
 func (c *client) ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error) {

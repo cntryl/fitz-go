@@ -195,6 +195,43 @@ func TestShouldReturnErrorGivenShortListResponseWhenListCalled(t *testing.T) {
 	assert.Equal(t, uint64(0), totalCount)
 }
 
+func TestShouldReturnErrorGivenTruncatedEntryWhenListCalled(t *testing.T) {
+	client, transport := newStartedScheduleClient(t)
+	buf := connection.GetBuffer()
+	connection.WriteU64BE(buf, 1)
+	connection.WriteU8(buf, 1)
+	connection.WriteString(buf, "schedule://realm/area/one/run")
+	connection.WriteString(buf, "0 0 * * *")
+	payload := append([]byte(nil), buf.Bytes()...)
+	connection.PutBuffer(buf)
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleList, payload)
+
+	entries, totalCount, err := client.List(context.Background(), 0, 100)
+
+	require.Error(t, err)
+	assert.Nil(t, entries)
+	assert.Equal(t, uint64(0), totalCount)
+	assert.ErrorContains(t, err, "invalid payload")
+}
+
+func TestShouldReturnErrorGivenTrailingBytesAfterTerminatorWhenListCalled(t *testing.T) {
+	client, transport := newStartedScheduleClient(t)
+	buf := connection.GetBuffer()
+	connection.WriteU64BE(buf, 0)
+	connection.WriteU8(buf, 0)
+	buf.WriteByte(0xFF)
+	payload := append([]byte(nil), buf.Bytes()...)
+	connection.PutBuffer(buf)
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleList, payload)
+
+	entries, totalCount, err := client.List(context.Background(), 0, 100)
+
+	require.Error(t, err)
+	assert.Nil(t, entries)
+	assert.Equal(t, uint64(0), totalCount)
+	assert.ErrorContains(t, err, "trailing bytes")
+}
+
 func TestShouldUseServerSubscriptionIDGivenPresentWhenSubscribeCalled(t *testing.T) {
 	// Arrange
 	client, transport := newStartedScheduleClient(t)
