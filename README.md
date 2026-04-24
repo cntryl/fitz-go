@@ -209,27 +209,31 @@ go tool pprof -top cpu.prof
 go tool pprof -top mem.prof
 ```
 
-Save benchmark outputs directly when comparing changes:
+When you need a regression diff, capture two local benchmark runs and compare them with `benchstat`:
 
 ```bash
-# Compare against the checked-in baseline
 go test -run=^$ -bench=. -benchmem -count=3 \
-  github.com/cntryl/fitz-go/internal/protocol \
-  github.com/cntryl/fitz-go/internal/core/connection \
-  github.com/cntryl/fitz-go/internal/core/encoding \
-  github.com/cntryl/fitz-go/internal/core/transport \
-  github.com/cntryl/fitz-go/internal/domains/rpc \
-  github.com/cntryl/fitz-go/internal/domains/stream \
-  github.com/cntryl/fitz-go/internal/domains/kv \
-  github.com/cntryl/fitz-go/internal/domains/notice \
-  github.com/cntryl/fitz-go/internal/domains/schedule > new.txt
-benchstat benchmarks/baseline.txt new.txt
+	github.com/cntryl/fitz-go/internal/protocol \
+	github.com/cntryl/fitz-go/internal/core/connection \
+	github.com/cntryl/fitz-go/internal/core/encoding \
+	github.com/cntryl/fitz-go/internal/core/transport \
+	github.com/cntryl/fitz-go/internal/domains/rpc \
+	github.com/cntryl/fitz-go/internal/domains/stream \
+	github.com/cntryl/fitz-go/internal/domains/kv \
+	github.com/cntryl/fitz-go/internal/domains/notice \
+	github.com/cntryl/fitz-go/internal/domains/schedule > before.txt
+go test -run=^$ -bench=. -benchmem -count=3 \
+	github.com/cntryl/fitz-go/internal/protocol \
+	github.com/cntryl/fitz-go/internal/core/connection \
+	github.com/cntryl/fitz-go/internal/core/encoding \
+	github.com/cntryl/fitz-go/internal/core/transport \
+	github.com/cntryl/fitz-go/internal/domains/rpc \
+	github.com/cntryl/fitz-go/internal/domains/stream \
+	github.com/cntryl/fitz-go/internal/domains/kv \
+	github.com/cntryl/fitz-go/internal/domains/notice \
+	github.com/cntryl/fitz-go/internal/domains/schedule > after.txt
+benchstat before.txt after.txt
 ```
-
-A committed baseline covering all 9 benchmark packages lives in
-`benchmarks/baseline.txt` (Intel Xeon E-2224G, Windows/amd64, Go 1.22).
-Re-capture it after deliberate performance work with the same command redirected
-to `benchmarks/baseline.txt`.
 
 Install `benchstat` once if needed with `go install golang.org/x/perf/cmd/benchstat@latest`.
 
