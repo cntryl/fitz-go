@@ -24,8 +24,9 @@ type Multiplexer struct {
 	// FIFO queue of pending requests per MessageType
 	// Key = MessageType (100-199 for KV, 200-299 for Queue, etc.)
 	// Value = queue of *pendingRequest (oldest at front)
-	pending map[uint16]*list.List
-	mu      sync.Mutex
+	pending   map[uint16]*list.List
+	mu        sync.Mutex
+	handlerMu sync.RWMutex
 
 	// Async delivery handlers (Notice NOTIFY, Schedule NOTIFY, RPC REQUEST to worker, RPC RESPONSE per CLIENT_SPEC.md)
 	// notifyHandlers keyed by message type (209 Queue, 409 Lease, 504 Notice, 609 Stream) so multiple domains can subscribe.
@@ -113,14 +114,14 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	// Handle async deliveries (per CLIENT_SPEC.md MessageType ranges)
 	// Queue NOTIFY (209) uses a queue-specific payload shape.
 	if msgType == 209 {
-		if handler := m.notifyHandlers[msgType]; handler != nil {
+		if handler := m.notifyHandler(msgType); handler != nil {
 			m.handleQueueNotify(payload, handler)
 		}
 		return
 	}
 	// Lease NOTIFY (409), Notice NOTIFY (504), Stream NOTIFY (609) use the shared route/payload shape.
 	if msgType == 409 || msgType == 504 || msgType == 609 {
-		if handler := m.notifyHandlers[msgType]; handler != nil {
+		if handler := m.notifyHandler(msgType); handler != nil {
 			m.handleNotify(payload, handler)
 		}
 		return
@@ -138,7 +139,7 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 		m.mu.Unlock()
 		if hasPending {
 			// Sync response to caller's SendRequest(302) — fall through to sync path below
-		} else if m.rpcReqHandler != nil {
+		} else if m.rpcRequestHandler() != nil {
 			m.handleRpcRequest(payload)
 			return
 		}
@@ -289,16 +290,16 @@ func (m *Multiplexer) handleScheduleNotify(payload []byte) {
 		return
 	}
 	msgPayload := payload[offset : offset+int(payloadLen)]
-	if m.scheduleNotifyHandler != nil {
-		m.scheduleNotifyHandler(subID, msgPayload)
+	if handler := m.scheduleHandler(); handler != nil {
+		handler(subID, msgPayload)
 	}
 }
 
 // handleRpcRequest processes RPC REQUEST messages (async delivery to worker).
 // Payload is full request: [u32 len=16][16 bytes correlation_id][route][reply_route][body]
 func (m *Multiplexer) handleRpcRequest(payload []byte) {
-	if m.rpcReqHandler != nil {
-		m.rpcReqHandler(payload)
+	if handler := m.rpcRequestHandler(); handler != nil {
+		handler(payload)
 	}
 }
 
@@ -321,14 +322,17 @@ func (m *Multiplexer) handleRpcResponse(payload []byte) {
 	copy(correlationID[:], payload[4:20])
 
 	// Call registered handler with remaining payload (seq + body + stream_end)
-	if m.rpcRespHandler != nil {
-		m.rpcRespHandler(correlationID, payload[20:])
+	if handler := m.rpcResponseHandler(); handler != nil {
+		handler(correlationID, payload[20:])
 	}
 }
 
 // SetNotifyHandler registers the handler for NOTIFY messages for the given message type.
 // msgType should be 209 (Queue), 409 (Lease), 504 (Notice), or 609 (Stream).
 func (m *Multiplexer) SetNotifyHandler(msgType uint16, handler func(subID uint64, route string, payload []byte)) {
+	m.handlerMu.Lock()
+	defer m.handlerMu.Unlock()
+
 	if m.notifyHandlers == nil {
 		m.notifyHandlers = make(map[uint16]func(subID uint64, route string, payload []byte))
 	}
@@ -337,19 +341,49 @@ func (m *Multiplexer) SetNotifyHandler(msgType uint16, handler func(subID uint64
 
 // SetScheduleNotifyHandler registers the handler for Schedule NOTIFY messages (705).
 func (m *Multiplexer) SetScheduleNotifyHandler(handler func(subID uint64, payload []byte)) {
+	m.handlerMu.Lock()
+	defer m.handlerMu.Unlock()
 	m.scheduleNotifyHandler = handler
 }
 
 // SetRPCRequestHandler registers the handler for RPC REQUEST messages (302).
 // Called by the RPC domain client so workers receive forwarded requests.
 func (m *Multiplexer) SetRPCRequestHandler(handler func(payload []byte)) {
+	m.handlerMu.Lock()
+	defer m.handlerMu.Unlock()
 	m.rpcReqHandler = handler
 }
 
 // SetRPCResponseHandler registers the handler for RPC RESPONSE messages.
 // Called by the RPC domain client.
 func (m *Multiplexer) SetRPCResponseHandler(handler func(correlationID [16]byte, payload []byte)) {
+	m.handlerMu.Lock()
+	defer m.handlerMu.Unlock()
 	m.rpcRespHandler = handler
+}
+
+func (m *Multiplexer) notifyHandler(msgType uint16) func(subID uint64, route string, payload []byte) {
+	m.handlerMu.RLock()
+	defer m.handlerMu.RUnlock()
+	return m.notifyHandlers[msgType]
+}
+
+func (m *Multiplexer) scheduleHandler() func(subID uint64, payload []byte) {
+	m.handlerMu.RLock()
+	defer m.handlerMu.RUnlock()
+	return m.scheduleNotifyHandler
+}
+
+func (m *Multiplexer) rpcRequestHandler() func(payload []byte) {
+	m.handlerMu.RLock()
+	defer m.handlerMu.RUnlock()
+	return m.rpcReqHandler
+}
+
+func (m *Multiplexer) rpcResponseHandler() func(correlationID [16]byte, payload []byte) {
+	m.handlerMu.RLock()
+	defer m.handlerMu.RUnlock()
+	return m.rpcRespHandler
 }
 
 // Close shuts down the multiplexer and fails all pending requests.

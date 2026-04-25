@@ -3,6 +3,7 @@ package connection_test
 import (
 	"encoding/binary"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,6 +200,60 @@ func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCa
 			assert.NotNil(t, resp)
 		}
 	})
+}
+
+func TestShouldAllowConcurrentHandlerReplacementGivenNotifyDispatchWhenSetNotifyHandlerAndDispatchCalled(t *testing.T) {
+	mux := connection.NewMultiplexer()
+	defer mux.Close()
+
+	payload := func() []byte {
+		buf := make([]byte, 0, 8+4+20+4+4)
+		subID := make([]byte, 8)
+		binary.BigEndian.PutUint64(subID, 7)
+		buf = append(buf, subID...)
+		route := []byte("notice://realm/area/x")
+		routeLen := make([]byte, 4)
+		binary.BigEndian.PutUint32(routeLen, uint32(len(route)))
+		buf = append(buf, routeLen...)
+		buf = append(buf, route...)
+		body := []byte("ping")
+		bodyLen := make([]byte, 4)
+		binary.BigEndian.PutUint32(bodyLen, uint32(len(body)))
+		buf = append(buf, bodyLen...)
+		buf = append(buf, body...)
+		return buf
+	}()
+
+	var delivered atomic.Int64
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			mux.SetNotifyHandler(protocol.MessageTypeNoticeNotify, func(subID uint64, route string, body []byte) {
+				delivered.Add(1)
+			})
+		}
+		close(done)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				mux.Dispatch(protocol.MessageTypeNoticeNotify, payload)
+			}
+		}
+	}()
+
+	wg.Wait()
+	assert.Greater(t, delivered.Load(), int64(0))
 }
 
 // TestShouldMaintainFIFOOrderGivenSharedMessageTypeWhenDispatchCalled tests FIFO response ordering.
