@@ -2,6 +2,7 @@ package stream
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"strings"
 
@@ -29,6 +30,33 @@ const (
 	CommitModeBuffered CommitMode = 0
 	CommitModeSync     CommitMode = 1
 )
+
+type StreamFilterClauseKind string
+
+const (
+	StreamFilterEquals     StreamFilterClauseKind = "Equals"
+	StreamFilterNotEquals  StreamFilterClauseKind = "NotEquals"
+	StreamFilterStartsWith StreamFilterClauseKind = "StartsWith"
+	StreamFilterAnyOf      StreamFilterClauseKind = "AnyOf"
+)
+
+type StreamFilterClause struct {
+	Kind   StreamFilterClauseKind
+	Value  string
+	Values []string
+}
+
+type StreamFilterSet struct {
+	Clauses []StreamFilterClause
+}
+
+type StreamAppendOptions struct {
+	Discriminator *string
+}
+
+type StreamReadOptions struct {
+	Filter *StreamFilterSet
+}
 
 // Domain-specific errors. Returned when the server rejects a stream operation.
 //   - ErrStreamNotFound: the stream route does not exist.
@@ -87,9 +115,14 @@ func EncodeStreamBegin(route string, ingestMetadata []byte) ([]byte, error) {
 }
 
 // EncodeStreamAppend encodes a STREAM APPEND request per CLIENT_SPEC.md.
-// Wire format: [u64 session_id][u64 expected_offset][bytes body][u8 has_metadata][bytes? metadata]
-// metadata is optional; pass nil to omit.
-func EncodeStreamAppend(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte) ([]byte, error) {
+// Wire format: [u64 session_id][u64 expected_offset][bytes body][u8 has_metadata][bytes? metadata][u8 has_discriminator][string? discriminator]
+// metadata and discriminator are optional; pass nil to omit.
+func EncodeStreamAppend(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte, opts ...*StreamAppendOptions) ([]byte, error) {
+	var discriminator *string
+	if len(opts) > 0 && opts[0] != nil {
+		discriminator = opts[0].Discriminator
+	}
+
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
 		encoding.WriteU64(buf, expectedOffset)
@@ -97,6 +130,12 @@ func EncodeStreamAppend(sessionID uint64, expectedOffset uint64, body []byte, me
 		if metadata != nil {
 			buf.WriteByte(1)
 			encoding.WriteBytes(buf, metadata)
+		} else {
+			buf.WriteByte(0)
+		}
+		if discriminator != nil && *discriminator != "" {
+			buf.WriteByte(1)
+			encoding.WriteString(buf, *discriminator)
 		} else {
 			buf.WriteByte(0)
 		}
@@ -122,16 +161,22 @@ func EncodeStreamRollback(sessionID uint64) ([]byte, error) {
 }
 
 // EncodeStreamRead encodes a STREAM READ request per CLIENT_SPEC.md.
-// Wire format: [string route][u64 from_offset][u64 limit][u8 has_max_bytes][u64? max_bytes]
-// maxBytes is optional; pass nil to omit.
-func EncodeStreamRead(route string, fromOffset uint64, limit uint64, maxBytes *uint64) ([]byte, error) {
+// Wire format: [string route][u64 from_offset][u64 limit][u8 has_filter][u32 filter_len?][bincode? filter]
+// filter is optional; pass nil to omit.
+func EncodeStreamRead(route string, fromOffset uint64, limit uint64, filter *StreamFilterSet) ([]byte, error) {
+	var filterBytes []byte
+	if filter != nil && len(filter.Clauses) > 0 {
+		filterBytes = encodeStreamFilterSet(filter)
+	}
+
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		encoding.WriteU64(buf, fromOffset)
 		encoding.WriteU64(buf, limit)
-		if maxBytes != nil {
+		if filterBytes != nil {
 			buf.WriteByte(1)
-			encoding.WriteU64(buf, *maxBytes)
+			encoding.WriteU32(buf, uint32(len(filterBytes)))
+			encoding.WriteBytesRaw(buf, filterBytes)
 		} else {
 			buf.WriteByte(0)
 		}
@@ -185,7 +230,12 @@ func streamBeginPayloadWriter(route string, ingestMetadata []byte) func(*bytes.B
 	}
 }
 
-func streamAppendPayloadWriter(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte) func(*bytes.Buffer) {
+func streamAppendPayloadWriter(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte, opts ...*StreamAppendOptions) func(*bytes.Buffer) {
+	var discriminator *string
+	if len(opts) > 0 && opts[0] != nil {
+		discriminator = opts[0].Discriminator
+	}
+
 	return func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
 		encoding.WriteU64(buf, expectedOffset)
@@ -193,6 +243,12 @@ func streamAppendPayloadWriter(sessionID uint64, expectedOffset uint64, body []b
 		if metadata != nil {
 			buf.WriteByte(1)
 			encoding.WriteBytes(buf, metadata)
+		} else {
+			buf.WriteByte(0)
+		}
+		if discriminator != nil && *discriminator != "" {
+			buf.WriteByte(1)
+			encoding.WriteString(buf, *discriminator)
 		} else {
 			buf.WriteByte(0)
 		}
@@ -212,14 +268,20 @@ func streamRollbackPayloadWriter(sessionID uint64) func(*bytes.Buffer) {
 	}
 }
 
-func streamReadPayloadWriter(route string, fromOffset uint64, limit uint64, maxBytes *uint64) func(*bytes.Buffer) {
+func streamReadPayloadWriter(route string, fromOffset uint64, limit uint64, filter *StreamFilterSet) func(*bytes.Buffer) {
+	var filterBytes []byte
+	if filter != nil && len(filter.Clauses) > 0 {
+		filterBytes = encodeStreamFilterSet(filter)
+	}
+
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		encoding.WriteU64(buf, fromOffset)
 		encoding.WriteU64(buf, limit)
-		if maxBytes != nil {
+		if filterBytes != nil {
 			buf.WriteByte(1)
-			encoding.WriteU64(buf, *maxBytes)
+			encoding.WriteU32(buf, uint32(len(filterBytes)))
+			encoding.WriteBytesRaw(buf, filterBytes)
 		} else {
 			buf.WriteByte(0)
 		}
@@ -236,6 +298,58 @@ func streamGetMetadataPayloadWriter(route string) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 	}
+}
+
+func encodeStreamFilterSet(filter *StreamFilterSet) []byte {
+	if filter == nil || len(filter.Clauses) == 0 {
+		return nil
+	}
+
+	buf := &bytes.Buffer{}
+	writeU64LE(buf, uint64(len(filter.Clauses)))
+	for _, clause := range filter.Clauses {
+		encodeStreamFilterClause(buf, clause)
+	}
+
+	return append([]byte(nil), buf.Bytes()...)
+}
+
+func encodeStreamFilterClause(buf *bytes.Buffer, clause StreamFilterClause) {
+	switch clause.Kind {
+	case StreamFilterEquals:
+		writeU32LE(buf, 0)
+		writeLEString(buf, clause.Value)
+	case StreamFilterNotEquals:
+		writeU32LE(buf, 1)
+		writeLEString(buf, clause.Value)
+	case StreamFilterStartsWith:
+		writeU32LE(buf, 2)
+		writeLEString(buf, clause.Value)
+	case StreamFilterAnyOf:
+		writeU32LE(buf, 3)
+		writeU64LE(buf, uint64(len(clause.Values)))
+		for _, value := range clause.Values {
+			writeLEString(buf, value)
+		}
+	}
+}
+
+func writeU32LE(buf *bytes.Buffer, value uint32) {
+	var scratch [4]byte
+	binary.LittleEndian.PutUint32(scratch[:], value)
+	buf.Write(scratch[:])
+}
+
+func writeU64LE(buf *bytes.Buffer, value uint64) {
+	var scratch [8]byte
+	binary.LittleEndian.PutUint64(scratch[:], value)
+	buf.Write(scratch[:])
+}
+
+func writeLEString(buf *bytes.Buffer, value string) {
+	bytesValue := []byte(value)
+	writeU64LE(buf, uint64(len(bytesValue)))
+	buf.Write(bytesValue)
 }
 
 // Subscription payload writers for SUBSCRIBE/UNSUBSCRIBE
