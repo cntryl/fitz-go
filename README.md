@@ -115,6 +115,27 @@ if err != nil {
 defer sub.Unsubscribe()
 ```
 
+Stream replay pattern:
+
+```go
+filter := &fitz.StreamFilterSet{Clauses: []fitz.StreamFilterClause{{Kind: fitz.StreamFilterEquals, Value: "proj.alpha"}}}
+
+records, err := client.Stream().Read(ctx, "stream://realm/area/events", 0, 100, &fitz.StreamReadOptions{Filter: filter})
+if err != nil {
+	panic(err)
+}
+defer records.Close()
+
+page, err := client.Stream().ReadPage(ctx, "stream://realm/area/events", 0, 100, &fitz.StreamReadOptions{Filter: filter})
+if err != nil {
+	panic(err)
+}
+
+// Read keeps the compatibility shape and yields event records only.
+// ReadPage exposes filtered markers plus cursor progression across hidden offsets.
+_ = page.Cursor.LastResourceOffset
+```
+
 ## Architecture
 
 - `fitz/`: public client, public domain wrappers, public types

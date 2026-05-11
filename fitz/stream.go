@@ -23,6 +23,22 @@ type StreamAppendOptions = internalstream.StreamAppendOptions
 
 type StreamReadOptions = internalstream.StreamReadOptions
 
+type StreamFilteredReason = internalstream.FilteredReason
+
+const (
+	StreamFilteredReasonServerFilter = internalstream.FilteredReasonServerFilter
+	StreamFilteredReasonPermission   = internalstream.FilteredReasonPermission
+	StreamFilteredReasonProjection   = internalstream.FilteredReasonProjection
+)
+
+type StreamReadItemKind = internalstream.ReadItemKind
+
+const (
+	StreamReadItemEvent         = internalstream.ReadItemEvent
+	StreamReadItemFiltered      = internalstream.ReadItemFiltered
+	StreamReadItemFilteredRange = internalstream.ReadItemFilteredRange
+)
+
 type StreamRecord struct {
 	Offset      uint64
 	AreaOffset  *uint64
@@ -30,6 +46,27 @@ type StreamRecord struct {
 	Body        []byte
 	Metadata    []byte
 	Timestamp   uint64
+}
+
+type StreamReadItem struct {
+	Kind       StreamReadItemKind
+	Record     *StreamRecord
+	Offset     uint64
+	FromOffset uint64
+	ToOffset   uint64
+	Reason     *StreamFilteredReason
+}
+
+type StreamReadCursor struct {
+	LastResourceOffset uint64
+	LastAreaOffset     *uint64
+	LastRealmOffset    *uint64
+	HasMore            bool
+}
+
+type StreamReadPage struct {
+	Items  []StreamReadItem
+	Cursor StreamReadCursor
 }
 
 type StreamMetadata struct {
@@ -83,6 +120,7 @@ type StreamSession interface {
 type StreamClient interface {
 	Begin(ctx context.Context, route string) (StreamSession, error)
 	Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (Iterator[StreamRecord], error)
+	ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (*StreamReadPage, error)
 	Peek(ctx context.Context, route string) (*StreamRecord, error)
 	Metadata(ctx context.Context, route string) (*StreamMetadata, error)
 	Subscribe(ctx context.Context, pattern string, handler StreamCommitHandler) (*StreamSubscription, error)
@@ -115,6 +153,45 @@ func (c *streamClient) Read(ctx context.Context, route string, fromOffset uint64
 		return nil, err
 	}
 	return &streamRecordIterator{inner: iter}, nil
+}
+
+func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (*StreamReadPage, error) {
+	page, err := c.inner.ReadPage(ctx, route, fromOffset, limit, opts...)
+	if err != nil || page == nil {
+		return nil, err
+	}
+
+	items := make([]StreamReadItem, 0, len(page.Items))
+	for _, item := range page.Items {
+		converted := StreamReadItem{
+			Kind:       item.Kind,
+			Offset:     item.Offset,
+			FromOffset: item.FromOffset,
+			ToOffset:   item.ToOffset,
+			Reason:     cloneFilteredReasonPtr(item.Reason),
+		}
+		if item.Record != nil {
+			converted.Record = &StreamRecord{
+				Offset:      item.Record.Offset,
+				AreaOffset:  cloneUint64Ptr(item.Record.AreaOffset),
+				RealmOffset: cloneUint64Ptr(item.Record.RealmOffset),
+				Body:        append([]byte(nil), item.Record.Body...),
+				Metadata:    append([]byte(nil), item.Record.Metadata...),
+				Timestamp:   item.Record.Timestamp,
+			}
+		}
+		items = append(items, converted)
+	}
+
+	return &StreamReadPage{
+		Items: items,
+		Cursor: StreamReadCursor{
+			LastResourceOffset: page.Cursor.LastResourceOffset,
+			LastAreaOffset:     cloneUint64Ptr(page.Cursor.LastAreaOffset),
+			LastRealmOffset:    cloneUint64Ptr(page.Cursor.LastRealmOffset),
+			HasMore:            page.Cursor.HasMore,
+		},
+	}, nil
 }
 
 func (c *streamClient) Peek(ctx context.Context, route string) (*StreamRecord, error) {
@@ -214,5 +291,13 @@ func cloneUint64Ptr(value *uint64) *uint64 {
 		return nil
 	}
 	clone := *value
+	return &clone
+}
+
+func cloneFilteredReasonPtr(value *internalstream.FilteredReason) *StreamFilteredReason {
+	if value == nil {
+		return nil
+	}
+	clone := StreamFilteredReason(*value)
 	return &clone
 }

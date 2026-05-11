@@ -55,7 +55,8 @@ type StreamAppendOptions struct {
 }
 
 type StreamReadOptions struct {
-	Filter *StreamFilterSet
+	MaxBytes *uint64
+	Filter   *StreamFilterSet
 }
 
 // Domain-specific errors. Returned when the server rejects a stream operation.
@@ -161,18 +162,24 @@ func EncodeStreamRollback(sessionID uint64) ([]byte, error) {
 }
 
 // EncodeStreamRead encodes a STREAM READ request per CLIENT_SPEC.md.
-// Wire format: [string route][u64 from_offset][u64 limit][u8 has_filter][u32 filter_len?][bincode? filter]
+// Wire format: [string route][u64 from_offset][u64 limit][u8 has_max_bytes][u64? max_bytes][u8 has_filter][u32 filter_len?][bincode? filter]
 // filter is optional; pass nil to omit.
-func EncodeStreamRead(route string, fromOffset uint64, limit uint64, filter *StreamFilterSet) ([]byte, error) {
+func EncodeStreamRead(route string, fromOffset uint64, limit uint64, opts *StreamReadOptions) ([]byte, error) {
 	var filterBytes []byte
-	if filter != nil && len(filter.Clauses) > 0 {
-		filterBytes = encodeStreamFilterSet(filter)
+	if opts != nil && opts.Filter != nil && len(opts.Filter.Clauses) > 0 {
+		filterBytes = encodeStreamFilterSet(opts.Filter)
 	}
 
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		encoding.WriteU64(buf, fromOffset)
 		encoding.WriteU64(buf, limit)
+		if opts != nil && opts.MaxBytes != nil {
+			buf.WriteByte(1)
+			encoding.WriteU64(buf, *opts.MaxBytes)
+		} else {
+			buf.WriteByte(0)
+		}
 		if filterBytes != nil {
 			buf.WriteByte(1)
 			encoding.WriteU32(buf, uint32(len(filterBytes)))
@@ -268,16 +275,22 @@ func streamRollbackPayloadWriter(sessionID uint64) func(*bytes.Buffer) {
 	}
 }
 
-func streamReadPayloadWriter(route string, fromOffset uint64, limit uint64, filter *StreamFilterSet) func(*bytes.Buffer) {
+func streamReadPayloadWriter(route string, fromOffset uint64, limit uint64, opts *StreamReadOptions) func(*bytes.Buffer) {
 	var filterBytes []byte
-	if filter != nil && len(filter.Clauses) > 0 {
-		filterBytes = encodeStreamFilterSet(filter)
+	if opts != nil && opts.Filter != nil && len(opts.Filter.Clauses) > 0 {
+		filterBytes = encodeStreamFilterSet(opts.Filter)
 	}
 
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		encoding.WriteU64(buf, fromOffset)
 		encoding.WriteU64(buf, limit)
+		if opts != nil && opts.MaxBytes != nil {
+			buf.WriteByte(1)
+			encoding.WriteU64(buf, *opts.MaxBytes)
+		} else {
+			buf.WriteByte(0)
+		}
 		if filterBytes != nil {
 			buf.WriteByte(1)
 			encoding.WriteU32(buf, uint32(len(filterBytes)))

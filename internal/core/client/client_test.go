@@ -528,6 +528,15 @@ func TestShouldLogClientLifecycleGivenReconnectLoggerWhenConnectionRestored(t *t
 	require.Eventually(t, func() bool {
 		return c.currentConnection() != nil && c.currentConnection() != initialConn
 	}, time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		entries := recorder.snapshot()
+		for _, entry := range entries {
+			if entry.level == slog.LevelInfo && entry.message == "reconnect success" {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 20*time.Millisecond)
 	require.NoError(t, c.Close())
 
 	entries := recorder.snapshot()

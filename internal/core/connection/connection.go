@@ -578,6 +578,13 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()
 	case <-c.done:
+		select {
+		case resp, ok := <-responseChan:
+			if ok {
+				return resp, nil
+			}
+		default:
+		}
 		if err := c.getConnError(); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -667,6 +674,13 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()
 	case <-c.done:
+		select {
+		case resp, ok := <-responseChan:
+			if ok {
+				return resp, nil
+			}
+		default:
+		}
 		if err := c.getConnError(); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())

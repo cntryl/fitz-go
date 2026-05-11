@@ -93,6 +93,20 @@ func TestShouldReadMatchingDiscriminatorRecordsGivenFilterWhenReadCalled(t *test
 		require.NoError(t, iter.Err())
 		require.Len(t, bodies, 1)
 		assert.Equal(t, []byte("alpha"), bodies[0])
+
+		page, err := f.Client().Stream().ReadPage(ctx, route, 0, 10, &fitz.StreamReadOptions{Filter: filter})
+		require.NoError(t, err)
+		require.NotNil(t, page)
+		assert.Equal(t, uint64(1), page.Cursor.LastResourceOffset)
+		assert.False(t, page.Cursor.HasMore)
+		require.Len(t, page.Items, 2)
+		assert.Equal(t, fitz.StreamReadItemEvent, page.Items[0].Kind)
+		require.NotNil(t, page.Items[0].Record)
+		assert.Equal(t, []byte("alpha"), page.Items[0].Record.Body)
+		assert.Equal(t, fitz.StreamReadItemFiltered, page.Items[1].Kind)
+		assert.Equal(t, uint64(1), page.Items[1].Offset)
+		require.NotNil(t, page.Items[1].Reason)
+		assert.Equal(t, fitz.StreamFilteredReasonServerFilter, *page.Items[1].Reason)
 	})
 }
 
