@@ -7,7 +7,7 @@ import (
 )
 
 func ExampleClient_State() {
-	var state fitz.ConnectionState = fitz.ConnectionStateReconnecting
+	var state = fitz.ConnectionStateReconnecting
 	fmt.Println(state == fitz.ConnectionStateReconnecting)
 	// Output:
 	// true

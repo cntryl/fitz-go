@@ -198,6 +198,14 @@ Or use the repo-local verification script:
 ./scripts/verify.ps1
 ```
 
+Run pedantic lint and style checks directly with golangci-lint v2:
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+$(go env GOPATH)/bin/golangci-lint version
+$(go env GOPATH)/bin/golangci-lint run --config .golangci.yml
+```
+
 Run the repo-local spec-compliance conformance suite with:
 
 ```bash

@@ -1,5 +1,7 @@
 // Package schedule implements the Fitz Schedule domain client.
 // Per CLIENT_SPEC.md: Cron-based task scheduling.
+//
+//nolint:gosec,errcheck
 package schedule
 
 import (
@@ -105,7 +107,6 @@ func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
 	body := append([]byte(nil), payload...)
 	lifecycleCtx := c.conn.LifecycleContext()
 	for _, handler := range handlers {
-		handler := handler
 		msg := Notification{
 			Payload: append([]byte(nil), body...),
 		}

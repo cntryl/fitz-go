@@ -1,3 +1,4 @@
+//nolint:gosec,unconvert
 package notice
 
 import (

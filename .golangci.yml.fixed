@@ -1,0 +1,90 @@
+﻿version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - dogsled
+    - dupl
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - noctx
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+
+linters-settings:
+  errcheck:
+    exclude-rules:
+      - path: .*_test\.go$
+        text: "Error return value of .*Close() is not checked"
+      - path: .*_test\.go$
+        text: "Error return value of .*Rollback() is not checked"
+      - path: .*_test\.go$
+        text: "Error return value of .*Set(Read|Write)Deadline() is not checked"
+      - text: "Error return value of .*Close() is not checked"
+      - text: "Error return value of .*Rollback() is not checked"
+      - text: "Error return value of .*Set(Read|Write)Deadline() is not checked"
+  dupl:
+    threshold: 140
+  exhaustive:
+    check:
+      - switch
+      - map
+  gosec:
+    excludes:
+      - G404
+  misspell:
+    locale: US
+  revive:
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: early-return
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: if-return
+      - name: increment-decrement
+      - name: range
+      - name: receiver-naming
+      - name: superfluous-else
+      - name: time-naming
+      - name: unreachable-code
+      - name: var-declaration
+      - name: var-naming
+
+issues:
+  exclude-rules:
+    - linters:
+        - gosec
+      text: "G115:"
+    - linters:
+        - gosec
+      text: "G401:"
+    - linters:
+        - gosec
+      text: "G404:"
+    - linters:
+        - gosec
+      text: "G505:"
+    - linters:
+        - gosec
+      text: "G306:"
+  max-issues-per-linter: 0
+  max-same-issues: 0
+

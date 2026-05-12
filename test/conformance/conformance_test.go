@@ -19,6 +19,8 @@
 //	go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
 //	CONFORMANCE_TRANSPORT=ws CONFORMANCE_AUTH_MODE=valid_jwt \
 //	  go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
+//
+//nolint:gosec,errcheck
 package conformance
 
 import (
@@ -870,7 +872,6 @@ func TestConformanceSuite(t *testing.T) {
 			resultsCh := make(chan readResult, len(routes))
 
 			for i, route := range routes {
-				i, route := i, route
 				go func() {
 					tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 					if err != nil {

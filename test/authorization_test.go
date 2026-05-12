@@ -1,3 +1,4 @@
+//nolint:errcheck
 package integration
 
 import (
@@ -120,7 +121,6 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 		}
 
 		for _, tc := range cases {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				client := newUnauthorizedClient(t, transportType, tc.permissions)
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

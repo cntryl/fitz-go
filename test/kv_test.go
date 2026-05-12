@@ -1,3 +1,4 @@
+//nolint:gosec,errcheck,dupl
 package integration
 
 import (

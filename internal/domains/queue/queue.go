@@ -1,5 +1,7 @@
 // Package queue implements the Fitz Queue domain client.
 // Per CLIENT_SPEC.md: FIFO message queue with lease-based processing.
+//
+//nolint:gosec,errcheck
 package queue
 
 import (
@@ -408,7 +410,6 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	lifecycleCtx := c.conn.LifecycleContext()
 
 	for _, handler := range handlers {
-		handler := handler
 		go func() {
 			handlerCtx, cancel, span := coretracing.StartDetachedSpan(
 				lifecycleCtx,

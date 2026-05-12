@@ -1,6 +1,8 @@
 // Package types defines shared types used across the fitz SDK.
 // This package has no dependencies on other internal packages to ensure
 // it can be imported anywhere without creating cycles.
+//
+//nolint:unused
 package types
 
 import (

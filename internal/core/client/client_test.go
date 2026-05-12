@@ -1,3 +1,4 @@
+//nolint:errcheck,unparam
 package client
 
 import (

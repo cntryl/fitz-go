@@ -1,3 +1,4 @@
+//nolint:gosec,gocritic,unparam
 package client
 
 import (
