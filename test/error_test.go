@@ -40,7 +40,7 @@ func TestShouldReturnExpectedDomainErrorsGivenRejectedOperations(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, items, 1)
 
-			err = items[0].CompleteWithToken(ctx, items[0].Token+1)
+			err = items[0].CompleteWithToken(ctx, ^uint64(0))
 			assert.ErrorIs(t, err, fitz.ErrQueueInvalidToken)
 		})
 

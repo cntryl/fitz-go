@@ -50,8 +50,8 @@ type QueueClient interface {
 }
 
 type QueueItem struct {
-	ID    uint64
-	Token uint64
+	id    uint64
+	token uint64
 	Body  []byte
 
 	inner *internalqueue.QueueItem
@@ -66,8 +66,8 @@ func wrapQueueItem(item *internalqueue.QueueItem) *QueueItem {
 		return nil
 	}
 	return &QueueItem{
-		ID:    item.ID,
-		Token: item.Token,
+		id:    item.ID,
+		token: item.Token,
 		Body:  append([]byte(nil), item.Body...),
 		inner: item,
 	}

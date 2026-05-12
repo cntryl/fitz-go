@@ -21,7 +21,6 @@ func TestShouldAcquireLeaseGivenAvailableLeaseWhenAcquireCalled(t *testing.T) {
 		l, err := f.Client().Lease().Acquire(ctx, f.UniqueRoute("lease"), 30)
 		require.NoError(t, err)
 		require.NotNil(t, l)
-		assert.NotEmpty(t, l.Token)
 		assert.Greater(t, l.ExpiresAt, time.Now().Unix()-1)
 	})
 }
@@ -93,7 +92,7 @@ func TestShouldReleaseLeaseGivenValidTokenWhenReleaseCalled(t *testing.T) {
 		l2, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
 		require.NotNil(t, l2)
-		assert.NotEmpty(t, l2.Token)
+		assert.Greater(t, l2.ExpiresAt, time.Now().Unix()-1)
 	})
 }
 
@@ -127,7 +126,7 @@ func TestShouldExpireLeaseGivenTTLElapsedWhenNoRenew(t *testing.T) {
 		l2, err := f.Client().Lease().Acquire(ctx, route, 30)
 		require.NoError(t, err)
 		require.NotNil(t, l2)
-		assert.NotEmpty(t, l2.Token)
+		assert.Greater(t, l2.ExpiresAt, time.Now().Unix()-1)
 	})
 }
 
@@ -147,7 +146,7 @@ func TestShouldQueryLeaseStatusGivenExistingLeaseWhenQueryCalled(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, info)
 		assert.True(t, info.Held)
-		assert.True(t, info.TTLRemainingSecs > 0 || info.OwnerID != "" || len(info.Token) > 0)
+		assert.True(t, info.TTLRemainingSecs > 0 || info.OwnerID != "")
 	})
 }
 

@@ -7,10 +7,10 @@ import (
 )
 
 type RPCInboundRequest struct {
-	CorrelationID [16]byte
 	Route         string
 	ReplyRoute    string
 	Body          []byte
+	correlationID [16]byte
 }
 
 type RPCResponseFrame struct {
@@ -67,10 +67,10 @@ func (w *rpcResponseWriter) Send(body []byte) error {
 func (c *rpcClient) RegisterWorker(ctx context.Context, route string, handler RPCHandler) (*RPCWorkerRegistration, error) {
 	registration, err := c.inner.RegisterWorker(ctx, route, func(ctx context.Context, req internalrpc.InboundRequest, writer internalrpc.ResponseWriter) error {
 		return handler(ctx, RPCInboundRequest{
-			CorrelationID: req.CorrelationID,
 			Route:         req.Route,
 			ReplyRoute:    req.ReplyRoute,
 			Body:          append([]byte(nil), req.Body...),
+			correlationID: req.CorrelationID,
 		}, &rpcResponseWriter{inner: writer})
 	})
 	if err != nil {

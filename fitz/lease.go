@@ -7,7 +7,7 @@ import (
 )
 
 type Lease struct {
-	Token     []byte
+	token     []byte
 	ExpiresAt int64
 
 	inner *internallease.Lease
@@ -44,7 +44,7 @@ func (l *Lease) ReleaseWithToken(ctx context.Context, token []byte) error {
 }
 
 func (l *Lease) syncFromInner() {
-	l.Token = append(l.Token[:0], l.inner.Token...)
+	l.token = append(l.token[:0], l.inner.Token...)
 	l.ExpiresAt = l.inner.ExpiresAt
 }
 
@@ -67,7 +67,6 @@ func (s *LeaseSubscription) Unsubscribe() {
 
 type LeaseInfo struct {
 	Held             bool
-	Token            []byte
 	OwnerID          string
 	TTLRemainingSecs uint64
 	PendingWaiters   uint32
@@ -102,7 +101,6 @@ func (c *leaseClient) Query(ctx context.Context, route string) (*LeaseInfo, erro
 	}
 	return &LeaseInfo{
 		Held:             info.Held,
-		Token:            append([]byte(nil), info.Token...),
 		OwnerID:          info.OwnerID,
 		TTLRemainingSecs: info.TTLRemainingSecs,
 		PendingWaiters:   info.PendingWaiters,
