@@ -17,6 +17,7 @@ type NoticeSubscription struct {
 	inner *internalnotice.Subscription
 }
 
+// Unsubscribe stops receiving notice messages for this subscription.
 func (s *NoticeSubscription) Unsubscribe() {
 	if s != nil && s.inner != nil {
 		s.inner.Unsubscribe()
@@ -32,10 +33,12 @@ type noticeClient struct {
 	inner internalnotice.Client
 }
 
+// Publish sends a notice payload to a fixed route.
 func (c *noticeClient) Publish(ctx context.Context, route string, body []byte) error {
 	return c.inner.Publish(ctx, route, body)
 }
 
+// Subscribe registers a notice handler for the route pattern.
 func (c *noticeClient) Subscribe(ctx context.Context, pattern string, handler NoticeHandler) (*NoticeSubscription, error) {
 	sub, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, msg internalnotice.NoticeMsg) error {
 		return handler(ctx, NoticeMsg{

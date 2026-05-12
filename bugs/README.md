@@ -6,7 +6,6 @@ This directory contains bug reports discovered during fitz-go SDK development an
 
 | ID | Title | Priority | Component | Status |
 |----|-------|----------|-----------|--------|
-| [001](001-websocket-handshake-failure.md) | WebSocket Connection Handshake Failure | High | Transport/WebSocket | Open (Fix Available) |
 
 ## Bug Template
 

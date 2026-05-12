@@ -105,6 +105,7 @@ type StreamSubscription struct {
 	inner *internalstream.Subscription
 }
 
+// Unsubscribe stops receiving stream commit notifications.
 func (s *StreamSubscription) Unsubscribe() {
 	if s != nil && s.inner != nil {
 		s.inner.Unsubscribe()
@@ -139,6 +140,7 @@ type streamRecordIterator struct {
 	current StreamRecord
 }
 
+// Begin starts a stream write session for the provided route.
 func (c *streamClient) Begin(ctx context.Context, route string) (StreamSession, error) {
 	session, err := c.inner.Begin(ctx, route)
 	if err != nil {
@@ -147,6 +149,7 @@ func (c *streamClient) Begin(ctx context.Context, route string) (StreamSession, 
 	return &streamSession{inner: session}, nil
 }
 
+// Read returns an iterator of records starting at fromOffset.
 func (c *streamClient) Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (Iterator[StreamRecord], error) {
 	iter, err := c.inner.Read(ctx, route, fromOffset, limit, opts...)
 	if err != nil {
@@ -155,6 +158,7 @@ func (c *streamClient) Read(ctx context.Context, route string, fromOffset uint64
 	return &streamRecordIterator{inner: iter}, nil
 }
 
+// ReadPage returns a page containing events and filtered markers.
 func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (*StreamReadPage, error) {
 	page, err := c.inner.ReadPage(ctx, route, fromOffset, limit, opts...)
 	if err != nil || page == nil {
@@ -194,6 +198,7 @@ func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset ui
 	}, nil
 }
 
+// Peek returns the latest record for the route, if present.
 func (c *streamClient) Peek(ctx context.Context, route string) (*StreamRecord, error) {
 	record, err := c.inner.Peek(ctx, route)
 	if err != nil || record == nil {
@@ -209,6 +214,7 @@ func (c *streamClient) Peek(ctx context.Context, route string) (*StreamRecord, e
 	}, nil
 }
 
+// Metadata returns stream metadata for the route.
 func (c *streamClient) Metadata(ctx context.Context, route string) (*StreamMetadata, error) {
 	meta, err := c.inner.Metadata(ctx, route)
 	if err != nil || meta == nil {
@@ -226,6 +232,7 @@ func (c *streamClient) Metadata(ctx context.Context, route string) (*StreamMetad
 	}, nil
 }
 
+// Subscribe registers a commit notification handler for the route pattern.
 func (c *streamClient) Subscribe(ctx context.Context, pattern string, handler StreamCommitHandler) (*StreamSubscription, error) {
 	subscription, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notif internalstream.CommitNotification) error {
 		return handler(ctx, StreamCommitNotification{
@@ -246,18 +253,22 @@ func (c *streamClient) Subscribe(ctx context.Context, pattern string, handler St
 	return &StreamSubscription{inner: subscription}, nil
 }
 
+// Append writes a record in the active stream session.
 func (s *streamSession) Append(ctx context.Context, expectedOffset uint64, body []byte, opts ...*StreamAppendOptions) (offset uint64, err error) {
 	return s.inner.Append(ctx, expectedOffset, body, opts...)
 }
 
+// Commit finalizes the active stream session.
 func (s *streamSession) Commit(ctx context.Context, mode StreamCommitMode) error {
 	return s.inner.Commit(ctx, internalstream.CommitMode(mode))
 }
 
+// Rollback aborts the active stream session.
 func (s *streamSession) Rollback(ctx context.Context) error {
 	return s.inner.Rollback(ctx)
 }
 
+// Next advances to the next record.
 func (it *streamRecordIterator) Next() bool {
 	if !it.inner.Next() {
 		return false
@@ -274,14 +285,17 @@ func (it *streamRecordIterator) Next() bool {
 	return true
 }
 
+// Value returns the current record.
 func (it *streamRecordIterator) Value() StreamRecord {
 	return it.current
 }
 
+// Err returns the terminal iterator error, if any.
 func (it *streamRecordIterator) Err() error {
 	return it.inner.Err()
 }
 
+// Close releases iterator resources.
 func (it *streamRecordIterator) Close() error {
 	return it.inner.Close()
 }

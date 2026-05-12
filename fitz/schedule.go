@@ -23,6 +23,7 @@ type ScheduleSubscription struct {
 	inner *internalschedule.Subscription
 }
 
+// Unsubscribe stops receiving schedule fire notifications.
 func (s *ScheduleSubscription) Unsubscribe() {
 	if s != nil && s.inner != nil {
 		s.inner.Unsubscribe()
@@ -41,14 +42,17 @@ type scheduleClient struct {
 	inner internalschedule.Client
 }
 
+// Create creates or updates a schedule for the route.
 func (c *scheduleClient) Create(ctx context.Context, route string, cronExpr string, payload []byte) (string, error) {
 	return c.inner.Create(ctx, route, cronExpr, payload)
 }
 
+// Cancel removes a schedule by route.
 func (c *scheduleClient) Cancel(ctx context.Context, route string) error {
 	return c.inner.Cancel(ctx, route)
 }
 
+// List returns schedules using offset/limit pagination.
 func (c *scheduleClient) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
 	entries, totalCount, err := c.inner.List(ctx, offset, limit)
 	if err != nil {
@@ -57,6 +61,7 @@ func (c *scheduleClient) List(ctx context.Context, offset, limit uint64) ([]Sche
 	return copyScheduleEntries(entries), totalCount, nil
 }
 
+// ListBySelector returns schedules matching a canonical selector.
 func (c *scheduleClient) ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
 	entries, totalCount, err := c.inner.ListBySelector(ctx, selector, offset, limit)
 	if err != nil {
@@ -78,6 +83,7 @@ func copyScheduleEntries(entries []internalschedule.ScheduleEntry) []ScheduleEnt
 	return publicEntries
 }
 
+// Subscribe registers a handler for schedule fire notifications.
 func (c *scheduleClient) Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error) {
 	sub, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notification internalschedule.Notification) error {
 		return handler(ctx, ScheduleNotification{Payload: append([]byte(nil), notification.Payload...)})

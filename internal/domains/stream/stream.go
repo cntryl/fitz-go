@@ -197,31 +197,31 @@ func (c *client) Begin(ctx context.Context, route string) (StreamSession, error)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("BEGIN request failed: %w", err)
+		return nil, fmt.Errorf("begin request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("BEGIN failed: %w", mapStreamError(err))
+		return nil, fmt.Errorf("begin failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("BEGIN failed: unexpected status")
+		recordErr := fmt.Errorf("begin failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
 	}
 
 	if len(remaining) < 1 {
-		recordErr := fmt.Errorf("BEGIN response too short")
+		recordErr := fmt.Errorf("begin response too short")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
 	}
 	hasSessionID := remaining[0]
 	if hasSessionID != 1 || len(remaining) < 9 {
-		recordErr := fmt.Errorf("BEGIN response missing session_id")
+		recordErr := fmt.Errorf("begin response missing session_id")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
@@ -250,17 +250,17 @@ func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("SEND request failed: %w", err)
+		return 0, fmt.Errorf("send request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("SEND failed: %w", mapStreamError(err))
+		return 0, fmt.Errorf("send failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("SEND failed: unexpected status")
+		recordErr := fmt.Errorf("send failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return 0, recordErr
@@ -296,17 +296,17 @@ func (s *session) Commit(ctx context.Context, mode CommitMode) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("COMMIT request failed: %w", err)
+		return fmt.Errorf("commit request failed: %w", err)
 	}
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("COMMIT failed: %w", mapStreamError(err))
+		return fmt.Errorf("commit failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("COMMIT failed: unexpected status")
+		recordErr := fmt.Errorf("commit failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -326,17 +326,17 @@ func (s *session) Rollback(ctx context.Context) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("ROLLBACK request failed: %w", err)
+		return fmt.Errorf("rollback request failed: %w", err)
 	}
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("ROLLBACK failed: %w", mapStreamError(err))
+		return fmt.Errorf("rollback failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("ROLLBACK failed: unexpected status")
+		recordErr := fmt.Errorf("rollback failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -381,17 +381,17 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("READ request failed: %w", err)
+		return nil, fmt.Errorf("read request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("READ failed: %w", mapStreamError(err))
+		return nil, fmt.Errorf("read failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("READ failed: unexpected status")
+		recordErr := fmt.Errorf("read failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
@@ -402,7 +402,7 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse READ response envelope: %w", err)
+		return nil, fmt.Errorf("parse read response envelope: %w", err)
 	}
 
 	// Parse read page from data.
@@ -410,7 +410,7 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse READ response: %w", err)
+		return nil, fmt.Errorf("parse read response: %w", err)
 	}
 
 	return page, nil
@@ -434,17 +434,17 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("PEEK request failed: %w", err)
+		return nil, fmt.Errorf("peek request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("PEEK failed: %w", mapStreamError(err))
+		return nil, fmt.Errorf("peek failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("PEEK failed: unexpected status")
+		recordErr := fmt.Errorf("peek failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
@@ -455,7 +455,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse PEEK response envelope: %w", err)
+		return nil, fmt.Errorf("parse peek response envelope: %w", err)
 	}
 
 	// Empty data means no record (stream empty or server stub)
@@ -467,7 +467,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse PEEK response: %w", err)
+		return nil, fmt.Errorf("parse peek response: %w", err)
 	}
 
 	return record, nil
@@ -491,17 +491,17 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("GET_METADATA request failed: %w", err)
+		return nil, fmt.Errorf("get_metadata request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("GET_METADATA failed: %w", mapStreamError(err))
+		return nil, fmt.Errorf("get_metadata failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("GET_METADATA failed: unexpected status")
+		recordErr := fmt.Errorf("get_metadata failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
@@ -592,7 +592,7 @@ func parseReadPageResponse(data []byte) (*ReadPage, error) {
 		return nil, fmt.Errorf("parse last_realm_offset: %w", err)
 	}
 	if offset >= len(data) {
-		return nil, fmt.Errorf("READ response missing has_more flag")
+		return nil, fmt.Errorf("read response missing has_more flag")
 	}
 	switch data[offset] {
 	case 0:
@@ -604,7 +604,7 @@ func parseReadPageResponse(data []byte) (*ReadPage, error) {
 	}
 	offset++
 	if offset != len(data) {
-		return nil, fmt.Errorf("READ response has trailing bytes")
+		return nil, fmt.Errorf("read response has trailing bytes")
 	}
 
 	return &ReadPage{Items: items, Cursor: cursor}, nil
@@ -781,7 +781,7 @@ func parseMetadataPayload(data []byte) (*Metadata, error) {
 	}
 
 	if offset != len(data) {
-		return nil, fmt.Errorf("GET_METADATA response has trailing bytes")
+		return nil, fmt.Errorf("get_metadata response has trailing bytes")
 	}
 
 	return meta, nil
@@ -975,25 +975,25 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamSubscribe, subscribePayloadWriter(pattern))
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+		return 0, fmt.Errorf("subscribe request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapStreamError(err))
+		return 0, fmt.Errorf("subscribe failed: %w", mapStreamError(err))
 	}
 	if !success {
-		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")
+		return 0, fmt.Errorf("subscribe failed: unexpected status")
 	}
 
 	if len(remaining) < 1 {
-		return 0, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
+		return 0, fmt.Errorf("subscribe response too short: got %d bytes", len(remaining))
 	}
 	if remaining[0] != 1 {
-		return 0, fmt.Errorf("SUBSCRIBE response missing subscription_id")
+		return 0, fmt.Errorf("subscribe response missing subscription_id")
 	}
 	if len(remaining) < 9 {
-		return 0, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
+		return 0, fmt.Errorf("subscribe response too short for subscription_id: got %d bytes", len(remaining))
 	}
 
 	subID, _, err := connection.ReadU64BE(remaining, 1)

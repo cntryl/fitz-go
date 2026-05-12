@@ -35,6 +35,7 @@ type QueueSubscription struct {
 	inner *internalqueue.Subscription
 }
 
+// Unsubscribe stops receiving queue availability notifications.
 func (s *QueueSubscription) Unsubscribe() {
 	if s != nil && s.inner != nil {
 		s.inner.Unsubscribe()
@@ -72,14 +73,17 @@ func wrapQueueItem(item *internalqueue.QueueItem) *QueueItem {
 	}
 }
 
+// Extend renews this queue item's lease duration.
 func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 	return q.inner.Extend(ctx, leaseSecs)
 }
 
+// Complete acknowledges this queue item using its current token.
 func (q *QueueItem) Complete(ctx context.Context) error {
 	return q.inner.Complete(ctx)
 }
 
+// CompleteWithToken acknowledges this queue item with an explicit token.
 func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 	return q.inner.CompleteWithToken(ctx, token)
 }
