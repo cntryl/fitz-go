@@ -299,6 +299,42 @@ func TestShouldEncodeStreamAppendGivenSessionAndBodyWhenPayloadWritten(t *testin
 		require.NoError(t, err)
 		assert.Equal(t, metadata, actualMetadata)
 	})
+
+	t.Run("with discriminator", func(t *testing.T) {
+		// Arrange
+		sessionID := uint64(789)
+		expectedOffset := uint64(321)
+		body := []byte("payload")
+		discriminator := "proj.alpha"
+
+		// Act
+		payload, err := EncodeStreamAppend(sessionID, expectedOffset, body, nil, &StreamAppendOptions{Discriminator: &discriminator})
+
+		// Assert
+		require.NoError(t, err)
+		offset := 0
+		actualSessionID, newOffset, err := connection.ReadU64BE(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, sessionID, actualSessionID)
+		offset = newOffset
+		actualExpectedOffset, newOffset, err := connection.ReadU64BE(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, expectedOffset, actualExpectedOffset)
+		offset = newOffset
+		actualBody, newOffset, err := connection.ReadBytes(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, body, actualBody)
+		offset = newOffset
+		assert.Equal(t, byte(0), payload[offset])
+		offset++
+		assert.Equal(t, byte(1), payload[offset])
+		offset++
+		discriminatorLen, newOffset, err := connection.ReadU32BE(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, uint32(len(discriminator)), discriminatorLen)
+		offset = newOffset
+		assert.Equal(t, discriminator, string(payload[offset:offset+int(discriminatorLen)]))
+	})
 }
 
 // TestShouldEncodeStreamCommit tests STREAM COMMIT encoding.
@@ -340,7 +376,7 @@ func TestShouldEncodeStreamRollbackGivenSessionWhenPayloadWritten(t *testing.T) 
 
 // TestShouldEncodeStreamRead tests STREAM READ encoding.
 func TestShouldEncodeStreamReadGivenBoundsWhenPayloadWritten(t *testing.T) {
-	t.Run("without max bytes", func(t *testing.T) {
+	t.Run("without filter", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/logs/app"
 		fromOffset := uint64(10)
@@ -364,17 +400,19 @@ func TestShouldEncodeStreamReadGivenBoundsWhenPayloadWritten(t *testing.T) {
 		assert.Equal(t, limit, actualLimit)
 		offset = newOffset
 		assert.Equal(t, byte(0), payload[offset])
+		offset++
+		assert.Equal(t, byte(0), payload[offset])
 	})
 
-	t.Run("with max bytes", func(t *testing.T) {
+	t.Run("with filter", func(t *testing.T) {
 		// Arrange
 		route := "stream://acme/logs/app"
 		fromOffset := uint64(1)
 		limit := uint64(10)
-		maxBytes := uint64(4096)
+		filter := &StreamFilterSet{Clauses: []StreamFilterClause{{Kind: StreamFilterEquals, Value: "proj.alpha"}}}
 
 		// Act
-		payload, err := EncodeStreamRead(route, fromOffset, limit, &maxBytes)
+		payload, err := EncodeStreamRead(route, fromOffset, limit, &StreamReadOptions{Filter: filter})
 
 		// Assert
 		require.NoError(t, err)
@@ -388,11 +426,21 @@ func TestShouldEncodeStreamReadGivenBoundsWhenPayloadWritten(t *testing.T) {
 		_, newOffset, err = connection.ReadU64BE(payload, offset)
 		require.NoError(t, err)
 		offset = newOffset
+		assert.Equal(t, byte(0), payload[offset])
+		offset++
 		assert.Equal(t, byte(1), payload[offset])
 		offset++
-		actualMaxBytes, _, err := connection.ReadU64BE(payload, offset)
+		filterLength, newOffset, err := connection.ReadU32BE(payload, offset)
 		require.NoError(t, err)
-		assert.Equal(t, maxBytes, actualMaxBytes)
+		assert.Greater(t, filterLength, uint32(0))
+		offset = newOffset
+		expectedFilter := []byte{
+			0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
+			0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			'p', 'r', 'o', 'j', '.', 'a', 'l', 'p', 'h', 'a',
+		}
+		assert.Equal(t, expectedFilter, payload[offset:offset+int(filterLength)])
 	})
 }
 
@@ -528,6 +576,7 @@ func TestShouldParseStreamReadResponseGivenTrailerWhenParseReadResponseCalled(t 
 	dataBuf := connection.GetBuffer()
 	defer connection.PutBuffer(dataBuf)
 	connection.WriteU32BE(dataBuf, 1)
+	dataBuf.WriteByte(0)
 	dataBuf.Write(recordBuf.Bytes())
 	connection.WriteU64BE(dataBuf, 99)
 	dataBuf.WriteByte(1)
@@ -549,6 +598,58 @@ func TestShouldParseStreamReadResponseGivenTrailerWhenParseReadResponseCalled(t 
 	assert.Equal(t, realmOffset, *records[0].RealmOffset)
 	assert.Equal(t, metadata, records[0].Metadata)
 	assert.Equal(t, timestamp, records[0].Timestamp)
+}
+
+func TestShouldParseStreamReadPageGivenFilteredItemsWhenParseReadPageResponseCalled(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+
+	connection.WriteU32BE(buf, 3)
+	buf.WriteByte(0)
+	connection.WriteU64BE(buf, 41)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 51)
+	buf.WriteByte(0)
+	connection.WriteBytes(buf, []byte("alpha"))
+	buf.WriteByte(0)
+	connection.WriteU64BE(buf, 111)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 42)
+	buf.WriteByte(1)
+	buf.WriteByte(2)
+	connection.WriteU64BE(buf, 43)
+	connection.WriteU64BE(buf, 45)
+	buf.WriteByte(2)
+	connection.WriteU64BE(buf, 45)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 52)
+	buf.WriteByte(0)
+	buf.WriteByte(1)
+
+	payload := make([]byte, buf.Len())
+	copy(payload, buf.Bytes())
+
+	page, err := parseReadPageResponse(payload)
+	require.NoError(t, err)
+	require.NotNil(t, page)
+	assert.Equal(t, uint64(45), page.Cursor.LastResourceOffset)
+	require.NotNil(t, page.Cursor.LastAreaOffset)
+	assert.Equal(t, uint64(52), *page.Cursor.LastAreaOffset)
+	assert.Nil(t, page.Cursor.LastRealmOffset)
+	assert.True(t, page.Cursor.HasMore)
+	require.Len(t, page.Items, 3)
+	assert.Equal(t, ReadItemEvent, page.Items[0].Kind)
+	require.NotNil(t, page.Items[0].Record)
+	assert.Equal(t, uint64(41), page.Items[0].Record.Offset)
+	assert.Equal(t, ReadItemFiltered, page.Items[1].Kind)
+	assert.Equal(t, uint64(42), page.Items[1].Offset)
+	require.NotNil(t, page.Items[1].Reason)
+	assert.Equal(t, FilteredReasonServerFilter, *page.Items[1].Reason)
+	assert.Equal(t, ReadItemFilteredRange, page.Items[2].Kind)
+	assert.Equal(t, uint64(43), page.Items[2].FromOffset)
+	assert.Equal(t, uint64(45), page.Items[2].ToOffset)
+	require.NotNil(t, page.Items[2].Reason)
+	assert.Equal(t, FilteredReasonPermission, *page.Items[2].Reason)
 }
 
 // TestShouldParseStreamMetadata tests the metadata payload parser.
@@ -681,7 +782,7 @@ func BenchmarkEncodeStreamRollback(b *testing.B) {
 }
 
 func BenchmarkEncodeStreamRead(b *testing.B) {
-	b.Run("without max bytes", func(b *testing.B) {
+	b.Run("without filter", func(b *testing.B) {
 		route := "stream://acme/logs/app"
 		fromOffset := uint64(1)
 		limit := uint64(10)
@@ -693,16 +794,16 @@ func BenchmarkEncodeStreamRead(b *testing.B) {
 		}
 	})
 
-	b.Run("with max bytes", func(b *testing.B) {
+	b.Run("with filter", func(b *testing.B) {
 		route := "stream://acme/logs/app"
 		fromOffset := uint64(1)
 		limit := uint64(10)
-		maxBytes := uint64(4096)
+		filter := &StreamFilterSet{Clauses: []StreamFilterClause{{Kind: StreamFilterEquals, Value: "proj.alpha"}}}
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = EncodeStreamRead(route, fromOffset, limit, &maxBytes)
+			_, _ = EncodeStreamRead(route, fromOffset, limit, &StreamReadOptions{Filter: filter})
 		}
 	})
 }
@@ -749,7 +850,7 @@ func BenchmarkEncodeStreamUnsubscribe(b *testing.B) {
 }
 
 func BenchmarkParseStreamReadResponse(b *testing.B) {
-	// data blob: [u32 count=1][record][u64 last_resource_offset][opt area][opt realm][u8 has_more]
+	// data blob: [u32 count=1][tag=event][record][u64 last_resource_offset][opt area][opt realm][u8 has_more]
 	recordBuf := connection.GetBuffer()
 	defer connection.PutBuffer(recordBuf)
 	connection.WriteU64BE(recordBuf, 1)
@@ -764,6 +865,7 @@ func BenchmarkParseStreamReadResponse(b *testing.B) {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	connection.WriteU32BE(buf, 1)
+	buf.WriteByte(0)
 	buf.Write(recordBuf.Bytes())
 	connection.WriteU64BE(buf, 9)
 	buf.WriteByte(0)

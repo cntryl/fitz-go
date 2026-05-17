@@ -3,6 +3,7 @@ package fixture
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -32,6 +33,8 @@ const (
 	EnvBrokerJWTHMACSecret = "FITZ_BROKER_JWT_HMAC_SECRET"
 	// EnvBrokerJWTAudience configures the JWT audience expected by the broker.
 	EnvBrokerJWTAudience = "FITZ_BROKER_JWT_AUDIENCE"
+	// EnvDebugClientLogs enables verbose client logs during integration tests.
+	EnvDebugClientLogs = "FITZ_GO_DEBUG_LOGS"
 )
 
 // Note: Integration tests require a running Fitz broker.
@@ -94,6 +97,10 @@ func (f *TestFixture) Connect(ctx context.Context) error {
 	}
 
 	f.client = fitz.NewClient(f.brokerAddr, tokenProvider)
+	if strings.EqualFold(os.Getenv(EnvDebugClientLogs), "true") {
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		f.client = fitz.NewClient(f.brokerAddr, tokenProvider, fitz.WithLogger(logger))
+	}
 	return f.client.Connect(ctx)
 }
 

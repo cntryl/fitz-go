@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -477,6 +478,77 @@ func TestShouldSendOnlyConnectFrameGivenAuthenticatedTokenWhenConnectCalled(t *t
 	assert.Equal(t, []byte("token-1"), connectPayload)
 }
 
+func TestShouldLogClientLifecycleGivenReconnectLoggerWhenConnectionRestored(t *testing.T) {
+	firstTransport := newScriptedTransport()
+	secondTransport := newScriptedTransport()
+
+	originalDialTCP := dialTCPTransport
+	originalDialWS := dialWebSocketTransport
+	defer func() {
+		dialTCPTransport = originalDialTCP
+		dialWebSocketTransport = originalDialWS
+	}()
+
+	transports := []transport.Transport{firstTransport, secondTransport}
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		if len(transports) == 0 {
+			return nil, errors.New("no transports remaining")
+		}
+		next := transports[0]
+		transports = transports[1:]
+		return next, nil
+	}
+
+	recorder := newLogRecorder()
+	c := NewClient("localhost:4091", func(context.Context) (string, error) {
+		return "token-1", nil
+	})
+	c.config.Logger = slog.New(recorder)
+	c.config.AuthSettleDelay = 20 * time.Millisecond
+	c.config.ReconnectEnabled = true
+	c.config.ReconnectBackoff = 10 * time.Millisecond
+	c.config.MaxReconnects = 1
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, c.Connect(ctx))
+	t.Cleanup(func() {
+		_ = c.Close()
+	})
+
+	go pushResponseAfterWrite(firstTransport, noticeSubscribeResponseFrame(t, 11), 2)
+	_, err := c.Notice().Subscribe(ctx, "notice://realm/area/resource", func(context.Context, notice.NoticeMsg) error {
+		return nil
+	})
+	require.NoError(t, err)
+
+	initialConn := c.currentConnection()
+	go pushResponseAfterWrite(secondTransport, noticeSubscribeResponseFrame(t, 22), 2)
+	require.NoError(t, firstTransport.Close())
+	require.Eventually(t, func() bool {
+		return c.currentConnection() != nil && c.currentConnection() != initialConn
+	}, time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		entries := recorder.snapshot()
+		for _, entry := range entries {
+			if entry.level == slog.LevelInfo && entry.message == "reconnect success" {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 20*time.Millisecond)
+	require.NoError(t, c.Close())
+
+	entries := recorder.snapshot()
+	assertLogEntry(t, entries, slog.LevelInfo, "connect started")
+	assertLogEntry(t, entries, slog.LevelInfo, "connect success")
+	assertLogEntry(t, entries, slog.LevelInfo, "connection authenticating")
+	assertLogEntry(t, entries, slog.LevelInfo, "connection authenticated after silent CONNECT window")
+	assertLogEntry(t, entries, slog.LevelWarn, "reconnect attempt")
+	assertLogEntry(t, entries, slog.LevelInfo, "reconnect success")
+	assertLogEntry(t, entries, slog.LevelInfo, "client close")
+}
+
 func noticeSubscribeResponseFrame(t *testing.T, subID uint64) []byte {
 	t.Helper()
 
@@ -583,4 +655,55 @@ func pushResponseAfterWrite(trans *scriptedTransport, frame []byte, expectedWrit
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+type logRecord struct {
+	level   slog.Level
+	message string
+}
+
+type logRecorder struct {
+	mu      sync.Mutex
+	entries []logRecord
+}
+
+func newLogRecorder() *logRecorder {
+	return &logRecorder{}
+}
+
+func (r *logRecorder) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (r *logRecorder) Handle(_ context.Context, record slog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries = append(r.entries, logRecord{level: record.Level, message: record.Message})
+	return nil
+}
+
+func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler {
+	return r
+}
+
+func (r *logRecorder) WithGroup(string) slog.Handler {
+	return r
+}
+
+func (r *logRecorder) snapshot() []logRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entries := make([]logRecord, len(r.entries))
+	copy(entries, r.entries)
+	return entries
+}
+
+func assertLogEntry(t *testing.T, entries []logRecord, level slog.Level, message string) {
+	t.Helper()
+	for _, entry := range entries {
+		if entry.level == level && entry.message == message {
+			return
+		}
+	}
+	t.Fatalf("expected log entry level=%s message=%q, got %#v", level, message, entries)
 }

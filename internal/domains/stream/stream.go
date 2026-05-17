@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 
@@ -29,6 +30,43 @@ type Record struct {
 	Body        []byte
 	Metadata    []byte
 	Timestamp   uint64
+}
+
+type FilteredReason string
+
+const (
+	FilteredReasonServerFilter FilteredReason = "server_filter"
+	FilteredReasonPermission   FilteredReason = "permission"
+	FilteredReasonProjection   FilteredReason = "projection"
+)
+
+type ReadItemKind uint8
+
+const (
+	ReadItemEvent ReadItemKind = iota
+	ReadItemFiltered
+	ReadItemFilteredRange
+)
+
+type ReadItem struct {
+	Kind       ReadItemKind
+	Record     *Record
+	Offset     uint64
+	FromOffset uint64
+	ToOffset   uint64
+	Reason     *FilteredReason
+}
+
+type ReadCursor struct {
+	LastResourceOffset uint64
+	LastAreaOffset     *uint64
+	LastRealmOffset    *uint64
+	HasMore            bool
+}
+
+type ReadPage struct {
+	Items  []ReadItem
+	Cursor ReadCursor
 }
 
 // Metadata holds stream metadata.
@@ -80,7 +118,7 @@ func (sub *Subscription) Unsubscribe() {
 // Per CLIENT_SPEC.md, operations on a session MUST be sequential.
 type StreamSession interface {
 	// Append adds a record to the stream. Returns the assigned offset when available.
-	Append(ctx context.Context, expectedOffset uint64, body []byte) (offset uint64, err error)
+	Append(ctx context.Context, expectedOffset uint64, body []byte, opts ...*StreamAppendOptions) (offset uint64, err error)
 	// Commit finalizes the write session and makes appends durable.
 	Commit(ctx context.Context, mode CommitMode) error
 	// Rollback discards uncommitted appends.
@@ -94,7 +132,10 @@ type Client interface {
 	Begin(ctx context.Context, route string) (StreamSession, error)
 
 	// Read reads records from the given route starting at fromOffset.
-	Read(ctx context.Context, route string, fromOffset uint64, limit uint64) (iter.Iterator[Record], error)
+	Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (iter.Iterator[Record], error)
+
+	// ReadPage reads a raw replay page, including filtered markers and cursor metadata.
+	ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (*ReadPage, error)
 
 	// Peek returns the most recent record in the stream.
 	Peek(ctx context.Context, route string) (*Record, error)
@@ -197,15 +238,15 @@ func (c *client) Begin(ctx context.Context, route string) (StreamSession, error)
 }
 
 // Append per server stream_codec.rs. Expected offset is supplied on every call.
-// Request: [u64 session_id][u64 expected_offset][bytes body][optional bytes metadata]
-func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte) (uint64, error) {
+// Request: [u64 session_id][u64 expected_offset][bytes body][optional bytes metadata][optional string discriminator]
+func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte, opts ...*StreamAppendOptions) (uint64, error) {
 	ctx, span := s.conn.Tracer().Start(ctx, "fitz.stream.Append", trace.WithAttributes(
 		attribute.String("fitz.route", s.route),
 		attribute.Int64("fitz.session_id", int64(s.sessionID)),
 		attribute.Int64("fitz.expected_offset", int64(expectedOffset)),
 	))
 	defer span.End()
-	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, expectedOffset, body, nil))
+	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, expectedOffset, body, nil, opts...))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -304,9 +345,20 @@ func (s *session) Rollback(ctx context.Context) error {
 }
 
 // Read per server stream_codec.rs:
-// Request: [string route][u64 from_offset][u64 limit][optional u64 max_bytes]
+// Request: [string route][u64 from_offset][u64 limit][optional bincode filter]
 // Response: [status][u8 has_session_id][u64?][bytes data]
-func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limit uint64) (iter.Iterator[Record], error) {
+func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (iter.Iterator[Record], error) {
+	page, err := c.ReadPage(ctx, route, fromOffset, limit, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return iter.NewSliceIterator(flattenReadItems(page.Items)), nil
+}
+
+// ReadPage per server stream_codec.rs:
+// Request: [string route][u64 from_offset][u64 limit][optional bincode filter]
+// Response: [status][u8 has_session_id][u64?][bytes data]
+func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (*ReadPage, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Read", trace.WithAttributes(
 		attribute.String("fitz.route", route),
 		attribute.Int64("fitz.from_offset", int64(fromOffset)),
@@ -321,7 +373,11 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRead, streamReadPayloadWriter(route, fromOffset, limit, nil))
+	var readOptions *StreamReadOptions
+	if len(opts) > 0 && opts[0] != nil {
+		readOptions = opts[0]
+	}
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRead, streamReadPayloadWriter(route, fromOffset, limit, readOptions))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -349,15 +405,15 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 		return nil, fmt.Errorf("parse READ response envelope: %w", err)
 	}
 
-	// Parse records from data
-	records, err := parseReadResponse(data)
+	// Parse read page from data.
+	page, err := parseReadPageResponse(data)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("parse READ response: %w", err)
 	}
 
-	return iter.NewSliceIterator(records), nil
+	return page, nil
 }
 
 // Peek per server stream_codec.rs:
@@ -497,8 +553,17 @@ func skipOptionalSessionIDAndGetData(remaining []byte) ([]byte, error) {
 
 // parseReadResponse parses records from a READ response data blob.
 func parseReadResponse(data []byte) ([]Record, error) {
+	page, err := parseReadPageResponse(data)
+	if err != nil {
+		return nil, err
+	}
+	return flattenReadItems(page.Items), nil
+}
+
+// parseReadPageResponse parses a raw replay page from a READ response data blob.
+func parseReadPageResponse(data []byte) (*ReadPage, error) {
 	if len(data) == 0 {
-		return nil, nil
+		return &ReadPage{Items: nil, Cursor: ReadCursor{}}, nil
 	}
 
 	count, offset, err := connection.ReadU32BE(data, 0)
@@ -506,34 +571,43 @@ func parseReadResponse(data []byte) ([]Record, error) {
 		return nil, fmt.Errorf("parse record count: %w", err)
 	}
 
-	records := make([]Record, 0, count)
+	items := make([]ReadItem, 0, count)
 	for i := uint32(0); i < count; i++ {
-		rec, newOffset, err := decodeStreamRecordAt(data, offset)
+		item, newOffset, err := decodeStreamReadItemAt(data, offset)
 		if err != nil {
-			return nil, fmt.Errorf("parse record %d: %w", i, err)
+			return nil, fmt.Errorf("parse read item %d: %w", i, err)
 		}
-		records = append(records, *rec)
+		items = append(items, *item)
 		offset = newOffset
 	}
 
-	if _, offset, err = connection.ReadU64BE(data, offset); err != nil {
+	cursor := ReadCursor{}
+	if cursor.LastResourceOffset, offset, err = connection.ReadU64BE(data, offset); err != nil {
 		return nil, fmt.Errorf("parse last_resource_offset: %w", err)
 	}
-	if _, offset, err = readOptionalU64(data, offset); err != nil {
+	if cursor.LastAreaOffset, offset, err = readOptionalU64(data, offset); err != nil {
 		return nil, fmt.Errorf("parse last_area_offset: %w", err)
 	}
-	if _, offset, err = readOptionalU64(data, offset); err != nil {
+	if cursor.LastRealmOffset, offset, err = readOptionalU64(data, offset); err != nil {
 		return nil, fmt.Errorf("parse last_realm_offset: %w", err)
 	}
 	if offset >= len(data) {
 		return nil, fmt.Errorf("READ response missing has_more flag")
+	}
+	switch data[offset] {
+	case 0:
+		cursor.HasMore = false
+	case 1:
+		cursor.HasMore = true
+	default:
+		return nil, fmt.Errorf("parse has_more: invalid flag %d", data[offset])
 	}
 	offset++
 	if offset != len(data) {
 		return nil, fmt.Errorf("READ response has trailing bytes")
 	}
 
-	return records, nil
+	return &ReadPage{Items: items, Cursor: cursor}, nil
 }
 
 // parseRecord parses a single record from the payload at the given offset.
@@ -584,6 +658,84 @@ func decodeStreamRecordAt(data []byte, offset int) (*Record, int, error) {
 	}
 
 	return rec, offset, nil
+}
+
+func decodeStreamReadItemAt(data []byte, offset int) (*ReadItem, int, error) {
+	if offset >= len(data) {
+		return nil, offset, fmt.Errorf("parse read item tag: %w", io.ErrUnexpectedEOF)
+	}
+
+	tag := data[offset]
+	offset++
+	item := &ReadItem{Kind: ReadItemKind(tag)}
+
+	var err error
+	switch tag {
+	case 0:
+		item.Record, offset, err = decodeStreamRecordAt(data, offset)
+		if err != nil {
+			return nil, offset, err
+		}
+	case 1:
+		item.Offset, offset, err = connection.ReadU64BE(data, offset)
+		if err != nil {
+			return nil, offset, fmt.Errorf("parse filtered offset: %w", err)
+		}
+		item.Reason, offset, err = decodeFilteredReasonAt(data, offset)
+		if err != nil {
+			return nil, offset, err
+		}
+	case 2:
+		item.FromOffset, offset, err = connection.ReadU64BE(data, offset)
+		if err != nil {
+			return nil, offset, fmt.Errorf("parse filtered range from_offset: %w", err)
+		}
+		item.ToOffset, offset, err = connection.ReadU64BE(data, offset)
+		if err != nil {
+			return nil, offset, fmt.Errorf("parse filtered range to_offset: %w", err)
+		}
+		item.Reason, offset, err = decodeFilteredReasonAt(data, offset)
+		if err != nil {
+			return nil, offset, err
+		}
+	default:
+		return nil, offset, fmt.Errorf("unknown stream read item tag: %d", tag)
+	}
+
+	return item, offset, nil
+}
+
+func decodeFilteredReasonAt(data []byte, offset int) (*FilteredReason, int, error) {
+	if offset >= len(data) {
+		return nil, offset, fmt.Errorf("parse filtered reason: %w", io.ErrUnexpectedEOF)
+	}
+
+	var reason FilteredReason
+	switch data[offset] {
+	case 0:
+		return nil, offset + 1, nil
+	case 1:
+		reason = FilteredReasonServerFilter
+	case 2:
+		reason = FilteredReasonPermission
+	case 3:
+		reason = FilteredReasonProjection
+	default:
+		return nil, offset, fmt.Errorf("parse filtered reason: invalid tag %d", data[offset])
+	}
+
+	offset++
+	return &reason, offset, nil
+}
+
+func flattenReadItems(items []ReadItem) []Record {
+	records := make([]Record, 0, len(items))
+	for _, item := range items {
+		if item.Kind == ReadItemEvent && item.Record != nil {
+			records = append(records, *item.Record)
+		}
+	}
+	return records
 }
 
 func parseMetadataPayload(data []byte) (*Metadata, error) {

@@ -62,6 +62,54 @@ func TestShouldReadRecordsInOrderGivenOffsetRangeWhenReadCalled(t *testing.T) {
 	})
 }
 
+func TestShouldReadMatchingDiscriminatorRecordsGivenFilterWhenReadCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrFail(ctx)
+		route := f.UniqueRoute("stream")
+		sess, err := f.Client().Stream().Begin(ctx, route)
+		require.NoError(t, err)
+
+		alpha := "proj.alpha"
+		_, err = sess.Append(ctx, 0, []byte("alpha"), &fitz.StreamAppendOptions{Discriminator: &alpha})
+		require.NoError(t, err)
+		beta := "audit.beta"
+		_, err = sess.Append(ctx, 1, []byte("beta"), &fitz.StreamAppendOptions{Discriminator: &beta})
+		require.NoError(t, err)
+		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
+
+		filter := &fitz.StreamFilterSet{Clauses: []fitz.StreamFilterClause{{Kind: fitz.StreamFilterEquals, Value: "proj.alpha"}}}
+		iter, err := f.Client().Stream().Read(ctx, route, 0, 10, &fitz.StreamReadOptions{Filter: filter})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		var bodies [][]byte
+		for iter.Next() {
+			bodies = append(bodies, append([]byte(nil), iter.Value().Body...))
+		}
+		require.NoError(t, iter.Err())
+		require.Len(t, bodies, 1)
+		assert.Equal(t, []byte("alpha"), bodies[0])
+
+		page, err := f.Client().Stream().ReadPage(ctx, route, 0, 10, &fitz.StreamReadOptions{Filter: filter})
+		require.NoError(t, err)
+		require.NotNil(t, page)
+		assert.Equal(t, uint64(1), page.Cursor.LastResourceOffset)
+		assert.False(t, page.Cursor.HasMore)
+		require.Len(t, page.Items, 2)
+		assert.Equal(t, fitz.StreamReadItemEvent, page.Items[0].Kind)
+		require.NotNil(t, page.Items[0].Record)
+		assert.Equal(t, []byte("alpha"), page.Items[0].Record.Body)
+		assert.Equal(t, fitz.StreamReadItemFiltered, page.Items[1].Kind)
+		assert.Equal(t, uint64(1), page.Items[1].Offset)
+		require.NotNil(t, page.Items[1].Reason)
+		assert.Equal(t, fitz.StreamFilteredReasonServerFilter, *page.Items[1].Reason)
+	})
+}
+
 func TestShouldRejectAppendGivenMismatchedExpectedOffsetWhenOptimisticConcurrency(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
