@@ -439,7 +439,7 @@ func (w *responseWriter) sendEnd() {
 	seq := w.seq
 	w.mu.Unlock()
 
-	// sendEnd is called from finalisation paths (worker return, iterator close).
+	// sendEnd is called from finalization paths (worker return, iterator close).
 	// Errors here are intentionally dropped: the correlation ID has already
 	// been removed from the in-flight map, so there is no state to roll back.
 	// The caller observes the cancellation/end via iterator.Err() or context.

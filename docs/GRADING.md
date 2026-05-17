@@ -105,6 +105,7 @@
 | REQ-CONC-005 | T1 | **PASS** | `asyncHandlerSem chan struct{}` (buffered to `AsyncHandlerMaxConcurrency`, default 256) caps the number of concurrently running NOTIFY handlers. |
 | REQ-CONC-006 | T1 | **PASS** | `Close()` blocks on `<-c.done` before returning, ensuring the dispatch goroutine has fully exited. All in-flight pending channels are closed by `mux.close()` in the dispatch loop's defer. |
 | REQ-CONC-007 | T1 | **PASS** | `WithAsyncHandlerMaxConcurrency(int)` (default 256) + `WithAsyncHandlerTimeout(time.Duration)` (default 30s) are both exposed as public options and applied to all NOTIFY handler goroutines. |
+| REQ-CONC-010 | T1 | **PASS** | `MaxInFlightRequests` is exposed on both the core connection config and the public `fitz` option surface; `SendRequest`, `SendRequestWithWriter`, `SendFireAndForget`, and `SendFireAndForgetWithWriter` acquire a bounded outbound slot before admitting work, and `internal/core/connection/connection_test.go` proves the second request blocks at admission when the limit is 1. |
 | REQ-CONC-008 | T2 | **PASS** | Same-tx sequencing constraint is explicitly documented on `ReadTx` and `Tx` in `internal/domains/kv/transaction.go`, satisfying the "enforce or document" requirement. |
 | REQ-CONC-009 | T2 | **PASS** | RPC correlation IDs are matched via a `map[correlationID]chan` in the multiplexer. Multiple in-flight `Call` invocations are fully concurrent. |
 

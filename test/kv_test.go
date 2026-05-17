@@ -46,12 +46,12 @@ func TestShouldReadValueGivenExistingKeyWhenGetCalled(t *testing.T) {
 
 		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 		require.NoError(t, err)
-		require.NoError(t, tx.Put(ctx, []byte("colour"), []byte("blue")))
+		require.NoError(t, tx.Put(ctx, []byte("color"), []byte("blue")))
 		require.NoError(t, tx.Commit(ctx))
 
 		readTx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
-		result, err := readTx.Get(ctx, []byte("colour"))
+		result, err := readTx.Get(ctx, []byte("color"))
 		require.NoError(t, err)
 		assert.True(t, result.Found)
 		assert.Equal(t, "blue", string(result.Value))

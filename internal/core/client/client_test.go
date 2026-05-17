@@ -176,6 +176,15 @@ func TestShouldUseDefaultAsyncHandlerMaxConcurrencyGivenNoOptionWhenNewClientCre
 	assert.Equal(t, 256, c.config.AsyncHandlerMaxConcurrency)
 }
 
+func TestShouldUseDefaultMaxInFlightRequestsGivenNoOptionWhenNewClientCreated(t *testing.T) {
+	// Act
+	c := NewClient("localhost:4091", nil)
+
+	// Assert
+	require.NotNil(t, c.config)
+	assert.Equal(t, 256, c.config.MaxInFlightRequests)
+}
+
 func TestShouldApplyAsyncHandlerMaxConcurrencyOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {
 	// Arrange
 	customMax := 64
@@ -186,6 +195,18 @@ func TestShouldApplyAsyncHandlerMaxConcurrencyOptionGivenOverrideWhenNewClientWi
 	// Assert
 	require.NotNil(t, c.config)
 	assert.Equal(t, customMax, c.config.AsyncHandlerMaxConcurrency)
+}
+
+func TestShouldApplyMaxInFlightRequestsOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {
+	// Arrange
+	customMax := 7
+
+	// Act
+	c := NewClientWithOptions("localhost:4091", nil, WithMaxInFlightRequests(customMax))
+
+	// Assert
+	require.NotNil(t, c.config)
+	assert.Equal(t, customMax, c.config.MaxInFlightRequests)
 }
 
 func TestShouldApplyMeterOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {

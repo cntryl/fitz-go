@@ -99,7 +99,7 @@ func (m *MockTransport) Read(ctx context.Context) ([]byte, error) {
 	}
 	if m.readIndex >= len(m.readFrames) {
 		m.mu.Unlock()
-		// Block until context cancelled
+		// Block until context canceled
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}

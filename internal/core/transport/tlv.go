@@ -61,7 +61,7 @@ type TLVValue struct {
 }
 
 // TLVEncoder accumulates TLV entries and can be marshaled to bytes.
-// Duplicate tags are rejected at encode time (panics, matching oversized-value behaviour).
+// Duplicate tags are rejected at encode time (panics, matching oversized-value behavior).
 type TLVEncoder struct {
 	entries []TLVValue
 	seen    map[uint8]bool

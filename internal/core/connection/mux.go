@@ -84,7 +84,7 @@ func (m *Multiplexer) RegisterRequest(msgType uint16, responseChan chan []byte, 
 }
 
 // UnregisterRequest removes a pending request from the queue.
-// Called when context is cancelled before response arrives.
+// Called when context is canceled before response arrives.
 func (m *Multiplexer) UnregisterRequest(msgType uint16, responseChan chan []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -166,7 +166,7 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	if !exists || queue.Len() == 0 {
 		m.mu.Unlock()
 		// Unexpected response (no pending request)
-		// This can happen if context was cancelled but response arrived
+		// This can happen if context was canceled but response arrived
 		m.responsesDropped.Add(1)
 		return
 	}

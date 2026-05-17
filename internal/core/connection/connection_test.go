@@ -195,6 +195,138 @@ func TestShouldBoundConcurrentSlotsGivenMaxOneWhenAcquireAsyncHandlerSlotCalled(
 	release3()
 }
 
+type admissionBlockingTransport struct {
+	mu             sync.Mutex
+	requestWrites  int
+	responseCh     chan []byte
+	closed         chan struct{}
+	requestWriteCh chan struct{}
+}
+
+func newAdmissionBlockingTransport() *admissionBlockingTransport {
+	return &admissionBlockingTransport{
+		responseCh:     make(chan []byte, 8),
+		closed:         make(chan struct{}),
+		requestWriteCh: make(chan struct{}, 8),
+	}
+}
+
+func (t *admissionBlockingTransport) Write(ctx context.Context, frame []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.closed:
+		return io.EOF
+	default:
+	}
+
+	msgType, _, err := protocol.DecodeFrame(frame)
+	if err != nil {
+		return err
+	}
+
+	t.mu.Lock()
+	if msgType != protocol.MessageTypeConnect {
+		t.requestWrites++
+		select {
+		case t.requestWriteCh <- struct{}{}:
+		default:
+		}
+	}
+	t.mu.Unlock()
+	return nil
+}
+
+func (t *admissionBlockingTransport) Read(ctx context.Context) ([]byte, error) {
+	select {
+	case frame := <-t.responseCh:
+		return append([]byte(nil), frame...), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-t.closed:
+		return nil, io.EOF
+	}
+}
+
+func (t *admissionBlockingTransport) Close() error {
+	select {
+	case <-t.closed:
+	default:
+		close(t.closed)
+	}
+	return nil
+}
+
+func (t *admissionBlockingTransport) RemoteAddr() string {
+	return "admission-blocking://transport"
+}
+
+func (t *admissionBlockingTransport) waitForRequestWrite(tst *testing.T, expected int) {
+	tst.Helper()
+	deadline := time.After(time.Second)
+	for {
+		t.mu.Lock()
+		count := t.requestWrites
+		t.mu.Unlock()
+		if count >= expected {
+			return
+		}
+		select {
+		case <-deadline:
+			tst.Fatalf("timed out waiting for request write %d", expected)
+		case <-t.requestWriteCh:
+		}
+	}
+}
+
+func (t *admissionBlockingTransport) pushResponse(msgType uint16, payload []byte) {
+	frame := protocol.EncodeFrame(msgType, payload)
+	t.responseCh <- append([]byte(nil), frame...)
+}
+
+func (t *admissionBlockingTransport) requestWriteCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.requestWrites
+}
+
+func TestShouldBoundConcurrentOutboundRequestsGivenMaxOneWhenSecondRequestStarts(t *testing.T) {
+	transport := newAdmissionBlockingTransport()
+	cfg := connection.DefaultConfig()
+	cfg.Token = ""
+	cfg.AuthSettleDelay = 20 * time.Millisecond
+	cfg.ReadTimeout = time.Second
+	cfg.MaxInFlightRequests = 1
+	conn := connection.New(transport, cfg)
+	require.NoError(t, conn.Start(context.Background()))
+
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := conn.SendRequest(context.Background(), protocol.MessageTypeKvBegin, []byte("first"))
+		firstResult <- err
+	}()
+
+	transport.waitForRequestWrite(t, 1)
+
+	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancelSecond()
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := conn.SendRequest(secondCtx, protocol.MessageTypeKvBegin, []byte("second"))
+		secondResult <- err
+	}()
+
+	secondErr := <-secondResult
+	require.ErrorIs(t, secondErr, context.DeadlineExceeded)
+	assert.Equal(t, 1, transport.requestWriteCount())
+
+	transport.pushResponse(protocol.MessageTypeKvBegin, []byte("ok"))
+
+	firstErr := <-firstResult
+	require.NoError(t, firstErr)
+	require.NoError(t, conn.Close())
+}
+
 // TestShouldParseStandardResponseGivenSuccessStatus tests success response parsing.
 func TestShouldParseStandardResponseGivenSuccessStatusWhenParseStandardResponseCalled(t *testing.T) {
 	// Arrange - Success response: [status=0][remaining data]

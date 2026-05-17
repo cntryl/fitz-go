@@ -2,13 +2,18 @@
 
 run:
   timeout: 5m
+  relative-path-mode: gomod
+  modules-download-mode: readonly
+  enable-build-vcs: true
 
 linters:
+  default: none
   enable:
     - bodyclose
     - copyloopvar
     - dogsled
     - dupl
+    - embeddedstructfieldcheck
     - errcheck
     - errorlint
     - exhaustive
@@ -24,31 +29,30 @@ linters:
     - unparam
     - unused
     - whitespace
-
-linters-settings:
-  errcheck:
-    exclude-functions:
-      - '.*\.Close$'
-      - '.*\.SetReadDeadline$'
-      - '.*\.SetWriteDeadline$'
-      - '.*\.Rollback$'
-      - '.*\.Release$'
-  dupl:
-    threshold: 140
-  exhaustive:
-    check:
-      - switch
-      - map
-  gosec:
-    excludes:
-      - G101
-      - G115
-      - G306
-      - G401
-      - G404
-      - G505
-  misspell:
-    locale: US
+  settings:
+    errcheck:
+      exclude-functions:
+        - '.*\.Close$'
+        - '.*\.SetReadDeadline$'
+        - '.*\.SetWriteDeadline$'
+        - '.*\.Rollback$'
+        - '.*\.Release$'
+    dupl:
+      threshold: 140
+    exhaustive:
+      check:
+        - switch
+        - map
+    gosec:
+      excludes:
+        - G101
+        - G115
+        - G306
+        - G401
+        - G404
+        - G505
+    misspell:
+      locale: US
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

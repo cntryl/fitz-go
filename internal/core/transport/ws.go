@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"sync"
@@ -75,24 +75,27 @@ func DialWebSocket(ctx context.Context, urlStr string) (Transport, error) {
 	}
 
 	// Perform WebSocket handshake
-	if err := performHandshake(conn, u); err != nil {
+	reader, err := performHandshake(conn, u, ctx)
+	if err != nil {
 		conn.Close()
 		return nil, newTransportError("handshake", err)
 	}
 
 	return &WebSocketTransport{
 		conn:   conn,
-		reader: bufio.NewReader(conn),
+		reader: reader,
 		addr:   urlStr,
 	}, nil
 }
 
 // performHandshake sends HTTP upgrade request and validates response.
-func performHandshake(conn net.Conn, u *url.URL) error {
+// It returns the buffered reader so any bytes already read during the
+// handshake remain available to the WebSocket frame parser.
+func performHandshake(conn net.Conn, u *url.URL, ctx context.Context) (*bufio.Reader, error) {
 	// Generate random WebSocket key (16 bytes base64 encoded)
 	keyBytes := make([]byte, 16)
 	if _, err := rand.Read(keyBytes); err != nil {
-		return fmt.Errorf("generate key: %w", err)
+		return nil, fmt.Errorf("generate key: %w", err)
 	}
 	key := base64.StdEncoding.EncodeToString(keyBytes)
 
@@ -103,6 +106,13 @@ func performHandshake(conn net.Conn, u *url.URL) error {
 	}
 	if u.RawQuery != "" {
 		path += "?" + u.RawQuery
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("set deadline: %w", err)
+		}
+		defer conn.SetDeadline(time.Time{})
 	}
 
 	req := fmt.Sprintf(
@@ -118,29 +128,32 @@ func performHandshake(conn net.Conn, u *url.URL) error {
 
 	// Send upgrade request
 	if err := writeAll(conn, []byte(req)); err != nil {
-		return fmt.Errorf("write request: %w", err)
+		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	// Read response
 	reader := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(reader, nil)
+	tp := textproto.NewReader(reader)
+	statusLine, err := tp.ReadLine()
 	if err != nil {
-		return fmt.Errorf("read response: %w", err)
+		return nil, fmt.Errorf("read status line: %w", err)
 	}
-	defer resp.Body.Close()
 
-	// Validate response
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	if !strings.Contains(statusLine, "101") {
+		return nil, fmt.Errorf("unexpected handshake status: %s", statusLine)
+	}
+
+	hdrs, err := tp.ReadMIMEHeader()
+	if err != nil {
+		return nil, fmt.Errorf("read response headers: %w", err)
 	}
 
 	// Validate Sec-WebSocket-Accept header
 	expectedAccept := computeAccept(key)
-	if resp.Header.Get("Sec-WebSocket-Accept") != expectedAccept {
-		return errors.New("invalid Sec-WebSocket-Accept header")
+	if hdrs.Get("Sec-WebSocket-Accept") != expectedAccept {
+		return nil, errors.New("invalid Sec-WebSocket-Accept header")
 	}
 
-	return nil
+	return reader, nil
 }
 
 // computeAccept computes Sec-WebSocket-Accept value per RFC 6455.
@@ -252,7 +265,7 @@ func (w *WebSocketTransport) writeFrame(opcode byte, payload []byte, mask bool) 
 }
 
 // Read blocks until next binary WebSocket message arrives.
-// Returns immediately if context is cancelled.
+// Returns immediately if context is canceled.
 // Handles control frames (ping, pong, close) automatically.
 func (w *WebSocketTransport) Read(ctx context.Context) ([]byte, error) {
 	// Set read deadline from context

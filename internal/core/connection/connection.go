@@ -61,6 +61,7 @@ type Connection struct {
 	state           atomic.Int32 // State enum
 	stateMu         sync.RWMutex // Protects state transitions
 	writeMu         sync.Mutex   // Serializes outbound frames so FIFO request queues match wire order
+	requestSem      chan struct{}
 	asyncHandlerSem chan struct{}
 
 	// CONNECT configuration (per CLIENT_SPEC.md)
@@ -109,6 +110,7 @@ type Config struct {
 	AuthSettleDelay            time.Duration // CONNECT silent-success settle window (default 500ms)
 	ReadTimeout                time.Duration // Default 30s (per-read timeout)
 	WriteTimeout               time.Duration // Default 10s
+	MaxInFlightRequests        int           // Default 256 concurrently admitted outbound requests
 	AsyncHandlerTimeout        time.Duration // Default 30s for detached async handler spans
 	AsyncHandlerMaxConcurrency int           // Default 256 concurrent async handlers
 	ReconnectEnabled           bool
@@ -123,9 +125,10 @@ type Config struct {
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
-		AuthSettleDelay: 500 * time.Millisecond,
-		ReadTimeout:     30 * time.Second,
-		WriteTimeout:    10 * time.Second,
+		AuthSettleDelay:     500 * time.Millisecond,
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        10 * time.Second,
+		MaxInFlightRequests: 256,
 	}
 }
 
@@ -152,6 +155,9 @@ func New(trans transport.Transport, cfg Config) *Connection {
 	if cfg.WriteTimeout == 0 {
 		cfg.WriteTimeout = 10 * time.Second
 	}
+	if cfg.MaxInFlightRequests <= 0 {
+		cfg.MaxInFlightRequests = 256
+	}
 	if cfg.AsyncHandlerTimeout == 0 {
 		cfg.AsyncHandlerTimeout = 30 * time.Second
 	}
@@ -170,6 +176,7 @@ func New(trans transport.Transport, cfg Config) *Connection {
 
 	conn := &Connection{
 		transport:       trans,
+		requestSem:      make(chan struct{}, cfg.MaxInFlightRequests),
 		asyncHandlerSem: make(chan struct{}, cfg.AsyncHandlerMaxConcurrency),
 		token:           cfg.Token,
 		authConfirmed:   make(chan struct{}),
@@ -322,7 +329,7 @@ func (c *Connection) Start(ctx context.Context) error {
 		return ErrAuthenticationFailed
 
 	case <-ctx.Done():
-		// Caller cancelled
+		// Caller canceled
 		span.RecordError(ctx.Err())
 		span.SetStatus(codes.Error, ctx.Err().Error())
 		c.Close()
@@ -529,6 +536,15 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		return nil, ErrNotAuthenticated
 	}
 
+	releaseRequestSlot, ok := c.AcquireRequestSlot(ctx)
+	if !ok {
+		err := c.outboundAdmissionError(ctx)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	defer releaseRequestSlot()
+
 	frame := protocol.EncodeFrameOwned(msgType, payload)
 	if frame == nil {
 		err := fmt.Errorf("encode frame")
@@ -625,6 +641,15 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		return nil, ErrNotAuthenticated
 	}
 
+	releaseRequestSlot, ok := c.AcquireRequestSlot(ctx)
+	if !ok {
+		err := c.outboundAdmissionError(ctx)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	defer releaseRequestSlot()
+
 	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
 		wrapped := fmt.Errorf("encode frame: %w", err)
@@ -703,6 +728,15 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 		return ErrNotAuthenticated
 	}
 
+	releaseRequestSlot, ok := c.AcquireRequestSlot(ctx)
+	if !ok {
+		err := c.outboundAdmissionError(ctx)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	defer releaseRequestSlot()
+
 	frame := protocol.EncodeFrameOwned(msgType, payload)
 	if frame == nil {
 		err := fmt.Errorf("encode frame")
@@ -742,6 +776,15 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 		return ErrNotAuthenticated
 	}
 
+	releaseRequestSlot, ok := c.AcquireRequestSlot(ctx)
+	if !ok {
+		err := c.outboundAdmissionError(ctx)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	defer releaseRequestSlot()
+
 	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
 		wrapped := fmt.Errorf("encode frame: %w", err)
@@ -769,6 +812,16 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 	}
 
 	return nil
+}
+
+func (c *Connection) outboundAdmissionError(ctx context.Context) error {
+	if err := c.getConnError(); err != nil {
+		return err
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return ErrConnectionClosed
 }
 
 // Close cleanly shuts down the connection.
@@ -896,6 +949,40 @@ func (c *Connection) AsyncHandlerMaxConcurrency() int {
 		return 256
 	}
 	return c.cfg.AsyncHandlerMaxConcurrency
+}
+
+// MaxInFlightRequests returns the configured maximum number of concurrently
+// admitted outbound request operations.
+func (c *Connection) MaxInFlightRequests() int {
+	if c == nil {
+		return 256
+	}
+	if c.cfg.MaxInFlightRequests <= 0 {
+		return 256
+	}
+	return c.cfg.MaxInFlightRequests
+}
+
+// AcquireRequestSlot acquires a concurrency slot for outbound request admission.
+// It returns false if acquisition was canceled by context shutdown/deadline.
+func (c *Connection) AcquireRequestSlot(ctx context.Context) (release func(), ok bool) {
+	noop := func() {}
+	if c == nil || c.requestSem == nil {
+		return noop, true
+	}
+	if ctx == nil {
+		ctx = c.LifecycleContext()
+	}
+	select {
+	case c.requestSem <- struct{}{}:
+		return func() {
+			<-c.requestSem
+		}, true
+	case <-ctx.Done():
+		return noop, false
+	case <-c.done:
+		return noop, false
+	}
 }
 
 // AcquireAsyncHandlerSlot acquires a concurrency slot for async handler execution.

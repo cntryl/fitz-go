@@ -89,7 +89,7 @@ func (t *TCPTransport) Write(ctx context.Context, frame []byte) error {
 
 // Read blocks until next complete frame is read.
 // Handles partial reads correctly (uses io.ReadFull).
-// Returns immediately if context is cancelled.
+// Returns immediately if context is canceled.
 func (t *TCPTransport) Read(ctx context.Context) ([]byte, error) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()

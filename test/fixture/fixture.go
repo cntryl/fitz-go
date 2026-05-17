@@ -92,16 +92,30 @@ func NewTestFixture(t *testing.T, transport TransportType) *TestFixture {
 func (f *TestFixture) Connect(ctx context.Context) error {
 	f.t.Helper()
 
+	return f.connect(ctx)
+}
+
+// ConnectWithOptions establishes a connection to the broker using additional Fitz client options.
+func (f *TestFixture) ConnectWithOptions(ctx context.Context, opts ...fitz.Option) error {
+	f.t.Helper()
+
+	return f.connect(ctx, opts...)
+}
+
+func (f *TestFixture) connect(ctx context.Context, opts ...fitz.Option) error {
+	f.t.Helper()
+
 	tokenProvider, err := f.tokenProviderForMode()
 	if err != nil {
 		return err
 	}
 
-	f.client = fitz.NewClient(f.brokerAddr, tokenProvider)
+	clientOpts := append([]fitz.Option{}, opts...)
 	if strings.EqualFold(os.Getenv(EnvDebugClientLogs), "true") {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-		f.client = fitz.NewClient(f.brokerAddr, tokenProvider, fitz.WithLogger(logger))
+		clientOpts = append(clientOpts, fitz.WithLogger(logger))
 	}
+	f.client = fitz.NewClient(f.brokerAddr, tokenProvider, clientOpts...)
 	return f.client.Connect(ctx)
 }
 
@@ -296,30 +310,34 @@ func splitTestName(name string) []string {
 func brokerAddrFor(transport TransportType, authMode AuthMode) (string, error) {
 	switch authMode {
 	case AuthModeAnonymous:
-		return brokerAddrFromEnv(transport, EnvBrokerAnonTCPAddr, EnvBrokerAnonWSAddr, "localhost:4191", "ws://localhost:4190/ws")
+		return brokerAddrFromEnv(transport, EnvBrokerAnonTCPAddr, EnvBrokerAnonWSAddr, "localhost:4191", "ws://localhost:4190/ws", true)
 	case AuthModeValidJWT, AuthModeExpiredJWT, AuthModeInvalidSignature:
-		return brokerAddrFromEnv(transport, EnvBrokerAuthTCPAddr, EnvBrokerAuthWSAddr, "localhost:4091", "ws://localhost:4090/ws")
+		return brokerAddrFromEnv(transport, EnvBrokerAuthTCPAddr, EnvBrokerAuthWSAddr, "localhost:4091", "ws://localhost:4090/ws", false)
 	default:
 		return "", fmt.Errorf("unsupported auth mode: %s", authMode)
 	}
 }
 
-func brokerAddrFromEnv(transport TransportType, tcpEnv string, wsEnv string, tcpDefault string, wsDefault string) (string, error) {
+func brokerAddrFromEnv(transport TransportType, tcpEnv string, wsEnv string, tcpDefault string, wsDefault string, allowGenericFallback bool) (string, error) {
 	switch transport {
 	case TransportTCP:
 		if addr := os.Getenv(tcpEnv); addr != "" {
 			return addr, nil
 		}
-		if addr := os.Getenv(EnvBrokerTCPAddr); addr != "" {
-			return addr, nil
+		if allowGenericFallback {
+			if addr := os.Getenv(EnvBrokerTCPAddr); addr != "" {
+				return addr, nil
+			}
 		}
 		return tcpDefault, nil
 	case TransportWebSocket:
 		if addr := os.Getenv(wsEnv); addr != "" {
 			return addr, nil
 		}
-		if addr := os.Getenv(EnvBrokerWSAddr); addr != "" {
-			return addr, nil
+		if allowGenericFallback {
+			if addr := os.Getenv(EnvBrokerWSAddr); addr != "" {
+				return addr, nil
+			}
 		}
 		return wsDefault, nil
 	default:

@@ -1,7 +1,7 @@
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
-// Covers all 19 scenarios: the 15 scenarios defined in the cross-language spec plus
-// 4 domain-lifecycle scenarios (CS-016 through CS-019) added in the Go client to close
+// Covers all 21 scenarios: the 17 scenarios defined in the cross-language spec plus
+// 4 domain-lifecycle scenarios (CS-018 through CS-021) added in the Go client to close
 // coverage gaps for Queue, Lease, Notice, and Schedule domains:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
@@ -975,20 +975,109 @@ func TestConformanceSuite(t *testing.T) {
 		}
 	})
 
+	t.Run("CS-017_bounded_concurrency_under_burst_load", func(t *testing.T) {
+		r := run("CS-017", "bounded concurrency under burst load", "P1", func() (Verdict, []string, error) {
+			var ev []string
+
+			f := newFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if err := f.ConnectWithOptions(ctx, fitz.WithMaxInFlightRequests(1)); err != nil {
+				return VerdictFail, ev, fmt.Errorf("connect: %w", err)
+			}
+
+			route := uniqueRoute("rpc")
+			sub, err := f.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+				select {
+				case <-workerCtx.Done():
+					return workerCtx.Err()
+				case <-time.After(500 * time.Millisecond):
+					return w.Send([]byte("delayed"))
+				}
+			})
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
+			}
+			defer sub.Deregister()
+
+			callCtx, callCancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+			defer callCancel()
+
+			ev = append(ev, "registered delayed RPC worker")
+			firstIter, err := f.Client().RPC().Call(callCtx, route, []byte("first"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("first rpc call: %w", err)
+			}
+			defer firstIter.Close()
+
+			secondIter, err := f.Client().RPC().Call(callCtx, route, []byte("second"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("second rpc call: %w", err)
+			}
+			defer secondIter.Close()
+
+			firstDoneCh := make(chan error, 1)
+			secondDoneCh := make(chan error, 1)
+
+			go func() {
+				if !firstIter.Next() {
+					firstDoneCh <- firstIter.Err()
+					return
+				}
+				firstDoneCh <- nil
+			}()
+
+			go func() {
+				if !secondIter.Next() {
+					secondDoneCh <- secondIter.Err()
+					return
+				}
+				secondDoneCh <- nil
+			}()
+
+			time.Sleep(100 * time.Millisecond)
+			select {
+			case err := <-secondDoneCh:
+				return VerdictFail, ev, fmt.Errorf("expected second RPC call to remain pending behind the first, got %w", err)
+			default:
+			}
+
+			ev = append(ev, "second RPC call remained pending while first was in flight")
+			ev = append(ev, "configured maxInFlightRequests=1 and burst size=2")
+
+			callCancel()
+			firstErr := <-firstDoneCh
+			secondErr := <-secondDoneCh
+			if firstErr != nil {
+				ev = append(ev, fmt.Sprintf("first RPC call ended with %v", firstErr))
+			}
+			if secondErr != nil {
+				ev = append(ev, fmt.Sprintf("second RPC call ended with %v", secondErr))
+			}
+
+			return VerdictPass, ev, nil
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
 	// -------------------------------------------------------------------------
-	// CS-016 â€“ CS-019: domain lifecycle scenarios not in the cross-language spec
+	// CS-018 â€“ CS-021: domain lifecycle scenarios not in the cross-language spec
 	// but required to close coverage gaps for Queue, Lease, Notice, Schedule.
 	// -------------------------------------------------------------------------
 
-	t.Run("CS-016_queue_enqueue_reserve_complete", func(t *testing.T) {
-		r := run("CS-016", "queue enqueue/reserve/complete lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-018_queue_enqueue_reserve_complete", func(t *testing.T) {
+		r := run("CS-018", "queue enqueue/reserve/complete lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			route := uniqueRoute("queue")
-			msgID, err := f.Client().Queue().Enqueue(ctx, route, []byte("cs016-payload"))
+			msgID, err := f.Client().Queue().Enqueue(ctx, route, []byte("cs018-payload"))
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("enqueue: %w", err)
 			}
@@ -1004,8 +1093,8 @@ func TestConformanceSuite(t *testing.T) {
 			if len(items) != 1 {
 				return VerdictFail, ev, fmt.Errorf("expected 1 reserved item, got %d", len(items))
 			}
-			if string(items[0].Body) != "cs016-payload" {
-				return VerdictFail, ev, fmt.Errorf("expected 'cs016-payload', got %q", items[0].Body)
+			if string(items[0].Body) != "cs018-payload" {
+				return VerdictFail, ev, fmt.Errorf("expected 'cs018-payload', got %q", items[0].Body)
 			}
 			ev = append(ev, fmt.Sprintf("reserved item body=%q", items[0].Body))
 
@@ -1028,12 +1117,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
-			t.Errorf("CS-016: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("CS-018: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-017_lease_acquire_contention_release", func(t *testing.T) {
-		r := run("CS-017", "lease acquire/contention/release lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-019_lease_acquire_contention_release", func(t *testing.T) {
+		r := run("CS-019", "lease acquire/contention/release lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 
 			f1 := connectFixture(t)
@@ -1076,12 +1165,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("CS-019: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-018_notice_subscribe_publish_deliver", func(t *testing.T) {
-		r := run("CS-018", "notice subscribe/publish/deliver lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-020_notice_subscribe_publish_deliver", func(t *testing.T) {
+		r := run("CS-020", "notice subscribe/publish/deliver lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1099,7 +1188,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, "subscribed to route")
 
-			if err := f.Client().Notice().Publish(ctx, route, []byte("cs018-msg")); err != nil {
+			if err := f.Client().Notice().Publish(ctx, route, []byte("cs020-msg")); err != nil {
 				sub.Unsubscribe()
 				return VerdictFail, ev, fmt.Errorf("publish: %w", err)
 			}
@@ -1107,9 +1196,9 @@ func TestConformanceSuite(t *testing.T) {
 
 			select {
 			case body := <-received:
-				if body != "cs018-msg" {
+				if body != "cs020-msg" {
 					sub.Unsubscribe()
-					return VerdictFail, ev, fmt.Errorf("expected 'cs018-msg', got %q", body)
+					return VerdictFail, ev, fmt.Errorf("expected 'cs020-msg', got %q", body)
 				}
 				ev = append(ev, fmt.Sprintf("handler received message body=%q (correct)", body))
 			case <-time.After(5 * time.Second):
@@ -1135,12 +1224,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
-			t.Errorf("CS-018: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("CS-020: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-019_schedule_create_subscribe_cancel", func(t *testing.T) {
-		r := run("CS-019", "schedule create/subscribe/cancel lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-021_schedule_create_subscribe_cancel", func(t *testing.T) {
+		r := run("CS-021", "schedule create/subscribe/cancel lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1158,7 +1247,7 @@ func TestConformanceSuite(t *testing.T) {
 			ev = append(ev, "subscribed to schedule route")
 
 			// Create a schedule
-			scheduleID, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("cs019-payload"))
+			scheduleID, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("cs021-payload"))
 			if err != nil {
 				sub.Unsubscribe()
 				return VerdictFail, ev, fmt.Errorf("create: %w", err)
@@ -1174,7 +1263,7 @@ func TestConformanceSuite(t *testing.T) {
 				sub.Unsubscribe()
 				return VerdictFail, ev, fmt.Errorf("cancel: %w", err)
 			}
-			ev = append(ev, "schedule cancelled")
+			ev = append(ev, "schedule canceled")
 
 			sub.Unsubscribe()
 			ev = append(ev, "unsubscribed")
@@ -1184,7 +1273,7 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-019: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("CS-021: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 }

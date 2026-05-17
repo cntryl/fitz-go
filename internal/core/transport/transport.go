@@ -11,11 +11,11 @@ import (
 type Transport interface {
 	// Write sends a complete TLV frame to the server.
 	// The frame must be fully encoded before calling Write.
-	// Returns error if connection is broken or context is cancelled.
+	// Returns error if connection is broken or context is canceled.
 	Write(ctx context.Context, frame []byte) error
 
 	// Read blocks until the next complete frame arrives.
-	// MUST return immediately when ctx is cancelled (not wait for next frame).
+	// MUST return immediately when ctx is canceled (not wait for next frame).
 	// Returns io.EOF when connection is closed gracefully.
 	// Returns ErrFrameTooLarge if frame exceeds MaxFrameSize.
 	Read(ctx context.Context) ([]byte, error)

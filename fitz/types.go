@@ -91,6 +91,14 @@ func WithWriteTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithMaxInFlightRequests sets the maximum number of concurrently admitted
+// outbound request operations on a connection.
+func WithMaxInFlightRequests(max int) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithMaxInFlightRequests(max))
+	}
+}
+
 // WithAsyncHandlerTimeout sets the timeout used for detached async handler
 // spans in subscription callbacks and RPC worker handlers.
 func WithAsyncHandlerTimeout(timeout time.Duration) Option {
@@ -107,7 +115,7 @@ func WithAsyncHandlerMaxConcurrency(max int) Option {
 	}
 }
 
-// WithReconnect controls the automatic reconnect behaviour. When enabled, the
+// WithReconnect controls the automatic reconnect behavior. When enabled, the
 // client will attempt to re-establish the transport connection using exponential
 // backoff starting at backoff, doubling up to the ceiling configured by
 // WithReconnectMaxDelay (default 30s), up to maxAttempts times (0 = unlimited).

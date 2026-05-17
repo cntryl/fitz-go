@@ -87,6 +87,7 @@ type Config struct {
 	AuthSettleDelay            time.Duration
 	ReadTimeout                time.Duration
 	WriteTimeout               time.Duration
+	MaxInFlightRequests        int
 	AsyncHandlerTimeout        time.Duration
 	AsyncHandlerMaxConcurrency int
 
@@ -112,6 +113,7 @@ func defaultConfig() *Config {
 		AuthSettleDelay:            500 * time.Millisecond,
 		ReadTimeout:                30 * time.Second,
 		WriteTimeout:               10 * time.Second,
+		MaxInFlightRequests:        256,
 		AsyncHandlerTimeout:        30 * time.Second,
 		AsyncHandlerMaxConcurrency: 256,
 	}
@@ -138,6 +140,12 @@ func WithReadTimeout(timeout time.Duration) Option {
 // WithWriteTimeout sets the write timeout.
 func WithWriteTimeout(timeout time.Duration) Option {
 	return func(c *Config) { c.WriteTimeout = timeout }
+}
+
+// WithMaxInFlightRequests sets the maximum number of concurrently admitted
+// outbound request operations on a connection.
+func WithMaxInFlightRequests(max int) Option {
+	return func(c *Config) { c.MaxInFlightRequests = max }
 }
 
 // WithAsyncHandlerTimeout sets the timeout used for detached async handler spans.
@@ -491,6 +499,7 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 		AuthSettleDelay:            c.config.AuthSettleDelay,
 		ReadTimeout:                c.config.ReadTimeout,
 		WriteTimeout:               c.config.WriteTimeout,
+		MaxInFlightRequests:        c.config.MaxInFlightRequests,
 		AsyncHandlerTimeout:        c.config.AsyncHandlerTimeout,
 		AsyncHandlerMaxConcurrency: c.config.AsyncHandlerMaxConcurrency,
 		Logger:                     c.config.Logger,
