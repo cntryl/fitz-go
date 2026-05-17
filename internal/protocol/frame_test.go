@@ -258,7 +258,7 @@ func TestShouldPreserveBinaryDataGivenFullByteRangeWhenDecodeFrameCalled(t *test
 	// Arrange
 	// Test that all byte values are preserved
 	payload := make([]byte, 256)
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		payload[i] = byte(i)
 	}
 
@@ -308,7 +308,7 @@ func BenchmarkEncodeMessageType(b *testing.B) {
 	b.Run("single byte", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeMessageType(100)
 		}
 	})
@@ -316,7 +316,7 @@ func BenchmarkEncodeMessageType(b *testing.B) {
 	b.Run("escaped type", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeMessageType(500)
 		}
 	})
@@ -327,7 +327,7 @@ func BenchmarkDecodeMessageType(b *testing.B) {
 		data := []byte{0x64}
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _, _ = DecodeMessageType(data)
 		}
 	})
@@ -336,7 +336,7 @@ func BenchmarkDecodeMessageType(b *testing.B) {
 		data := []byte{0xFF, 0x01, 0xF4}
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _, _ = DecodeMessageType(data)
 		}
 	})
@@ -348,7 +348,7 @@ func BenchmarkEncodeFrame(b *testing.B) {
 		msgType := uint16(100)
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeFrame(msgType, payload)
 		}
 	})
@@ -358,7 +358,7 @@ func BenchmarkEncodeFrame(b *testing.B) {
 		msgType := uint16(100)
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeFrame(msgType, payload)
 		}
 	})
@@ -373,7 +373,7 @@ func BenchmarkEncodeFrameWithPayloadWriter(b *testing.B) {
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			frame, err := EncodeFrameWithPayloadWriter(msgType, writer)
 			if err == nil {
 				frame.Release()
@@ -389,7 +389,7 @@ func BenchmarkEncodeFrameWithPayloadWriter(b *testing.B) {
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			frame, err := EncodeFrameWithPayloadWriter(msgType, writer)
 			if err == nil {
 				frame.Release()
@@ -404,7 +404,7 @@ func BenchmarkDecodeFrame(b *testing.B) {
 		frame := EncodeFrame(100, payload)
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _, _ = DecodeFrame(frame)
 		}
 	})
@@ -414,7 +414,7 @@ func BenchmarkDecodeFrame(b *testing.B) {
 		frame := EncodeFrame(100, payload)
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _, _ = DecodeFrame(frame)
 		}
 	})

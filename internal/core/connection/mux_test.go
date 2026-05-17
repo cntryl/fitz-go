@@ -21,7 +21,7 @@ func TestShouldTrackRequestsGivenRegisteredRequestsWhenMetricsRead(t *testing.T)
 		defer mux.Close()
 
 		// Act
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			ch := make(chan []byte, 1)
 			mux.RegisterRequest(uint16(100+i), ch, nil)
 		}
@@ -150,19 +150,19 @@ func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCa
 
 		numRequests := 10
 		responses := make([]chan []byte, numRequests)
-		for i := 0; i < numRequests; i++ {
+		for i := range numRequests {
 			ch := make(chan []byte, 1)
 			responses[i] = ch
 			mux.RegisterRequest(uint16(100+i), ch, nil)
 		}
 
 		// Act
-		for i := 0; i < numRequests; i++ {
+		for i := range numRequests {
 			mux.Dispatch(uint16(100+i), []byte("response"+string(rune(i))))
 		}
 
 		// Assert
-		for i := 0; i < numRequests; i++ {
+		for i := range numRequests {
 			resp := <-responses[i]
 			assert.NotNil(t, resp)
 		}
@@ -178,7 +178,7 @@ func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCa
 
 		numRequests := 100
 		responses := make([]chan []byte, numRequests)
-		for i := 0; i < numRequests; i++ {
+		for i := range numRequests {
 			ch := make(chan []byte, 1)
 			responses[i] = ch
 			mux.RegisterRequest(uint16(i), ch, nil)
@@ -186,7 +186,7 @@ func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCa
 
 		// Act
 		var wg sync.WaitGroup
-		for i := 0; i < numRequests; i++ {
+		for i := range numRequests {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -196,7 +196,7 @@ func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCa
 		wg.Wait()
 
 		// Assert
-		for i := 0; i < numRequests; i++ {
+		for i := range numRequests {
 			resp := <-responses[i]
 			assert.NotNil(t, resp)
 		}
@@ -232,7 +232,7 @@ func TestShouldAllowConcurrentHandlerReplacementGivenNotifyDispatchWhenSetNotify
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 500; i++ {
+		for range 500 {
 			mux.SetNotifyHandler(protocol.MessageTypeNoticeNotify, func(subID uint64, route string, body []byte) {
 				delivered.Add(1)
 			})
@@ -254,7 +254,7 @@ func TestShouldAllowConcurrentHandlerReplacementGivenNotifyDispatchWhenSetNotify
 	}()
 
 	wg.Wait()
-	assert.Greater(t, delivered.Load(), int64(0))
+	assert.Positive(t, delivered.Load())
 }
 
 // TestShouldMaintainFIFOOrderGivenSharedMessageTypeWhenDispatchCalled tests FIFO response ordering.
@@ -404,7 +404,7 @@ func BenchmarkRegisterRequest(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		ch := make(chan []byte, 1)
 		mux.RegisterRequest(uint16(i%1000), ch, nil)
 	}
@@ -415,7 +415,7 @@ func BenchmarkMuxDispatchResponse(b *testing.B) {
 	defer mux.Close()
 
 	// Pre-register 1000 requests
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		ch := make(chan []byte, 1)
 		mux.RegisterRequest(uint16(i), ch, nil)
 	}
@@ -424,7 +424,7 @@ func BenchmarkMuxDispatchResponse(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		mux.Dispatch(uint16(i%1000), payload)
 	}
 }
@@ -434,7 +434,7 @@ func BenchmarkConcurrentDispatch(b *testing.B) {
 	defer mux.Close()
 
 	// Pre-register 1000 requests
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		ch := make(chan []byte, 1)
 		mux.RegisterRequest(uint16(i), ch, nil)
 	}
@@ -444,7 +444,7 @@ func BenchmarkConcurrentDispatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	var wg sync.WaitGroup
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

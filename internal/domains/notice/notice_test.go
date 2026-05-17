@@ -63,7 +63,7 @@ func TestShouldDecodeNotifyGivenEncodedPayloadWhenDecodeNotifyCalled(t *testing.
 		require.True(t, ok)
 		assert.Equal(t, route, decodedRoute)
 		// Empty payload may be represented as nil or empty slice
-		assert.True(t, len(decodedPayload) == 0, "payload should be empty")
+		assert.Equal(t, len(decodedPayload), 0, "payload should be empty")
 	})
 
 	t.Run("malformed notification with trailing bytes", func(t *testing.T) {
@@ -171,17 +171,17 @@ func TestShouldDefineNoticeOpcodesGivenConstantsWhenRead(t *testing.T) {
 // TestShouldDefineNoticeErrors tests that Notice error variables are defined.
 func TestShouldDefineNoticeErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("invalid route error", func(t *testing.T) {
-		assert.NotNil(t, ErrNoticeRouteInvalid)
+		assert.Error(t, ErrNoticeRouteInvalid)
 		assert.Equal(t, "invalid notice route", ErrNoticeRouteInvalid.Error())
 	})
 
 	t.Run("timeout error", func(t *testing.T) {
-		assert.NotNil(t, ErrNoticeTimeout)
+		assert.Error(t, ErrNoticeTimeout)
 		assert.Equal(t, "notice operation timed out", ErrNoticeTimeout.Error())
 	})
 
 	t.Run("send failed error", func(t *testing.T) {
-		assert.NotNil(t, ErrNoticeSendFailed)
+		assert.Error(t, ErrNoticeSendFailed)
 		assert.Equal(t, "notice send failed", ErrNoticeSendFailed.Error())
 	})
 }
@@ -202,7 +202,7 @@ func TestShouldMapNoticeErrorGivenTypedBrokerMessageWhenMapNoticeErrorCalled(t *
 		mapped := mapNoticeError(errMsg)
 
 		var domainErr *coreerrors.DomainError
-		assert.True(t, errors.As(mapped, &domainErr))
+		assert.ErrorAs(t, mapped, &domainErr)
 		assert.Equal(t, uint32(coreerrors.NoticeTransportClosed), uint32(domainErr.Code))
 	})
 
@@ -278,7 +278,7 @@ func BenchmarkDecodeNotify(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _, _ = DecodeNotify(encoded)
 	}
 }
@@ -289,7 +289,7 @@ func BenchmarkEncodeSubscribe(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = encodeSubscribe(pattern)
 		}
 	})
@@ -299,7 +299,7 @@ func BenchmarkEncodeSubscribe(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = encodeSubscribe(pattern)
 		}
 	})
@@ -310,7 +310,7 @@ func BenchmarkEncodeUnsubscribe(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = encodeUnsubscribe(subID)
 	}
 }
@@ -322,7 +322,7 @@ func BenchmarkEncodePublish(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = encodePublish(route, payload)
 		}
 	})
@@ -336,7 +336,7 @@ func BenchmarkEncodePublish(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = encodePublish(route, payload)
 		}
 	})
@@ -350,7 +350,7 @@ func BenchmarkParseSubscribeResponse(b *testing.B) {
 	binary.BigEndian.PutUint64(payload[2:10], 999)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		success, remaining, _ := connection.ParseStandardResponse(payload)
 		if success && len(remaining) >= 9 && remaining[0] == 1 {
 			_, _, _ = connection.ReadU64BE(remaining, 1)

@@ -16,7 +16,9 @@
 | **T2 — World Class** | 26 | 0 | 0 | 26 | **YES** |
 | **Overall** | **107** | **0** | **0** | **107** | — |
 
-**Verdict: Production-grade complete; T0, T1, and T2 are green.** The remaining design choices are documented and non-blocking, and the audit now has matching tests or explicit release-gate policy for every item.
+**Verdict: Production-grade complete.** T0, T1, and T2 are green, and every remaining design choice has matching tests or an explicit release gate.
+
+Treat this report as the quality baseline for this repository.
 
 ---
 

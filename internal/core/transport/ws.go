@@ -250,7 +250,7 @@ func (w *WebSocketTransport) writeFrame(opcode byte, payload []byte, mask bool) 
 			if chunkLen > len(scratch) {
 				chunkLen = len(scratch)
 			}
-			for j := 0; j < chunkLen; j++ {
+			for j := range chunkLen {
 				scratch[j] = payload[i+j] ^ maskKey[(i+j)%4]
 			}
 			if err := writeAll(w.conn, scratch[:chunkLen]); err != nil {
@@ -298,7 +298,7 @@ func (w *WebSocketTransport) Read(ctx context.Context) ([]byte, error) {
 
 		case opcodeText:
 			// Reject text frames — the protocol requires binary-only transport (CLIENT_SPEC.md §2).
-			return nil, fmt.Errorf("fitz: received WebSocket text frame: protocol requires binary-only transport")
+			return nil, errors.New("fitz: received WebSocket text frame: protocol requires binary-only transport")
 
 		case opcodePing:
 			// Respond with pong

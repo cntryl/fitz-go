@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -60,7 +61,7 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 		return 0, fmt.Errorf("EXTEND failed: %w", mapLeaseError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("EXTEND failed: unexpected status")
+		recordErr := errors.New("EXTEND failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return 0, recordErr
@@ -102,7 +103,7 @@ func (l *Lease) releaseWithToken(ctx context.Context, token []byte) error {
 		return fmt.Errorf("RELEASE failed: %w", mapLeaseError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("RELEASE failed: unexpected status")
+		recordErr := errors.New("RELEASE failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -186,7 +187,7 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 	))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("lease.Acquire", "route", route, "ttl_secs", ttlSecs)
+		log.DebugContext(ctx, "lease.Acquire", "route", route, "ttl_secs", ttlSecs)
 	}
 
 	// Validate route format
@@ -254,7 +255,7 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.lease.Query", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("lease.Query", "route", route)
+		log.DebugContext(ctx, "lease.Query", "route", route)
 	}
 	if err := types.ValidateFixedRoute(route, "lease", 3); err != nil {
 		span.RecordError(err)
@@ -275,7 +276,7 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 		return nil, fmt.Errorf("QUERY failed: %w", mapLeaseError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("QUERY failed: unexpected status")
+		recordErr := errors.New("QUERY failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
@@ -313,24 +314,24 @@ func parseLeaseQueryResponse(remaining []byte) (*LeaseInfo, error) {
 	offset := 1
 	// owner_id (string = u32 len + bytes)
 	if offset+4 > len(remaining) {
-		return nil, fmt.Errorf("QUERY held response missing owner_id length")
+		return nil, errors.New("QUERY held response missing owner_id length")
 	}
 	ownerIDLen := binary.BigEndian.Uint32(remaining[offset : offset+4])
 	offset += 4
 	if offset+int(ownerIDLen) > len(remaining) {
-		return nil, fmt.Errorf("QUERY held response truncated owner_id")
+		return nil, errors.New("QUERY held response truncated owner_id")
 	}
 	info.OwnerID = string(remaining[offset : offset+int(ownerIDLen)])
 	offset += int(ownerIDLen)
 	// ttl_remaining_secs (u64)
 	if offset+8 > len(remaining) {
-		return nil, fmt.Errorf("QUERY held response missing ttl_remaining_secs")
+		return nil, errors.New("QUERY held response missing ttl_remaining_secs")
 	}
 	info.TTLRemainingSecs = binary.BigEndian.Uint64(remaining[offset : offset+8])
 	offset += 8
 	// pending_waiters (u32)
 	if offset+4 > len(remaining) {
-		return nil, fmt.Errorf("QUERY held response missing pending_waiters")
+		return nil, errors.New("QUERY held response missing pending_waiters")
 	}
 	info.PendingWaiters = binary.BigEndian.Uint32(remaining[offset : offset+4])
 	offset += 4
@@ -423,7 +424,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler ChangeHa
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.lease.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("lease.Subscribe", "pattern", pattern)
+		log.DebugContext(ctx, "lease.Subscribe", "pattern", pattern)
 	}
 	if err := types.ValidateFixedRoute(pattern, "lease", 3); err != nil {
 		span.RecordError(err)
@@ -500,7 +501,7 @@ func (c *client) subscribe(ctx context.Context, pattern string, handler ChangeHa
 		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
 	}
 	if !success {
-		return nil, fmt.Errorf("SUBSCRIBE failed: unexpected status")
+		return nil, errors.New("SUBSCRIBE failed: unexpected status")
 	}
 
 	if len(remaining) < 8 {

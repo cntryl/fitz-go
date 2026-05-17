@@ -1,14 +1,14 @@
 # fitz-go
 
-Go client for Fitz.
+Reference Go client for Fitz.
 
-This release is the breaking cleanup pass for the Go SDK. The supported public
-API is the canonical `github.com/cntryl/fitz-go/fitz` package with
-token-provider auth, `Connect`/`Close`, `State`, and spec-facing domain verbs.
+The supported public API is the canonical `github.com/cntryl/fitz-go/fitz`
+package: token-provider auth, `Connect`/`Close`, `State`, and
+spec-facing domain verbs.
 
 ## Public API
 
-The canonical public package is `github.com/cntryl/fitz-go/fitz`.
+Import `github.com/cntryl/fitz-go/fitz` for the public API.
 
 ```go
 package main
@@ -149,7 +149,7 @@ _ = page.Cursor.LastResourceOffset
 ## Broker-backed tests
 
 Integration tests target a running Fitz broker and are part of the default
-verification bar for this repo.
+verification bar.
 
 Use the local compose stack in [compose.yml](compose.yml):
 
@@ -181,7 +181,7 @@ export FITZ_BROKER_JWT_AUDIENCE=fitz
 go test ./...
 ```
 
-Error-path coverage in the broker-backed suite now includes unauthorized operations across all 7 domains, plus invalid KV range and invalid cron cases.
+Error-path coverage in the broker-backed suite includes unauthorized operations across all 7 domains, plus invalid KV range and invalid cron cases.
 
 Benchmark thresholds and evidence policy are documented in [docs/PERF_RESULTS.md](docs/PERF_RESULTS.md); treat that report as the source of truth for hot-path gates.
 
@@ -230,6 +230,14 @@ Run domain-level benchmarks:
 go test -run=^$ -bench=Benchmark -benchmem -count=5 -benchtime=2s ./internal/domains/...
 ```
 
+Run the public hotpath suite:
+
+```bash
+go test -run=^$ -bench='Benchmark(HandleRPCResponseHotPath|QueueReserveHotPath|QueueCompleteHotPath|StreamBeginHotPath|StreamAppendHotPath|ScheduleCreateHotPath|ScheduleCancelHotPath|SubscriptionRegistryRestore|KVTransactionLoopback|NoticePublishHotPath|FrameEncode|RPCCorrelation1KInFlight)' -benchmem -count=5 -benchtime=2s ./bench ./internal/domains/rpc
+```
+
+`bench/hotpath_bench_test.go` holds the cross-domain hotpaths, and `internal/domains/rpc/rpc_test.go` keeps the RPC dispatch benchmark next to the implementation.
+
 Collect CPU and memory profiles for one benchmark target:
 
 ```bash
@@ -242,21 +250,23 @@ When you need a regression diff, capture two local benchmark runs and compare th
 
 ```bash
 go test -run=^$ -bench=. -benchmem -count=3 \
+	github.com/cntryl/fitz-go/bench \
+	github.com/cntryl/fitz-go/internal/domains/rpc \
 	github.com/cntryl/fitz-go/internal/protocol \
 	github.com/cntryl/fitz-go/internal/core/connection \
 	github.com/cntryl/fitz-go/internal/core/encoding \
 	github.com/cntryl/fitz-go/internal/core/transport \
-	github.com/cntryl/fitz-go/internal/domains/rpc \
 	github.com/cntryl/fitz-go/internal/domains/stream \
 	github.com/cntryl/fitz-go/internal/domains/kv \
 	github.com/cntryl/fitz-go/internal/domains/notice \
 	github.com/cntryl/fitz-go/internal/domains/schedule > before.txt
 go test -run=^$ -bench=. -benchmem -count=3 \
+	github.com/cntryl/fitz-go/bench \
+	github.com/cntryl/fitz-go/internal/domains/rpc \
 	github.com/cntryl/fitz-go/internal/protocol \
 	github.com/cntryl/fitz-go/internal/core/connection \
 	github.com/cntryl/fitz-go/internal/core/encoding \
 	github.com/cntryl/fitz-go/internal/core/transport \
-	github.com/cntryl/fitz-go/internal/domains/rpc \
 	github.com/cntryl/fitz-go/internal/domains/stream \
 	github.com/cntryl/fitz-go/internal/domains/kv \
 	github.com/cntryl/fitz-go/internal/domains/notice \

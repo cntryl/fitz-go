@@ -1,7 +1,6 @@
 package kv
 
 import (
-	"errors"
 	"testing"
 
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
@@ -29,7 +28,7 @@ func TestShouldMapKVErrorGivenTypedBrokerMessageWhenMapKVErrorCalled(t *testing.
 		mapped := mapKVError(errMsg)
 
 		var domainErr *coreerrors.DomainError
-		assert.True(t, errors.As(mapped, &domainErr))
+		assert.ErrorAs(t, mapped, &domainErr)
 		assert.Equal(t, uint32(coreerrors.KvRealmMismatch), uint32(domainErr.Code))
 	})
 }

@@ -66,7 +66,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 		mapped := mapStreamError(errMsg)
 
 		// Assert
-		assert.NotNil(t, mapped)
+		assert.Error(t, mapped)
 		assert.Equal(t, errMsg, mapped)
 	})
 
@@ -78,7 +78,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 		mapped := mapStreamError(errMsg)
 
 		// Assert
-		assert.NotNil(t, mapped)
+		assert.Error(t, mapped)
 	})
 
 	t.Run("preserve typed stream limit error", func(t *testing.T) {
@@ -90,7 +90,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 
 		// Assert
 		var domainErr *coreerrors.DomainError
-		assert.True(t, errors.As(mapped, &domainErr))
+		assert.ErrorAs(t, mapped, &domainErr)
 		assert.Equal(t, uint32(coreerrors.StreamSubscriptionLimit), uint32(domainErr.Code))
 	})
 }
@@ -158,17 +158,17 @@ func TestShouldDefineStreamOpcodesGivenConstantsWhenRead(t *testing.T) {
 // TestShouldDefineStreamErrors tests that Stream error variables are defined.
 func TestShouldDefineStreamErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("stream not found error", func(t *testing.T) {
-		assert.NotNil(t, ErrStreamNotFound)
+		assert.Error(t, ErrStreamNotFound)
 		assert.Equal(t, "stream not found", ErrStreamNotFound.Error())
 	})
 
 	t.Run("stream conflict error", func(t *testing.T) {
-		assert.NotNil(t, ErrStreamConflict)
+		assert.Error(t, ErrStreamConflict)
 		assert.Equal(t, "stream conflict", ErrStreamConflict.Error())
 	})
 
 	t.Run("stream read error", func(t *testing.T) {
-		assert.NotNil(t, ErrStreamReadError)
+		assert.Error(t, ErrStreamReadError)
 		assert.Equal(t, "stream read error", ErrStreamReadError.Error())
 	})
 }
@@ -177,19 +177,19 @@ func TestShouldDefineStreamErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 func TestShouldDefineStreamTransactionModesGivenConstantsWhenRead(t *testing.T) {
 	t.Run("stream has begin operation", func(t *testing.T) {
 		// Stream should support transaction-like operations
-		assert.Greater(t, StreamBegin, uint16(0))
+		assert.Positive(t, StreamBegin)
 	})
 
 	t.Run("stream has append operation", func(t *testing.T) {
-		assert.Greater(t, StreamAppend, uint16(0))
+		assert.Positive(t, StreamAppend)
 	})
 
 	t.Run("stream has commit operation", func(t *testing.T) {
-		assert.Greater(t, StreamCommit, uint16(0))
+		assert.Positive(t, StreamCommit)
 	})
 
 	t.Run("stream has rollback operation", func(t *testing.T) {
-		assert.Greater(t, StreamRollback, uint16(0))
+		assert.Positive(t, StreamRollback)
 	})
 }
 
@@ -433,7 +433,7 @@ func TestShouldEncodeStreamReadGivenBoundsWhenPayloadWritten(t *testing.T) {
 		offset++
 		filterLength, newOffset, err := connection.ReadU32BE(payload, offset)
 		require.NoError(t, err)
-		assert.Greater(t, filterLength, uint32(0))
+		assert.Positive(t, filterLength)
 		offset = newOffset
 		expectedFilter := []byte{
 			0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -717,7 +717,7 @@ func BenchmarkEncodeStreamBegin(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeStreamBegin(route, nil)
 		}
 	})
@@ -728,7 +728,7 @@ func BenchmarkEncodeStreamBegin(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeStreamBegin(route, metadata)
 		}
 	})
@@ -742,7 +742,7 @@ func BenchmarkEncodeStreamAppend(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeStreamAppend(sessionID, expectedOffset, body, nil)
 		}
 	})
@@ -755,7 +755,7 @@ func BenchmarkEncodeStreamAppend(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeStreamAppend(sessionID, expectedOffset, body, metadata)
 		}
 	})
@@ -767,7 +767,7 @@ func BenchmarkEncodeStreamCommit(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeStreamCommit(sessionID, mode)
 	}
 }
@@ -777,7 +777,7 @@ func BenchmarkEncodeStreamRollback(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeStreamRollback(sessionID)
 	}
 }
@@ -790,7 +790,7 @@ func BenchmarkEncodeStreamRead(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeStreamRead(route, fromOffset, limit, nil)
 		}
 	})
@@ -803,7 +803,7 @@ func BenchmarkEncodeStreamRead(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeStreamRead(route, fromOffset, limit, &StreamReadOptions{Filter: filter})
 		}
 	})
@@ -814,7 +814,7 @@ func BenchmarkEncodeStreamLast(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeStreamLast(route)
 	}
 }
@@ -824,7 +824,7 @@ func BenchmarkEncodeStreamGetMetadata(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeStreamGetMetadata(route)
 	}
 }
@@ -835,7 +835,7 @@ func BenchmarkEncodeStreamSubscribe(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeStreamSubscribe(route, fromOffset)
 	}
 }
@@ -845,7 +845,7 @@ func BenchmarkEncodeStreamUnsubscribe(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeStreamUnsubscribe(route)
 	}
 }
@@ -876,7 +876,7 @@ func BenchmarkParseStreamReadResponse(b *testing.B) {
 	copy(payload, buf.Bytes())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = parseReadResponse(payload)
 	}
 }
@@ -895,7 +895,7 @@ func BenchmarkParseStreamLastResponse(b *testing.B) {
 	copy(payload, buf.Bytes())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = parseRecord(payload, 0)
 	}
 }

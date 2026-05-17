@@ -41,7 +41,7 @@ func TestShouldReadRecordsInOrderGivenOffsetRangeWhenReadCalled(t *testing.T) {
 		sess, err := f.Client().Stream().Begin(ctx, route)
 		require.NoError(t, err)
 		expectedOffset := uint64(0)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			_, err := sess.Append(ctx, expectedOffset, []byte{byte(i)})
 			require.NoError(t, err)
 			expectedOffset++

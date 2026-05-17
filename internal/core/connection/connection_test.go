@@ -454,7 +454,7 @@ func TestShouldEncodeDecodeStringGivenValueWhenHelpersCalled(t *testing.T) {
 		actual, _, err := connection.ReadString(buf.Bytes(), 0)
 
 		require.NoError(t, err)
-		assert.Equal(t, "", actual)
+		assert.Empty(t, actual)
 	})
 }
 
@@ -578,7 +578,7 @@ func BenchmarkEncodeDecodeU32BE(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		connection.WriteU32BE(buf, 0x12345678)
 		_, _, _ = connection.ReadU32BE(buf.Bytes(), 0)
@@ -591,7 +591,7 @@ func BenchmarkEncodeDecodeU64BE(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		connection.WriteU64BE(buf, 0x123456789ABCDEF0)
 		_, _, _ = connection.ReadU64BE(buf.Bytes(), 0)
@@ -606,7 +606,7 @@ func BenchmarkEncodeDecodeString(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			buf.Reset()
 			connection.WriteString(buf, testString)
 			_, _, _ = connection.ReadString(buf.Bytes(), 0)
@@ -620,7 +620,7 @@ func BenchmarkEncodeDecodeString(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			buf.Reset()
 			connection.WriteString(buf, testString)
 			_, _, _ = connection.ReadString(buf.Bytes(), 0)
@@ -634,7 +634,7 @@ func BenchmarkDispatchResponse(b *testing.B) {
 
 	// Pre-register channels to avoid registration overhead in benchmark
 	channels := make([]chan []byte, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		ch := make(chan []byte, 1)
 		channels[i] = ch
 		mux.RegisterRequest(uint16(100+i), ch, nil)
@@ -644,7 +644,7 @@ func BenchmarkDispatchResponse(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		mux.Dispatch(uint16(100+i%100), payload)
 	}
 }
@@ -657,7 +657,7 @@ func BenchmarkParseStandardResponseSuccess(b *testing.B) {
 	copy(payload[1:], remaining)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _, _ = connection.ParseStandardResponse(payload)
 	}
 }
@@ -672,20 +672,20 @@ func BenchmarkParseStandardResponseError(b *testing.B) {
 	copy(payload, buf.Bytes())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _, _ = connection.ParseStandardResponse(payload)
 	}
 }
 
 func BenchmarkGetPutBuffer(b *testing.B) {
 	// Warm up the pool
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		buf := connection.GetBuffer()
 		connection.PutBuffer(buf)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf := connection.GetBuffer()
 		connection.PutBuffer(buf)
 	}

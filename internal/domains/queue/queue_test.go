@@ -126,7 +126,7 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 
 		// Assert
 		require.NotNil(t, payload)
-		require.Greater(t, len(payload), 0)
+		require.NotEmpty(t, payload)
 
 		// Verify it contains all required fields
 		offset := 0
@@ -409,7 +409,7 @@ func TestShouldMapQueueErrorGivenBrokerMessageWhenMapQueueErrorCalled(t *testing
 		mapped := mapQueueError(errMsg)
 
 		// Assert
-		require.NotNil(t, mapped)
+		require.Error(t, mapped)
 		assert.Equal(t, errMsg, mapped.Error())
 	})
 }
@@ -423,7 +423,7 @@ func BenchmarkEncodeEnqueue(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeEnqueue(route, body, 0)
 		}
 	})
@@ -434,7 +434,7 @@ func BenchmarkEncodeEnqueue(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeEnqueue(route, body, 0)
 		}
 	})
@@ -445,7 +445,7 @@ func BenchmarkEncodeEnqueue(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeEnqueue(route, body, 3600)
 		}
 	})
@@ -457,7 +457,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeReserve(route, 30, 10)
 		}
 	})
@@ -467,7 +467,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeReserve(route, 30, 0)
 		}
 	})
@@ -480,7 +480,7 @@ func BenchmarkParseQueueResponse(b *testing.B) {
 	b.Run("success response", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _, _ = parseQueueResponse(successPayload)
 		}
 	})
@@ -488,7 +488,7 @@ func BenchmarkParseQueueResponse(b *testing.B) {
 	b.Run("error response", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _, _ = parseQueueResponse(errorPayload)
 		}
 	})
@@ -579,7 +579,7 @@ func BenchmarkEncodeExtend(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeExtend(route, messageID, token, 30)
 		}
 	})
@@ -593,7 +593,7 @@ func BenchmarkEncodeComplete(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeComplete(route, messageID, token)
 		}
 	})

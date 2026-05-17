@@ -4,6 +4,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -14,6 +15,12 @@ const pooledBufferMaxCap = 64 * 1024
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return new(bytes.Buffer)
+	},
+}
+
+var frameBufferPool = sync.Pool{
+	New: func() interface{} {
+		return &FrameBuffer{}
 	},
 }
 
@@ -46,6 +53,7 @@ func (f *FrameBuffer) Release() {
 	}
 	putBuffer(f.buf)
 	f.buf = nil
+	frameBufferPool.Put(f)
 }
 
 // getBuffer gets a buffer from the pool
@@ -104,7 +112,7 @@ func EncodeMessageType(msgType uint16) []byte {
 // Returns (messageType, bytesRead, error)
 func DecodeMessageType(data []byte) (msgType uint16, bytesRead int, err error) {
 	if len(data) < 1 {
-		return 0, 0, fmt.Errorf("insufficient data for message type")
+		return 0, 0, errors.New("insufficient data for message type")
 	}
 
 	if data[0] != MessageTypeEscape {
@@ -114,7 +122,7 @@ func DecodeMessageType(data []byte) (msgType uint16, bytesRead int, err error) {
 
 	// Escape encoding
 	if len(data) < 3 {
-		return 0, 0, fmt.Errorf("insufficient data for escaped message type")
+		return 0, 0, errors.New("insufficient data for escaped message type")
 	}
 	msgType = binary.BigEndian.Uint16(data[1:3])
 	if msgType <= 254 {
@@ -165,14 +173,16 @@ func EncodeFrameOwned(msgType uint16, payload []byte) *FrameBuffer {
 	// Write payload
 	buf.Write(payload)
 
-	return &FrameBuffer{buf: buf}
+	frame := frameBufferPool.Get().(*FrameBuffer)
+	frame.buf = buf
+	return frame
 }
 
 // EncodeFrameWithPayloadWriter encodes a frame using a payload writer callback.
 // This avoids intermediate payload allocations by writing directly into the frame buffer.
 func EncodeFrameWithPayloadWriter(msgType uint16, writePayload func(*bytes.Buffer)) (*FrameBuffer, error) {
 	if writePayload == nil {
-		return nil, fmt.Errorf("payload writer is nil")
+		return nil, errors.New("payload writer is nil")
 	}
 
 	buf := getBuffer()
@@ -207,7 +217,9 @@ func EncodeFrameWithPayloadWriter(msgType uint16, writePayload func(*bytes.Buffe
 	result := buf.Bytes()
 	binary.BigEndian.PutUint16(result[lengthPos:lengthPos+2], uint16(payloadLen))
 
-	return &FrameBuffer{buf: buf}, nil
+	frame := frameBufferPool.Get().(*FrameBuffer)
+	frame.buf = buf
+	return frame, nil
 }
 
 // DecodeFrame decodes a message frame
@@ -221,7 +233,7 @@ func DecodeFrame(data []byte) (msgType uint16, payload []byte, err error) {
 
 	offset := typeLen
 	if len(data) < offset+2 {
-		return 0, nil, fmt.Errorf("insufficient data for length field")
+		return 0, nil, errors.New("insufficient data for length field")
 	}
 
 	// Decode length
@@ -233,7 +245,7 @@ func DecodeFrame(data []byte) (msgType uint16, payload []byte, err error) {
 		return 0, nil, fmt.Errorf("insufficient data for payload: need %d, have %d", length, len(data)-offset)
 	}
 	if len(data) != offset+int(length) {
-		return 0, nil, fmt.Errorf("unexpected trailing bytes after frame payload")
+		return 0, nil, errors.New("unexpected trailing bytes after frame payload")
 	}
 
 	payload = data[offset : offset+int(length)]
@@ -301,7 +313,7 @@ func EncodeTCPFrameOwned(msgType uint16, payload []byte) *FrameBuffer {
 // Returns the frame length (excluding the 4-byte prefix itself)
 func DecodeTCPFrameLength(lengthPrefix []byte) (uint32, error) {
 	if len(lengthPrefix) < 4 {
-		return 0, fmt.Errorf("insufficient data for TCP frame length")
+		return 0, errors.New("insufficient data for TCP frame length")
 	}
 	return binary.BigEndian.Uint32(lengthPrefix), nil
 }

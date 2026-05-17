@@ -297,7 +297,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	defer span.End()
 
 	if c.config.Logger != nil {
-		c.config.Logger.Info("connect started", "addr", c.addr)
+		c.config.Logger.InfoContext(ctx, "connect started", "addr", c.addr)
 	}
 
 	if err := c.config.validate(); err != nil {
@@ -314,7 +314,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 
 	if c.config.Logger != nil {
-		c.config.Logger.Info("connect success", "addr", c.addr)
+		c.config.Logger.InfoContext(ctx, "connect success", "addr", c.addr)
 	}
 	return nil
 }

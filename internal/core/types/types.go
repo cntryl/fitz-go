@@ -7,6 +7,7 @@ package types
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -95,7 +96,7 @@ func segmentsAreConcrete(segments []string) bool {
 
 func routeShape(expectedScheme string, segmentCount int) string {
 	parts := make([]string, 0, segmentCount)
-	for i := 0; i < segmentCount; i++ {
+	for i := range segmentCount {
 		parts = append(parts, placeholderForIndex(i))
 	}
 	return fmt.Sprintf("%s://%s", expectedScheme, strings.Join(parts, "/"))
@@ -151,7 +152,7 @@ func ValidateScheduleSelector(selector string) error {
 
 func parseSchedulePath(route string) ([]string, error) {
 	if route == "" {
-		return nil, fmt.Errorf("schedule route must be non-empty")
+		return nil, errors.New("schedule route must be non-empty")
 	}
 	if !strings.HasPrefix(route, "schedule://") {
 		return nil, fmt.Errorf("schedule route %q must start with schedule://", route)

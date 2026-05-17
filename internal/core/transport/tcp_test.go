@@ -3,7 +3,6 @@ package transport
 import (
 	"bufio"
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -107,7 +106,7 @@ func TestShouldTimeoutWriteGivenShortDeadlineWhenWriteCalled(t *testing.T) {
 
 	// Assert
 	assert.Error(t, err)
-	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 // TestShouldReadFrameWithLengthPrefixGivenFramedPayloadWhenReadCalled tests TCP read framing.
@@ -161,7 +160,7 @@ func TestShouldTimeoutReadGivenShortDeadlineWhenReadCalled(t *testing.T) {
 
 	// Assert
 	assert.Error(t, err)
-	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 // TestShouldCloseGracefullyGivenOpenTransportWhenCloseCalled tests TCP close behavior.
@@ -207,7 +206,7 @@ func TestShouldRejectWriteGivenCanceledContextWhenWriteCalled(t *testing.T) {
 
 	// Assert
 	assert.Error(t, err)
-	assert.True(t, errors.Is(err, context.Canceled))
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 // Mock TCP connection is now provided by testkit.MockTCPConn from internal/testkit package
@@ -223,7 +222,7 @@ func BenchmarkWriteFrame(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = transport.Write(context.Background(), payload)
 		}
 	})
@@ -237,7 +236,7 @@ func BenchmarkWriteFrame(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = transport.Write(context.Background(), payload)
 		}
 	})
@@ -255,7 +254,7 @@ func BenchmarkReadFrame(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			conn.ReadPos = 0 // Reset for next iteration
 			_, _ = transport.Read(context.Background())
 		}

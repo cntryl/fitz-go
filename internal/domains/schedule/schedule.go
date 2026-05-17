@@ -6,6 +6,7 @@ package schedule
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -157,7 +158,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 	))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("schedule.Create", "route", route, "cron", cronExpr)
+		log.DebugContext(ctx, "schedule.Create", "route", route, "cron", cronExpr)
 	}
 
 	// Validate route format
@@ -186,7 +187,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 		return "", fmt.Errorf("create failed: %w", mapScheduleError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("create failed: unexpected status")
+		recordErr := errors.New("create failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return "", recordErr
@@ -209,7 +210,7 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.Cancel", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("schedule.Cancel", "route", route)
+		log.DebugContext(ctx, "schedule.Cancel", "route", route)
 	}
 
 	// Validate route format
@@ -233,7 +234,7 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 		return fmt.Errorf("cancel failed: %w", mapScheduleError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("cancel failed: unexpected status")
+		recordErr := errors.New("cancel failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -249,7 +250,7 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.List")
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("schedule.List", "offset", offset, "limit", limit)
+		log.DebugContext(ctx, "schedule.List", "offset", offset, "limit", limit)
 	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleList, scheduleListPayloadWriter(offset, limit))
 	if err != nil {
@@ -265,7 +266,7 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 		return nil, 0, fmt.Errorf("list failed: %w", mapScheduleError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("list failed: unexpected status")
+		recordErr := errors.New("list failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, 0, recordErr
@@ -273,7 +274,7 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 
 	// Parse total_count
 	if len(remaining) < 8 {
-		recordErr := fmt.Errorf("list response missing total_count")
+		recordErr := errors.New("list response missing total_count")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, 0, recordErr
@@ -299,7 +300,7 @@ func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
 	pos := 0
 	for {
 		if pos >= len(remaining) {
-			return nil, fmt.Errorf("list response missing entry terminator")
+			return nil, errors.New("list response missing entry terminator")
 		}
 		hasEntry := remaining[pos]
 		pos++
@@ -381,7 +382,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("schedule.Subscribe", "pattern", pattern)
+		log.DebugContext(ctx, "schedule.Subscribe", "pattern", pattern)
 	}
 	c.initScheduleNotifyHandler()
 	if err := types.ValidateScheduleRoute(pattern); err != nil {
@@ -449,14 +450,14 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("subscribe failed: %w", mapScheduleError(err))
 	}
 	if !success {
-		return 0, fmt.Errorf("subscribe failed: unexpected status")
+		return 0, errors.New("subscribe failed: unexpected status")
 	}
 
 	if len(remaining) < 1 {
 		return 0, fmt.Errorf("subscribe response too short: got %d bytes", len(remaining))
 	}
 	if remaining[0] != 1 {
-		return 0, fmt.Errorf("subscribe response missing subscription_id")
+		return 0, errors.New("subscribe response missing subscription_id")
 	}
 	if len(remaining) < 9 {
 		return 0, fmt.Errorf("subscribe response too short for subscription_id: got %d bytes", len(remaining))

@@ -6,6 +6,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -40,6 +41,74 @@ type RPCHandler func(ctx context.Context, req InboundRequest, w ResponseWriter) 
 type ResponseFrame struct {
 	Body     []byte
 	Sequence uint64
+}
+
+type responseStream struct {
+	mu       sync.Mutex
+	notify   chan struct{}
+	frames   []ResponseFrame
+	closed   bool
+	signaled bool
+}
+
+func newResponseStream() *responseStream {
+	return &responseStream{notify: make(chan struct{})}
+}
+
+func (s *responseStream) enqueue(frame ResponseFrame) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	wasEmpty := len(s.frames) == 0
+	s.frames = append(s.frames, frame)
+	if wasEmpty && !s.signaled {
+		close(s.notify)
+		s.signaled = true
+	}
+	return true
+}
+
+func (s *responseStream) close() {
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		if !s.signaled {
+			close(s.notify)
+			s.signaled = true
+		}
+	}
+	s.mu.Unlock()
+}
+
+func (s *responseStream) next(ctx context.Context) (ResponseFrame, bool, error) {
+	for {
+		s.mu.Lock()
+		if len(s.frames) > 0 {
+			frame := s.frames[0]
+			s.frames[0] = ResponseFrame{}
+			s.frames = s.frames[1:]
+			if len(s.frames) == 0 && !s.closed {
+				s.notify = make(chan struct{})
+				s.signaled = false
+			}
+			s.mu.Unlock()
+			return frame, true, nil
+		}
+		if s.closed {
+			s.mu.Unlock()
+			return ResponseFrame{}, false, nil
+		}
+		notify := s.notify
+		s.mu.Unlock()
+
+		select {
+		case <-notify:
+		case <-ctx.Done():
+			return ResponseFrame{}, false, ctx.Err()
+		}
+	}
 }
 
 var readRandom = crand.Read
@@ -81,7 +150,7 @@ type client struct {
 
 	mu          sync.Mutex
 	workers     map[string]RPCHandler // route -> handler
-	pendingRPCs map[[16]byte]chan ResponseFrame
+	pendingRPCs map[[16]byte]*responseStream
 	initialized bool
 }
 
@@ -90,7 +159,7 @@ func NewClient(conn *connection.Connection) Client {
 	c := &client{
 		conn:        conn,
 		workers:     make(map[string]RPCHandler),
-		pendingRPCs: make(map[[16]byte]chan ResponseFrame),
+		pendingRPCs: make(map[[16]byte]*responseStream),
 	}
 	return c
 }
@@ -135,7 +204,7 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 	// Check if this is a worker request (status byte for worker dispatch)
 	// or a call response. We use the pending RPC map to differentiate.
 	c.mu.Lock()
-	ch, isCall := c.pendingRPCs[correlationID]
+	stream, isCall := c.pendingRPCs[correlationID]
 	c.mu.Unlock()
 
 	if isCall {
@@ -168,16 +237,13 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		}
 
 		if !streamEnd || len(body) > 0 {
-			select {
-			case ch <- ResponseFrame{Body: body, Sequence: seq}:
-			case <-c.conn.LifecycleContext().Done():
-			}
+			_ = stream.enqueue(ResponseFrame{Body: body, Sequence: seq})
 		}
 		if streamEnd {
 			c.mu.Lock()
 			delete(c.pendingRPCs, correlationID)
 			c.mu.Unlock()
-			close(ch)
+			stream.close()
 		}
 		return
 	}
@@ -295,7 +361,7 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.rpc.RegisterWorker", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("rpc.RegisterWorker", "route", route)
+		log.DebugContext(ctx, "rpc.RegisterWorker", "route", route)
 	}
 
 	// Validate route format
@@ -341,7 +407,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.rpc.Call", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("rpc.Call", "route", route)
+		log.DebugContext(ctx, "rpc.Call", "route", route)
 	}
 
 	// Check if context is already canceled
@@ -367,11 +433,11 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		return nil, err
 	}
 
-	// Create response channel
-	ch := make(chan ResponseFrame, 32)
+	// Create response stream.
+	stream := newResponseStream()
 
 	c.mu.Lock()
-	c.pendingRPCs[correlationID] = ch
+	c.pendingRPCs[correlationID] = stream
 	c.mu.Unlock()
 
 	// Build request with writer path
@@ -380,7 +446,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		c.mu.Lock()
 		delete(c.pendingRPCs, correlationID)
 		c.mu.Unlock()
-		close(ch)
+		stream.close()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("REQUEST failed: %w", err)
@@ -391,7 +457,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		c.mu.Lock()
 		delete(c.pendingRPCs, correlationID)
 		c.mu.Unlock()
-		close(ch)
+		stream.close()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("REQUEST failed: %w", mapRPCError(err))
@@ -400,15 +466,15 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		c.mu.Lock()
 		delete(c.pendingRPCs, correlationID)
 		c.mu.Unlock()
-		close(ch)
-		recordErr := fmt.Errorf("REQUEST failed: unexpected status")
+		stream.close()
+		recordErr := errors.New("REQUEST failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
 	}
 
 	iterator := &rpcIterator{
-		ch:            ch,
+		stream:        stream,
 		ctx:           ctx,
 		correlationID: correlationID,
 		client:        c,
@@ -448,7 +514,7 @@ func (w *responseWriter) sendEnd() {
 
 // rpcIterator iterates over response frames from a Call.
 type rpcIterator struct {
-	ch            chan ResponseFrame
+	stream        *responseStream
 	ctx           context.Context
 	correlationID [16]byte
 	client        *client
@@ -466,43 +532,35 @@ func (it *rpcIterator) Next() bool {
 	}
 	it.mu.Unlock()
 
-	// Eagerly check context cancellation before entering the select.  This
-	// prevents the race where both it.ch has a buffered frame AND ctx.Done()
-	// is already closed simultaneously — without this guard, Go's scheduler
-	// would non-deterministically choose between the two cases, causing
-	// callers to receive a stale frame even after cancellation (CS-008).
+	// Eagerly check context cancellation before waiting on the response stream.
+	// This preserves deadline/cancel semantics even if the stream still has
+	// queued frames from the server.
 	if err := it.ctx.Err(); err != nil {
 		it.mu.Lock()
 		it.err = err
 		it.done = true
 		it.mu.Unlock()
-		it.client.mu.Lock()
-		delete(it.client.pendingRPCs, it.correlationID)
-		it.client.mu.Unlock()
+		it.client.removePendingRPC(it.correlationID)
 		return false
 	}
 
-	select {
-	case frame, ok := <-it.ch:
-		if !ok {
-			it.mu.Lock()
-			it.done = true
-			it.mu.Unlock()
-			return false
-		}
-		it.current = frame
-		return true
-	case <-it.ctx.Done():
+	frame, ok, err := it.stream.next(it.ctx)
+	if err != nil {
 		it.mu.Lock()
-		it.err = it.ctx.Err()
+		it.err = err
 		it.done = true
 		it.mu.Unlock()
-		// Clean up pending RPC immediately when context is canceled
-		it.client.mu.Lock()
-		delete(it.client.pendingRPCs, it.correlationID)
-		it.client.mu.Unlock()
+		it.client.removePendingRPC(it.correlationID)
 		return false
 	}
+	if !ok {
+		it.mu.Lock()
+		it.done = true
+		it.mu.Unlock()
+		return false
+	}
+	it.current = frame
+	return true
 }
 
 func (it *rpcIterator) Value() ResponseFrame {
@@ -519,11 +577,16 @@ func (it *rpcIterator) Close() error {
 	it.mu.Lock()
 	it.done = true
 	it.mu.Unlock()
+	it.stream.close()
 	// Clean up pending RPC
-	it.client.mu.Lock()
-	delete(it.client.pendingRPCs, it.correlationID)
-	it.client.mu.Unlock()
+	it.client.removePendingRPC(it.correlationID)
 	return nil
+}
+
+func (c *client) removePendingRPC(correlationID [16]byte) {
+	c.mu.Lock()
+	delete(c.pendingRPCs, correlationID)
+	c.mu.Unlock()
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {
@@ -563,7 +626,7 @@ func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCH
 		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err))
 	}
 	if !success {
-		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: unexpected status")
+		return nil, errors.New("SUBSCRIBE_WORKER failed: unexpected status")
 	}
 
 	c.mu.Lock()

@@ -194,7 +194,7 @@ func TestShouldMapLeaseErrorsGivenBrokerMessageWhenMapLeaseErrorCalled(t *testin
 		mapped := mapLeaseError(errMsg)
 
 		// Assert
-		assert.NotNil(t, mapped)
+		assert.Error(t, mapped)
 		assert.Equal(t, errMsg, mapped)
 	})
 }
@@ -275,7 +275,7 @@ func BenchmarkEncodeLeaseAcquire(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeLeaseAcquire(route, 300)
 		}
 	})
@@ -285,7 +285,7 @@ func BenchmarkEncodeLeaseAcquire(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeLeaseAcquire(route, 300)
 		}
 	})
@@ -297,7 +297,7 @@ func BenchmarkEncodeLeaseRenew(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeLeaseRenew("resource", token, 600)
 		}
 	})
@@ -308,7 +308,7 @@ func BenchmarkEncodeLeaseRelease(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeLeaseRelease("resource", token)
 	}
 }
@@ -318,7 +318,7 @@ func BenchmarkEncodeLeaseQuery(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeLeaseQuery(route)
 	}
 }
@@ -331,7 +331,7 @@ func BenchmarkParseLeaseAcquireResponse(b *testing.B) {
 	binary.BigEndian.PutUint64(payload[2:10], 0x123456789ABCDEF0)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		success, remaining, _ := connection.ParseStandardResponse(payload)
 		if success && len(remaining) >= 9 {
 			_ = remaining[0]
@@ -348,7 +348,7 @@ func BenchmarkParseLeaseQueryResponse(b *testing.B) {
 	binary.BigEndian.PutUint32(payload[2:6], 0)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		success, remaining, _ := connection.ParseStandardResponse(payload)
 		if success && len(remaining) >= 5 {
 			_ = remaining[0]

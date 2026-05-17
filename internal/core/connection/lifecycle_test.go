@@ -63,7 +63,7 @@ func TestShouldLogReadErrorGivenLoggerWhenStartCalled(t *testing.T) {
 
 func TestShouldLogDecodeFailureGivenLoggerWhenStartCalled(t *testing.T) {
 	transport := testkit.NewMockTransport()
-	transport.SetReadFrames([][]byte{[]byte{0xFF}})
+	transport.SetReadFrames([][]byte{{0xFF}})
 	recorder := newLogRecorder()
 	cfg := DefaultConfig()
 	cfg.Token = "token"

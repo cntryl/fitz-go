@@ -26,6 +26,7 @@ package conformance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -364,7 +365,7 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("get: %w", err)
 			}
 			if !result.Found {
-				return VerdictFail, ev, fmt.Errorf("expected Found=true, got false")
+				return VerdictFail, ev, errors.New("expected Found=true, got false")
 			}
 			if string(result.Value) != "Alice" {
 				return VerdictFail, ev, fmt.Errorf("expected 'Alice', got %q", result.Value)
@@ -448,7 +449,7 @@ func TestConformanceSuite(t *testing.T) {
 			_ = tx2.Rollback(ctx)
 
 			if insertErr == nil {
-				return VerdictFail, ev, fmt.Errorf("expected error on duplicate insert, got nil")
+				return VerdictFail, ev, errors.New("expected error on duplicate insert, got nil")
 			}
 			ev = append(ev, fmt.Sprintf("duplicate insert returned error: %v", insertErr))
 
@@ -461,7 +462,7 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, err
 			}
 			if !res.Found {
-				return VerdictFail, ev, fmt.Errorf("expected dup key to still exist")
+				return VerdictFail, ev, errors.New("expected dup key to still exist")
 			}
 			ev = append(ev, "client remains usable after server-rejected operation")
 			return VerdictPass, ev, nil
@@ -540,7 +541,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 
 			if timeoutErr == nil {
-				return VerdictFail, ev, fmt.Errorf("expected timeout error, got success")
+				return VerdictFail, ev, errors.New("expected timeout error, got success")
 			}
 			ev = append(ev, fmt.Sprintf("rpc timed out after ~%dms (error: %v)", elapsed.Milliseconds(), timeoutErr))
 
@@ -835,7 +836,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			_, appendErr := wrongSession.Append(ctx, 0, []byte("record-2"))
 			if appendErr == nil {
-				return VerdictFail, ev, fmt.Errorf("expected error on wrong expected offset, got nil")
+				return VerdictFail, ev, errors.New("expected error on wrong expected offset, got nil")
 			}
 			ev = append(ev, fmt.Sprintf("append with wrong offset errored: %v", appendErr))
 
@@ -1082,7 +1083,7 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("enqueue: %w", err)
 			}
 			if msgID == 0 {
-				return VerdictFail, ev, fmt.Errorf("expected non-zero message ID, got 0")
+				return VerdictFail, ev, errors.New("expected non-zero message ID, got 0")
 			}
 			ev = append(ev, fmt.Sprintf("enqueued message ID=%d", msgID))
 
@@ -1136,14 +1137,14 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("acquire: %w", err)
 			}
 			if l1 == nil || l1.ExpiresAt == 0 {
-				return VerdictFail, ev, fmt.Errorf("expected non-nil lease with expiry")
+				return VerdictFail, ev, errors.New("expected non-nil lease with expiry")
 			}
 			ev = append(ev, fmt.Sprintf("client1 acquired lease expiresAt=%d", l1.ExpiresAt))
 
 			// Contention: second client must be rejected
 			l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
 			if err2 == nil && l2 != nil {
-				return VerdictFail, ev, fmt.Errorf("expected contention error but acquire succeeded")
+				return VerdictFail, ev, errors.New("expected contention error but acquire succeeded")
 			}
 			ev = append(ev, fmt.Sprintf("client2 rejected on held lease: %v (correct)", err2))
 
@@ -1158,7 +1159,7 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("acquire after release: %w", err3)
 			}
 			if l3 == nil || l3.ExpiresAt == 0 {
-				return VerdictFail, ev, fmt.Errorf("expected lease after release, got nil")
+				return VerdictFail, ev, errors.New("expected lease after release, got nil")
 			}
 			ev = append(ev, "client2 acquired lease after release (correct)")
 			return VerdictPass, ev, nil
@@ -1203,7 +1204,7 @@ func TestConformanceSuite(t *testing.T) {
 				ev = append(ev, fmt.Sprintf("handler received message body=%q (correct)", body))
 			case <-time.After(5 * time.Second):
 				sub.Unsubscribe()
-				return VerdictFail, ev, fmt.Errorf("timed out waiting for notification delivery")
+				return VerdictFail, ev, errors.New("timed out waiting for notification delivery")
 			}
 
 			// Unsubscribe and verify no further delivery
@@ -1254,7 +1255,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			if scheduleID == "" {
 				sub.Unsubscribe()
-				return VerdictFail, ev, fmt.Errorf("expected non-empty schedule ID")
+				return VerdictFail, ev, errors.New("expected non-empty schedule ID")
 			}
 			ev = append(ev, fmt.Sprintf("schedule created id=%q", scheduleID))
 

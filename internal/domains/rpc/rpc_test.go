@@ -2,6 +2,8 @@
 package rpc
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"testing"
@@ -45,7 +47,7 @@ func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) 
 
 		// Assert
 		var domainErr *coreerrors.DomainError
-		assert.True(t, errors.As(mapped, &domainErr))
+		assert.ErrorAs(t, mapped, &domainErr)
 		assert.Equal(t, uint32(coreerrors.RpcCorrelationNotFound), uint32(domainErr.Code))
 	})
 
@@ -57,7 +59,7 @@ func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) 
 		mapped := mapRPCError(errMsg)
 
 		// Assert
-		assert.NotNil(t, mapped)
+		assert.Error(t, mapped)
 		assert.Equal(t, errMsg, mapped)
 	})
 
@@ -69,7 +71,7 @@ func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) 
 		mapped := mapRPCError(errMsg)
 
 		// Assert
-		assert.NotNil(t, mapped)
+		assert.Error(t, mapped)
 		assert.Equal(t, errMsg, mapped)
 	})
 
@@ -125,12 +127,12 @@ func TestShouldDefineRPCOpcodesGivenConstantsWhenRead(t *testing.T) {
 // TestShouldDefineRPCErrors tests that RPC error variables are defined.
 func TestShouldDefineRPCErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("no workers error defined", func(t *testing.T) {
-		assert.NotNil(t, ErrNoWorkers)
+		assert.Error(t, ErrNoWorkers)
 		assert.Equal(t, "no workers available", ErrNoWorkers.Error())
 	})
 
 	t.Run("rpc timeout error defined", func(t *testing.T) {
-		assert.NotNil(t, ErrRPCTimeout)
+		assert.Error(t, ErrRPCTimeout)
 		assert.Equal(t, "rpc timeout", ErrRPCTimeout.Error())
 	})
 }
@@ -348,7 +350,7 @@ func BenchmarkEncodeRPCSubscribeWorker(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeRPCSubscribeWorker(route)
 		}
 	})
@@ -358,7 +360,7 @@ func BenchmarkEncodeRPCSubscribeWorker(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeRPCSubscribeWorker(route)
 		}
 	})
@@ -369,7 +371,7 @@ func BenchmarkEncodeRPCUnsubscribeWorker(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeRPCUnsubscribeWorker(route)
 	}
 }
@@ -382,7 +384,7 @@ func BenchmarkEncodeRPCRequest(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeRPCRequest(correlationID, route, "", body)
 		}
 	})
@@ -394,7 +396,7 @@ func BenchmarkEncodeRPCRequest(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeRPCRequest(correlationID, route, "", body)
 		}
 	})
@@ -407,7 +409,7 @@ func BenchmarkEncodeRPCResponse(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeRPCResponse(correlationID, 42, body, false)
 		}
 	})
@@ -418,7 +420,7 @@ func BenchmarkEncodeRPCResponse(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeRPCResponse(correlationID, 100, body, true)
 		}
 	})
@@ -429,7 +431,37 @@ func BenchmarkParseRpcAckResponse(b *testing.B) {
 	payload := []byte{0}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _, _ = connection.ParseStandardResponse(payload)
+	}
+}
+
+func BenchmarkHandleRPCResponseHotPath(b *testing.B) {
+	c := &client{
+		pendingRPCs: make(map[[16]byte]*responseStream),
+	}
+
+	var correlationID [16]byte
+	correlationID[0] = 1
+	stream := newResponseStream()
+	c.pendingRPCs[correlationID] = stream
+	payload := rpcResponsePayload(1, []byte("payload"), false)
+	expectedBody := []byte("payload")
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		c.handleRPCResponse(correlationID, payload)
+		frame, ok, err := stream.next(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if !ok {
+			b.Fatal("expected response frame")
+		}
+		if frame.Sequence != 1 || !bytes.Equal(frame.Body, expectedBody) {
+			b.Fatalf("unexpected response frame: sequence=%d body=%q", frame.Sequence, frame.Body)
+		}
 	}
 }

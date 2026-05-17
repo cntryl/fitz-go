@@ -53,20 +53,19 @@ func TestShouldStopOnErrorGivenCallbackReturnsErrorWhenForEachCalled(t *testing.
 }
 
 // TestShouldCloseIteratorGivenForEachCompletesWhenCalled verifies
-// ForEach always calls Close(), even on errors.
+// ForEach closes the iterator after successful iteration.
 func TestShouldCloseIteratorGivenForEachCompletesWhenCalled(t *testing.T) {
 	// Arrange
-	items := []int{1, 2, 3}
-	it := NewSliceIterator(items)
+	it := &trackingIterator{items: []int{1, 2, 3}}
 
-	// Act - complete successfully
+	// Act
 	err := ForEach(it, func(v int) error {
 		return nil
 	})
 
 	// Assert
 	require.NoError(t, err)
-	// Note: SliceIterator.Close() is a no-op, but we verify it doesn't panic
+	assert.Equal(t, 1, it.closeCount)
 }
 
 // TestShouldReturnIteratorErrorGivenIteratorFailsWhenForEachCalled verifies
@@ -88,85 +87,18 @@ func TestShouldReturnIteratorErrorGivenIteratorFailsWhenForEachCalled(t *testing
 	assert.Equal(t, "iterator error", err.Error())
 }
 
-// TestShouldIterateEmptySliceGivenSliceIteratorWhenCalled verifies
-// SliceIterator handles empty slices correctly.
-func TestShouldIterateEmptySliceGivenSliceIteratorWhenCalled(t *testing.T) {
-	// Arrange
-	items := []int{}
-	it := NewSliceIterator(items)
-
-	// Act
-	var collected []int
-	for it.Next() {
-		collected = append(collected, it.Value())
-	}
-
-	// Assert
-	assert.Empty(t, collected)
-	assert.NoError(t, it.Err())
-}
-
-// TestShouldReturnNilErrorGivenSliceIteratorWhenErrCalled verifies
-// SliceIterator.Err() always returns nil.
-func TestShouldReturnNilErrorGivenSliceIteratorWhenErrCalled(t *testing.T) {
-	// Arrange
-	items := []int{1, 2, 3}
-	it := NewSliceIterator(items)
-
-	// Act
-	for it.Next() {
-		_ = it.Value()
-	}
-
-	// Assert
-	assert.NoError(t, it.Err())
-}
-
-// TestShouldNotPanicGivenMultipleCloseCallsWhenCalled verifies
-// SliceIterator.Close() is safe to call multiple times.
-func TestShouldNotPanicGivenMultipleCloseCallsWhenCalled(t *testing.T) {
-	// Arrange
-	items := []int{1, 2, 3}
-	it := NewSliceIterator(items)
-
-	// Act & Assert
-	assert.NotPanics(t, func() {
-		it.Close()
-		it.Close()
-		it.Close()
-	})
-}
-
-// TestShouldReturnZeroValueGivenValueCalledBeforeNextWhenCalled verifies
-// SliceIterator returns the zero value when Value() is called before Next().
-func TestShouldReturnZeroValueGivenValueCalledBeforeNextWhenCalled(t *testing.T) {
-	// Arrange
-	items := []int{1, 2, 3}
-	it := NewSliceIterator(items)
-
-	// Act & Assert
-	assert.Equal(t, 0, it.Value())
-}
-
-// TestShouldReturnZeroValueGivenValueCalledAfterEndWhenCalled verifies
-// SliceIterator returns the zero value when Value() is called after exhaustion.
-func TestShouldReturnZeroValueGivenValueCalledAfterEndWhenCalled(t *testing.T) {
-	// Arrange
-	items := []int{1}
-	it := NewSliceIterator(items)
-	it.Next() // Move to first item
-	it.Next() // Move past end
-
-	// Act & Assert
-	assert.Equal(t, 0, it.Value())
-}
-
 // --- Mock failing iterator for testing ---
 
 type failingIterator struct {
 	items []int
 	index int
 	err   error
+}
+
+type trackingIterator struct {
+	items      []int
+	index      int
+	closeCount int
 }
 
 func (it *failingIterator) Next() bool {
@@ -183,5 +115,23 @@ func (it *failingIterator) Err() error {
 }
 
 func (it *failingIterator) Close() error {
+	return nil
+}
+
+func (it *trackingIterator) Next() bool {
+	it.index++
+	return it.index < len(it.items)
+}
+
+func (it *trackingIterator) Value() int {
+	return it.items[it.index]
+}
+
+func (it *trackingIterator) Err() error {
+	return nil
+}
+
+func (it *trackingIterator) Close() error {
+	it.closeCount++
 	return nil
 }

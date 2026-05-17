@@ -1,7 +1,6 @@
 package connection
 
 import (
-	"container/list"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -14,7 +13,42 @@ import (
 type pendingRequest struct {
 	responseChan chan []byte
 	cancelFunc   context.CancelFunc
-	sentAt       time.Time
+}
+
+type requestQueue struct {
+	items []pendingRequest
+}
+
+func (q *requestQueue) push(req pendingRequest) {
+	q.items = append(q.items, req)
+}
+
+func (q *requestQueue) pop() (pendingRequest, bool) {
+	if len(q.items) == 0 {
+		return pendingRequest{}, false
+	}
+	req := q.items[0]
+	q.items[0] = pendingRequest{}
+	q.items = q.items[1:]
+	return req, true
+}
+
+func (q *requestQueue) remove(responseChan chan []byte) (pendingRequest, bool) {
+	for idx := range q.items {
+		if q.items[idx].responseChan != responseChan {
+			continue
+		}
+		req := q.items[idx]
+		copy(q.items[idx:], q.items[idx+1:])
+		q.items[len(q.items)-1] = pendingRequest{}
+		q.items = q.items[:len(q.items)-1]
+		return req, true
+	}
+	return pendingRequest{}, false
+}
+
+func (q *requestQueue) len() int {
+	return len(q.items)
 }
 
 // Multiplexer routes responses to pending requests using FIFO ordering.
@@ -23,8 +57,8 @@ type pendingRequest struct {
 type Multiplexer struct {
 	// FIFO queue of pending requests per MessageType
 	// Key = MessageType (100-199 for KV, 200-299 for Queue, etc.)
-	// Value = queue of *pendingRequest (oldest at front)
-	pending   map[uint16]*list.List
+	// Value = queue of pendingRequest (oldest at front)
+	pending   map[uint16]*requestQueue
 	mu        sync.Mutex
 	handlerMu sync.RWMutex
 
@@ -47,7 +81,7 @@ type Multiplexer struct {
 // NewMultiplexer creates a new multiplexer.
 func NewMultiplexer() *Multiplexer {
 	return &Multiplexer{
-		pending:        make(map[uint16]*list.List),
+		pending:        make(map[uint16]*requestQueue),
 		notifyHandlers: make(map[uint16]func(subID uint64, route string, payload []byte)),
 	}
 }
@@ -67,17 +101,16 @@ func (m *Multiplexer) RegisterRequest(msgType uint16, responseChan chan []byte, 
 	// Get or create FIFO queue for this MessageType
 	queue, exists := m.pending[msgType]
 	if !exists {
-		queue = list.New()
+		queue = &requestQueue{}
 		m.pending[msgType] = queue
 	}
 
 	// Add to back of queue (FIFO)
-	req := &pendingRequest{
+	req := pendingRequest{
 		responseChan: responseChan,
 		cancelFunc:   cancelFunc,
-		sentAt:       time.Now(),
 	}
-	queue.PushBack(req)
+	queue.push(req)
 
 	m.requestsInFlight.Add(1)
 	m.requestsTotal.Add(1)
@@ -94,17 +127,13 @@ func (m *Multiplexer) UnregisterRequest(msgType uint16, responseChan chan []byte
 		return
 	}
 
-	// Find and remove matching request
-	for e := queue.Front(); e != nil; e = e.Next() {
-		req := e.Value.(*pendingRequest)
-		if req.responseChan == responseChan {
-			queue.Remove(e)
-			m.requestsInFlight.Add(-1)
-			if queue.Len() == 0 {
-				delete(m.pending, msgType)
-			}
-			return
+	// Find and remove matching request.
+	if _, ok := queue.remove(responseChan); ok {
+		m.requestsInFlight.Add(-1)
+		if queue.len() == 0 {
+			delete(m.pending, msgType)
 		}
+		return
 	}
 }
 
@@ -135,7 +164,7 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 		// If we have a pending request for 302, this is the ack; otherwise deliver to worker handler.
 		m.mu.Lock()
 		queue, exists := m.pending[302]
-		hasPending := exists && queue.Len() > 0
+		hasPending := exists && queue.len() > 0
 		m.mu.Unlock()
 		if hasPending {
 			// Sync response to caller's SendRequest(302) — fall through to sync path below
@@ -150,7 +179,7 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 		// If we have a pending request for 303, this is the ack; otherwise deliver to caller's response handler.
 		m.mu.Lock()
 		queue303, exists303 := m.pending[303]
-		hasPending303 := exists303 && queue303.Len() > 0
+		hasPending303 := exists303 && queue303.len() > 0
 		m.mu.Unlock()
 		if hasPending303 {
 			// Sync response to worker's SendRequest(303) — fall through to sync path below
@@ -163,7 +192,7 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	// Synchronous request/response - route to oldest pending request
 	m.mu.Lock()
 	queue, exists := m.pending[msgType]
-	if !exists || queue.Len() == 0 {
+	if !exists || queue.len() == 0 {
 		m.mu.Unlock()
 		// Unexpected response (no pending request)
 		// This can happen if context was canceled but response arrived
@@ -172,9 +201,8 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	}
 
 	// Pop oldest pending request (FIFO order)
-	elem := queue.Front()
-	req := queue.Remove(elem).(*pendingRequest)
-	if queue.Len() == 0 {
+	req, _ := queue.pop()
+	if queue.len() == 0 {
 		delete(m.pending, msgType)
 	}
 	m.mu.Unlock()
@@ -397,8 +425,8 @@ func (m *Multiplexer) Close() error {
 
 	// Close all pending request channels (signals error to waiters)
 	for _, queue := range m.pending {
-		for e := queue.Front(); e != nil; e = e.Next() {
-			req := e.Value.(*pendingRequest)
+		for idx := range queue.items {
+			req := queue.items[idx]
 			if req.cancelFunc != nil {
 				req.cancelFunc()
 			}
@@ -408,7 +436,7 @@ func (m *Multiplexer) Close() error {
 	}
 
 	// Clear pending requests
-	m.pending = make(map[uint16]*list.List)
+	m.pending = make(map[uint16]*requestQueue)
 
 	return nil
 }

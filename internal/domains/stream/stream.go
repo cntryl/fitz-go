@@ -7,6 +7,7 @@ package stream
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -185,7 +186,7 @@ func (c *client) Begin(ctx context.Context, route string) (StreamSession, error)
 	))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("stream.Begin", "route", route)
+		log.DebugContext(ctx, "stream.Begin", "route", route)
 	}
 
 	// Validate route format
@@ -209,21 +210,21 @@ func (c *client) Begin(ctx context.Context, route string) (StreamSession, error)
 		return nil, fmt.Errorf("begin failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("begin failed: unexpected status")
+		recordErr := errors.New("begin failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
 	}
 
 	if len(remaining) < 1 {
-		recordErr := fmt.Errorf("begin response too short")
+		recordErr := errors.New("begin response too short")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
 	}
 	hasSessionID := remaining[0]
 	if hasSessionID != 1 || len(remaining) < 9 {
-		recordErr := fmt.Errorf("begin response missing session_id")
+		recordErr := errors.New("begin response missing session_id")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
@@ -262,7 +263,7 @@ func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte
 		return 0, fmt.Errorf("send failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("send failed: unexpected status")
+		recordErr := errors.New("send failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return 0, recordErr
@@ -308,7 +309,7 @@ func (s *session) Commit(ctx context.Context, mode CommitMode) error {
 		return fmt.Errorf("commit failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("commit failed: unexpected status")
+		recordErr := errors.New("commit failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -338,7 +339,7 @@ func (s *session) Rollback(ctx context.Context) error {
 		return fmt.Errorf("rollback failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("rollback failed: unexpected status")
+		recordErr := errors.New("rollback failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -368,7 +369,7 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 	))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("stream.Read", "route", route, "from_offset", fromOffset, "limit", limit)
+		log.DebugContext(ctx, "stream.Read", "route", route, "from_offset", fromOffset, "limit", limit)
 	}
 	if err := types.ValidateSelectorRoute(route, "stream", 3, true); err != nil {
 		span.RecordError(err)
@@ -393,7 +394,7 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 		return nil, fmt.Errorf("read failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("read failed: unexpected status")
+		recordErr := errors.New("read failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
@@ -425,7 +426,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Peek", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("stream.Peek", "route", route)
+		log.DebugContext(ctx, "stream.Peek", "route", route)
 	}
 	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
 		span.RecordError(err)
@@ -446,7 +447,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 		return nil, fmt.Errorf("peek failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("peek failed: unexpected status")
+		recordErr := errors.New("peek failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
@@ -482,7 +483,7 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Metadata", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("stream.Metadata", "route", route)
+		log.DebugContext(ctx, "stream.Metadata", "route", route)
 	}
 	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
 		span.RecordError(err)
@@ -503,7 +504,7 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 		return nil, fmt.Errorf("get_metadata failed: %w", mapStreamError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("get_metadata failed: unexpected status")
+		recordErr := errors.New("get_metadata failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
@@ -533,7 +534,7 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 func skipOptionalSessionIDAndGetData(remaining []byte) ([]byte, error) {
 	offset := 0
 	if len(remaining) == 0 {
-		return nil, fmt.Errorf("stream response missing payload")
+		return nil, errors.New("stream response missing payload")
 	}
 
 	if _, newOffset, err := readOptionalU64(remaining, offset); err != nil {
@@ -547,7 +548,7 @@ func skipOptionalSessionIDAndGetData(remaining []byte) ([]byte, error) {
 		return nil, fmt.Errorf("parse response data: %w", err)
 	}
 	if newOffset != len(remaining) {
-		return nil, fmt.Errorf("stream response has trailing bytes")
+		return nil, errors.New("stream response has trailing bytes")
 	}
 
 	return data, nil
@@ -574,7 +575,7 @@ func parseReadPageResponse(data []byte) (*ReadPage, error) {
 	}
 
 	items := make([]ReadItem, 0, count)
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		item, newOffset, err := decodeStreamReadItemAt(data, offset)
 		if err != nil {
 			return nil, fmt.Errorf("parse read item %d: %w", i, err)
@@ -594,7 +595,7 @@ func parseReadPageResponse(data []byte) (*ReadPage, error) {
 		return nil, fmt.Errorf("parse last_realm_offset: %w", err)
 	}
 	if offset >= len(data) {
-		return nil, fmt.Errorf("read response missing has_more flag")
+		return nil, errors.New("read response missing has_more flag")
 	}
 	switch data[offset] {
 	case 0:
@@ -606,7 +607,7 @@ func parseReadPageResponse(data []byte) (*ReadPage, error) {
 	}
 	offset++
 	if offset != len(data) {
-		return nil, fmt.Errorf("read response has trailing bytes")
+		return nil, errors.New("read response has trailing bytes")
 	}
 
 	return &ReadPage{Items: items, Cursor: cursor}, nil
@@ -619,7 +620,7 @@ func parseRecord(data []byte, offset int) (*Record, error) {
 		return nil, err
 	}
 	if newOffset != len(data) {
-		return nil, fmt.Errorf("parse record has trailing bytes")
+		return nil, errors.New("parse record has trailing bytes")
 	}
 	return rec, nil
 }
@@ -783,7 +784,7 @@ func parseMetadataPayload(data []byte) (*Metadata, error) {
 	}
 
 	if offset != len(data) {
-		return nil, fmt.Errorf("get_metadata response has trailing bytes")
+		return nil, errors.New("get_metadata response has trailing bytes")
 	}
 
 	return meta, nil
@@ -791,7 +792,7 @@ func parseMetadataPayload(data []byte) (*Metadata, error) {
 
 func readOptionalU64(data []byte, offset int) (*uint64, int, error) {
 	if offset >= len(data) {
-		return nil, offset, fmt.Errorf("optional u64 flag missing")
+		return nil, offset, errors.New("optional u64 flag missing")
 	}
 
 	flag := data[offset]
@@ -812,7 +813,7 @@ func readOptionalU64(data []byte, offset int) (*uint64, int, error) {
 
 func readOptionalBytes(data []byte, offset int) ([]byte, int, error) {
 	if offset >= len(data) {
-		return nil, offset, fmt.Errorf("optional bytes flag missing")
+		return nil, offset, errors.New("optional bytes flag missing")
 	}
 
 	flag := data[offset]
@@ -917,7 +918,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler CommitHa
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("stream.Subscribe", "pattern", pattern)
+		log.DebugContext(ctx, "stream.Subscribe", "pattern", pattern)
 	}
 	if err := types.ValidateSelectorRoute(pattern, "stream", 3, true); err != nil {
 		span.RecordError(err)
@@ -984,14 +985,14 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("subscribe failed: %w", mapStreamError(err))
 	}
 	if !success {
-		return 0, fmt.Errorf("subscribe failed: unexpected status")
+		return 0, errors.New("subscribe failed: unexpected status")
 	}
 
 	if len(remaining) < 1 {
 		return 0, fmt.Errorf("subscribe response too short: got %d bytes", len(remaining))
 	}
 	if remaining[0] != 1 {
-		return 0, fmt.Errorf("subscribe response missing subscription_id")
+		return 0, errors.New("subscribe response missing subscription_id")
 	}
 	if len(remaining) < 9 {
 		return 0, fmt.Errorf("subscribe response too short for subscription_id: got %d bytes", len(remaining))

@@ -6,6 +6,7 @@ package notice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -143,7 +144,7 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.notice.Publish", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("notice.Publish", "route", route)
+		log.DebugContext(ctx, "notice.Publish", "route", route)
 	}
 
 	// Validate route format (exact route for publish, not pattern)
@@ -165,7 +166,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHa
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.notice.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("notice.Subscribe", "pattern", pattern)
+		log.DebugContext(ctx, "notice.Subscribe", "pattern", pattern)
 	}
 	if err := types.ValidateSelectorRoute(pattern, "notice", 3, true); err != nil {
 		span.RecordError(err)
@@ -231,14 +232,14 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("subscribe failed: %w", mapNoticeError(err))
 	}
 	if !success {
-		return 0, fmt.Errorf("subscribe failed: unexpected status")
+		return 0, errors.New("subscribe failed: unexpected status")
 	}
 
 	if len(remaining) < 1 {
 		return 0, fmt.Errorf("subscribe response too short: got %d bytes", len(remaining))
 	}
 	if remaining[0] != 1 {
-		return 0, fmt.Errorf("subscribe response missing subscription_id")
+		return 0, errors.New("subscribe response missing subscription_id")
 	}
 	if len(remaining) < 9 {
 		return 0, fmt.Errorf("subscribe response too short for subscription_id: got %d bytes", len(remaining))

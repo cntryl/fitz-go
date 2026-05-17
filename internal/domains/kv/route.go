@@ -1,6 +1,9 @@
 package kv
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Route represents a KV domain route.
 // Format: "kv://<realm>/<area>/<resource>"
@@ -28,13 +31,13 @@ func NewRoute(realm, area, resource string) Route {
 // Validate checks that the route has all required fields populated.
 func (r Route) Validate() error {
 	if r.Realm == "" {
-		return fmt.Errorf("kv route realm is required")
+		return errors.New("kv route realm is required")
 	}
 	if r.Area == "" {
-		return fmt.Errorf("kv route area is required")
+		return errors.New("kv route area is required")
 	}
 	if r.Resource == "" {
-		return fmt.Errorf("kv route resource is required")
+		return errors.New("kv route resource is required")
 	}
 	return nil
 }

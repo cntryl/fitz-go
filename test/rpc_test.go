@@ -51,7 +51,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 		route := fWorker.UniqueRoute("rpc")
 
 		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				if err := w.Send([]byte{byte(i)}); err != nil {
 					return err
 				}
@@ -120,7 +120,7 @@ func TestShouldLoadBalanceGivenMultipleWorkersWhenConcurrentRequests(t *testing.
 		require.NoError(t, err)
 		defer sub2.Deregister()
 
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("req"))
 			require.NoError(t, err)
 			for iter.Next() {

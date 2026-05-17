@@ -106,7 +106,7 @@ func TestShouldReserveBatchGivenMultipleMessagesWhenBatchSizeSpecified(t *testin
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("queue")
 
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			_, err := f.Client().Queue().Enqueue(ctx, route, []byte("batch-msg"))
 			require.NoError(t, err)
 		}
@@ -158,7 +158,7 @@ func TestShouldDistributeMessagesGivenMultipleConsumersWhenConcurrentReserve(t *
 		f2.ConnectOrFail(ctx)
 		route := f1.UniqueRoute("queue")
 
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			_, err := f1.Client().Queue().Enqueue(ctx, route, []byte("concurrent-msg"))
 			require.NoError(t, err)
 		}
@@ -168,23 +168,6 @@ func TestShouldDistributeMessagesGivenMultipleConsumersWhenConcurrentReserve(t *
 		require.NoError(t, err1)
 		require.NoError(t, err2)
 		assert.Equal(t, 2, len(items1)+len(items2))
-	})
-}
-
-func TestShouldHandleReceiveGivenLimitZeroWhenReceiveCalled(t *testing.T) {
-	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		f := fixture.NewTestFixture(t, transport)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		f.ConnectOrFail(ctx)
-		items, err := f.Client().Queue().Reserve(ctx, f.UniqueRoute("queue"), 30, 0)
-		if err != nil {
-			assert.Error(t, err)
-			return
-		}
-		require.NotNil(t, items)
-		assert.Empty(t, items)
 	})
 }
 

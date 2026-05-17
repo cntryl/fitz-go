@@ -6,6 +6,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -97,7 +98,7 @@ func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 		return fmt.Errorf("extend failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("extend failed: unexpected status")
+		recordErr := errors.New("extend failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -130,7 +131,7 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 		return fmt.Errorf("complete failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("complete failed: unexpected status")
+		recordErr := errors.New("complete failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -182,7 +183,7 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.queue.Enqueue", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("queue.Enqueue", "route", route)
+		log.DebugContext(ctx, "queue.Enqueue", "route", route)
 	}
 
 	// Validate route format
@@ -206,7 +207,7 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 		return 0, fmt.Errorf("enqueue failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("enqueue failed: unexpected status")
+		recordErr := errors.New("enqueue failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return 0, recordErr
@@ -257,7 +258,7 @@ func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs
 	))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("queue.Reserve", "route", route, "lease_secs", leaseSecs, "batch_size", cfg.batchSize, "wait_seconds", cfg.waitSeconds)
+		log.DebugContext(ctx, "queue.Reserve", "route", route, "lease_secs", leaseSecs, "batch_size", cfg.batchSize, "wait_seconds", cfg.waitSeconds)
 	}
 
 	// Validate route format
@@ -338,7 +339,7 @@ func (c *client) reserveOnce(
 		return nil, fmt.Errorf("reserve failed: %w", err)
 	}
 	if !success {
-		return nil, fmt.Errorf("reserve failed: unexpected status")
+		return nil, errors.New("reserve failed: unexpected status")
 	}
 
 	items, err := parseReserveItems(remaining, route, c.conn)
@@ -356,7 +357,7 @@ func parseReserveItems(remaining []byte, route string, conn *connection.Connecti
 	}
 
 	items := make([]*QueueItem, 0, count)
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		item := &QueueItem{route: route, conn: conn}
 
 		item.ID, offset, err = connection.ReadU64BE(remaining, offset)
@@ -381,7 +382,7 @@ func parseReserveItems(remaining []byte, route string, conn *connection.Connecti
 	}
 
 	if offset != len(remaining) {
-		return nil, fmt.Errorf("reserve response has trailing bytes")
+		return nil, errors.New("reserve response has trailing bytes")
 	}
 
 	return items, nil
@@ -451,7 +452,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Availabi
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.queue.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("queue.Subscribe", "pattern", pattern)
+		log.DebugContext(ctx, "queue.Subscribe", "pattern", pattern)
 	}
 	if err := types.ValidateSelectorRoute(pattern, "queue", 3, true); err != nil {
 		span.RecordError(err)
@@ -518,7 +519,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("subscribe failed: %w", err)
 	}
 	if !success {
-		return 0, fmt.Errorf("subscribe failed: unexpected status")
+		return 0, errors.New("subscribe failed: unexpected status")
 	}
 
 	subID, err := parseSubscriptionID(remaining)
@@ -558,6 +559,6 @@ func parseSubscriptionID(remaining []byte) (uint64, error) {
 		}
 		return subID, nil
 	default:
-		return 0, fmt.Errorf("subscribe response missing subscription_id")
+		return 0, errors.New("subscribe response missing subscription_id")
 	}
 }

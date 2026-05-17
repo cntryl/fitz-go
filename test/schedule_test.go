@@ -3,8 +3,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"os"
-	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -169,23 +167,11 @@ func TestShouldRejectWildcardSubscribeGivenClientValidationWhenSubscribeCalled(t
 }
 
 func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *testing.T) {
-	if os.Getenv("FITZ_RUN_LIVE_SCHEDULE_TEST") != "1" {
-		t.Skip("skipping slow live schedule notification test; set FITZ_RUN_LIVE_SCHEDULE_TEST=1 to enable")
-	}
-
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range bi.Settings {
-			if s.Key == "-race" && s.Value == "true" {
-				t.Skip("skipping live schedule notification test under -race")
-			}
-		}
-	}
-
 	f := fixture.NewTestFixture(t, fixture.TransportTCP)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	f.ConnectOrFail(ctx)
+	require.NoError(t, f.ConnectWithOptions(ctx, fitz.WithReadTimeout(2*time.Minute)))
 	route := f.UniqueRoute("schedule")
 	payload := []byte("live-schedule-payload")
 	received := make(chan []byte, 1)

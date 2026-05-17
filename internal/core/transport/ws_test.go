@@ -4,7 +4,6 @@ package transport
 import (
 	"bufio"
 	"context"
-	"errors"
 	"net/url"
 	"testing"
 	"time"
@@ -263,7 +262,7 @@ func TestShouldTimeoutReadGivenShortDeadlineWhenWSReadCalled(t *testing.T) {
 
 	// Assert
 	assert.Error(t, err)
-	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 // TestShouldCloseGracefullyGivenOpenWSTransportWhenCloseCalled tests WebSocket close behavior.
@@ -309,7 +308,7 @@ func TestShouldRejectWriteGivenCanceledContextWhenWSWriteCalled(t *testing.T) {
 
 	// Assert
 	assert.Error(t, err)
-	assert.True(t, errors.Is(err, context.Canceled))
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 // Mock WebSocket connection is now provided by testkit.MockWSConn from internal/testkit package
@@ -325,7 +324,7 @@ func BenchmarkWriteWSFrame(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = transport.Write(context.Background(), payload)
 		}
 	})
@@ -339,7 +338,7 @@ func BenchmarkWriteWSFrame(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = transport.Write(context.Background(), payload)
 		}
 	})
@@ -355,7 +354,7 @@ func BenchmarkReadWSFrame(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = transport.Read(context.Background())
 	}
 }

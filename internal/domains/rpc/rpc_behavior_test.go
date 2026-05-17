@@ -48,34 +48,32 @@ func rpcWorkerPayload(route, replyRoute string, body []byte) []byte {
 
 func TestShouldDeliverResponseFrameGivenPendingRequestWhenHandleRPCResponseCalled(t *testing.T) {
 	// Arrange
-	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
+	c := &client{pendingRPCs: make(map[[16]byte]*responseStream)}
 	var correlationID [16]byte
 	correlationID[0] = 1
-	ch := make(chan ResponseFrame, 1)
-	c.pendingRPCs[correlationID] = ch
+	stream := newResponseStream()
+	c.pendingRPCs[correlationID] = stream
 
 	// Act
 	c.handleRPCResponse(correlationID, rpcResponsePayload(3, []byte("payload"), false))
 
 	// Assert
-	select {
-	case frame := <-ch:
-		assert.Equal(t, uint64(3), frame.Sequence)
-		assert.Equal(t, []byte("payload"), frame.Body)
-	case <-time.After(time.Second):
-		t.Fatal("response frame not delivered")
-	}
+	frame, ok, err := stream.next(context.Background())
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, uint64(3), frame.Sequence)
+	assert.Equal(t, []byte("payload"), frame.Body)
 	_, stillPending := c.pendingRPCs[correlationID]
 	assert.True(t, stillPending)
 }
 
 func TestShouldCleanupPendingResponseGivenStreamEndWhenHandleRPCResponseCalled(t *testing.T) {
 	// Arrange
-	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
+	c := &client{pendingRPCs: make(map[[16]byte]*responseStream)}
 	var correlationID [16]byte
 	correlationID[0] = 2
-	ch := make(chan ResponseFrame, 1)
-	c.pendingRPCs[correlationID] = ch
+	stream := newResponseStream()
+	c.pendingRPCs[correlationID] = stream
 
 	// Act
 	c.handleRPCResponse(correlationID, rpcResponsePayload(4, nil, true))
@@ -83,31 +81,58 @@ func TestShouldCleanupPendingResponseGivenStreamEndWhenHandleRPCResponseCalled(t
 	// Assert
 	_, stillPending := c.pendingRPCs[correlationID]
 	assert.False(t, stillPending)
-	_, ok := <-ch
+	_, ok, err := stream.next(context.Background())
+	require.NoError(t, err)
 	assert.False(t, ok)
 }
 
 func TestShouldDeliverTerminalResponseFrameGivenBodyWhenHandleRPCResponseCalled(t *testing.T) {
 	// Arrange
-	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
+	c := &client{pendingRPCs: make(map[[16]byte]*responseStream)}
 	var correlationID [16]byte
 	correlationID[0] = 3
-	ch := make(chan ResponseFrame, 1)
-	c.pendingRPCs[correlationID] = ch
+	stream := newResponseStream()
+	c.pendingRPCs[correlationID] = stream
 
 	// Act
 	c.handleRPCResponse(correlationID, rpcResponsePayload(5, []byte("final"), true))
 
 	// Assert
-	frame, ok := <-ch
+	frame, ok, err := stream.next(context.Background())
+	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, uint64(5), frame.Sequence)
 	assert.Equal(t, []byte("final"), frame.Body)
 
 	_, stillPending := c.pendingRPCs[correlationID]
 	assert.False(t, stillPending)
-	_, ok = <-ch
+	_, ok, err = stream.next(context.Background())
+	require.NoError(t, err)
 	assert.False(t, ok)
+}
+
+func TestShouldNotBlockDispatchGivenStoppedConsumerWhenHandleRPCResponseCalled(t *testing.T) {
+	c := &client{pendingRPCs: make(map[[16]byte]*responseStream)}
+	var correlationID [16]byte
+	correlationID[0] = 8
+	stream := newResponseStream()
+	c.pendingRPCs[correlationID] = stream
+	payload := rpcResponsePayload(7, []byte("payload"), false)
+	done := make(chan struct{})
+
+	go func() {
+		for range 128 {
+			c.handleRPCResponse(correlationID, payload)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleRPCResponse blocked behind stopped consumer")
+	}
+	stream.close()
 }
 
 func TestShouldDispatchWorkerRequestGivenRegisteredWorkerWhenHandleWorkerRequestCalled(t *testing.T) {
@@ -117,7 +142,7 @@ func TestShouldDispatchWorkerRequestGivenRegisteredWorkerWhenHandleWorkerRequest
 	c := &client{
 		conn:        conn,
 		workers:     make(map[string]RPCHandler),
-		pendingRPCs: make(map[[16]byte]chan ResponseFrame),
+		pendingRPCs: make(map[[16]byte]*responseStream),
 	}
 	route := "rpc://realm/area/resource"
 	replyRoute := "rpc://realm/area/replies"
@@ -148,7 +173,7 @@ func TestShouldIgnoreMalformedWorkerPayloadGivenShortPayloadWhenHandleWorkerRequ
 	called := false
 	c := &client{
 		workers:     map[string]RPCHandler{"rpc://realm/area/resource": func(context.Context, InboundRequest, ResponseWriter) error { called = true; return nil }},
-		pendingRPCs: make(map[[16]byte]chan ResponseFrame),
+		pendingRPCs: make(map[[16]byte]*responseStream),
 	}
 
 	// Act
@@ -164,7 +189,7 @@ func TestShouldReturnErrorGivenCorrelationIDGenerationFailureWhenCallCalled(t *t
 	client := &client{
 		conn:        conn,
 		workers:     make(map[string]RPCHandler),
-		pendingRPCs: make(map[[16]byte]chan ResponseFrame),
+		pendingRPCs: make(map[[16]byte]*responseStream),
 	}
 	originalReadRandom := readRandom
 	readRandom = func([]byte) (int, error) {
@@ -189,13 +214,13 @@ func TestShouldCleanupPendingRPCGivenContextDeadlineWhenNextCalled(t *testing.T)
 	// Arrange
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	ch := make(chan ResponseFrame)
-	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
+	stream := newResponseStream()
+	c := &client{pendingRPCs: make(map[[16]byte]*responseStream)}
 	var correlationID [16]byte
 	correlationID[0] = 4
-	c.pendingRPCs[correlationID] = ch
+	c.pendingRPCs[correlationID] = stream
 	it := &rpcIterator{
-		ch:            ch,
+		stream:        stream,
 		ctx:           ctx,
 		correlationID: correlationID,
 		client:        c,
@@ -215,13 +240,13 @@ func TestShouldCleanupPendingRPCGivenCanceledContextWhenNextCalled(t *testing.T)
 	// Arrange
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	ch := make(chan ResponseFrame)
-	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
+	stream := newResponseStream()
+	c := &client{pendingRPCs: make(map[[16]byte]*responseStream)}
 	var correlationID [16]byte
 	correlationID[0] = 5
-	c.pendingRPCs[correlationID] = ch
+	c.pendingRPCs[correlationID] = stream
 	it := &rpcIterator{
-		ch:            ch,
+		stream:        stream,
 		ctx:           ctx,
 		correlationID: correlationID,
 		client:        c,

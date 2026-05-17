@@ -93,9 +93,11 @@ type Connection struct {
 	asyncSlotOccupancyMs     metric.Int64Histogram
 
 	// Observability (optional)
-	logger *slog.Logger
-	tracer trace.Tracer
-	meter  metric.Meter
+	logger         *slog.Logger
+	tracer         trace.Tracer
+	meter          metric.Meter
+	metricsEnabled bool
+	tracingEnabled bool
 	// Request observability instruments (REQ-OBS-006)
 	requestDuration metric.Int64Histogram
 	requestErrors   metric.Int64Counter
@@ -188,6 +190,8 @@ func New(trans transport.Transport, cfg Config) *Connection {
 		logger:          cfg.Logger,
 		tracer:          tracer,
 		meter:           meter,
+		metricsEnabled:  cfg.Meter != nil,
+		tracingEnabled:  cfg.Tracer != nil,
 	}
 	conn.initAsyncHandlerMetrics()
 	return conn
@@ -209,7 +213,7 @@ func (c *Connection) Meter() metric.Meter {
 }
 
 func (c *Connection) initAsyncHandlerMetrics() {
-	if c == nil || c.meter == nil {
+	if c == nil || c.meter == nil || !c.metricsEnabled {
 		return
 	}
 	if histogram, err := c.meter.Int64Histogram(
@@ -293,7 +297,7 @@ func (c *Connection) Start(ctx context.Context) error {
 
 	c.setState(StateAuthenticating)
 	if c.logger != nil {
-		c.logger.Info("connection authenticating")
+		c.logger.InfoContext(ctx, "connection authenticating")
 	}
 
 	// Start dispatch loop
@@ -314,7 +318,7 @@ func (c *Connection) Start(ctx context.Context) error {
 	case <-c.authConfirmed:
 		// Auth succeeded (first response received or immediate for anonymous)
 		if c.logger != nil {
-			c.logger.Info("connection authenticated")
+			c.logger.InfoContext(ctx, "connection authenticated")
 		}
 		return nil
 
@@ -347,7 +351,7 @@ func (c *Connection) Start(ctx context.Context) error {
 		}
 		c.confirmAuthentication()
 		if c.logger != nil {
-			c.logger.Info("connection authenticated after silent CONNECT window")
+			c.logger.InfoContext(ctx, "connection authenticated after silent CONNECT window")
 		}
 		return nil
 	}
@@ -363,7 +367,7 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 	payload := []byte(c.token)
 	frame := protocol.EncodeFrameOwned(protocol.MessageTypeConnect, payload)
 	if frame == nil {
-		err := fmt.Errorf("encode CONNECT frame")
+		err := errors.New("encode CONNECT frame")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -509,45 +513,50 @@ func (c *Connection) handleReadError(err error) {
 // SendRequest sends a synchronous request and waits for response.
 // Used by domain client implementations.
 func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []byte) (_ []byte, retErr error) {
-	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	var span trace.Span = traceNoop.Span{}
+	if c.tracingEnabled {
+		ctx, span = c.tracer.Start(ctx, "fitz.connection.send_request", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	}
 	defer span.End()
-	metricCtx := c.LifecycleContext()
+	if c.metricsEnabled {
+		metricCtx := c.LifecycleContext()
 
-	reqStart := time.Now()
-	defer func() {
-		attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
-		if c.requestDuration != nil {
-			c.requestDuration.Record(metricCtx, time.Since(reqStart).Milliseconds(), attrs)
-		}
-		if retErr != nil && c.requestErrors != nil {
-			errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
-			var de *coreerrors.DomainError
-			if errors.As(retErr, &de) {
-				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", int64(de.Code)))
-			} else {
-				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
+		reqStart := time.Now()
+		defer func() {
+			attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
+			if c.requestDuration != nil {
+				c.requestDuration.Record(metricCtx, time.Since(reqStart).Milliseconds(), attrs)
 			}
-			c.requestErrors.Add(metricCtx, 1, metric.WithAttributes(errorAttrs...))
-		}
-	}()
+			if retErr != nil && c.requestErrors != nil {
+				errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
+				var de *coreerrors.DomainError
+				if errors.As(retErr, &de) {
+					errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", int64(de.Code)))
+				} else {
+					errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
+				}
+				c.requestErrors.Add(metricCtx, 1, metric.WithAttributes(errorAttrs...))
+			}
+		}()
+	}
 
 	if !c.isAuthenticated() {
 		span.SetStatus(codes.Error, ErrNotAuthenticated.Error())
 		return nil, ErrNotAuthenticated
 	}
 
-	releaseRequestSlot, ok := c.AcquireRequestSlot(ctx)
+	ok := c.AcquireRequestSlot(ctx)
 	if !ok {
 		err := c.outboundAdmissionError(ctx)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
-	defer releaseRequestSlot()
+	defer c.ReleaseRequestSlot()
 
 	frame := protocol.EncodeFrameOwned(msgType, payload)
 	if frame == nil {
-		err := fmt.Errorf("encode frame")
+		err := errors.New("encode frame")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -556,7 +565,7 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 
 	responseChan := make(chan []byte, 1)
 	if c.logger != nil {
-		c.logger.Debug("request sent", "msg_type", msgType)
+		c.logger.DebugContext(ctx, "request sent", "msg_type", msgType)
 	}
 
 	writeCtx := ctx
@@ -614,41 +623,46 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 
 // SendRequestWithWriter sends a request using a payload writer to avoid allocations.
 func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, writePayload func(*bytes.Buffer)) (_ []byte, retErr error) {
-	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	var span trace.Span = traceNoop.Span{}
+	if c.tracingEnabled {
+		ctx, span = c.tracer.Start(ctx, "fitz.connection.send_request_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	}
 	defer span.End()
-	metricCtx := c.LifecycleContext()
+	if c.metricsEnabled {
+		metricCtx := c.LifecycleContext()
 
-	reqStart := time.Now()
-	defer func() {
-		attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
-		if c.requestDuration != nil {
-			c.requestDuration.Record(metricCtx, time.Since(reqStart).Milliseconds(), attrs)
-		}
-		if retErr != nil && c.requestErrors != nil {
-			errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
-			var de *coreerrors.DomainError
-			if errors.As(retErr, &de) {
-				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", int64(de.Code)))
-			} else {
-				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
+		reqStart := time.Now()
+		defer func() {
+			attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
+			if c.requestDuration != nil {
+				c.requestDuration.Record(metricCtx, time.Since(reqStart).Milliseconds(), attrs)
 			}
-			c.requestErrors.Add(metricCtx, 1, metric.WithAttributes(errorAttrs...))
-		}
-	}()
+			if retErr != nil && c.requestErrors != nil {
+				errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
+				var de *coreerrors.DomainError
+				if errors.As(retErr, &de) {
+					errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", int64(de.Code)))
+				} else {
+					errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
+				}
+				c.requestErrors.Add(metricCtx, 1, metric.WithAttributes(errorAttrs...))
+			}
+		}()
+	}
 
 	if !c.isAuthenticated() {
 		span.SetStatus(codes.Error, ErrNotAuthenticated.Error())
 		return nil, ErrNotAuthenticated
 	}
 
-	releaseRequestSlot, ok := c.AcquireRequestSlot(ctx)
+	ok := c.AcquireRequestSlot(ctx)
 	if !ok {
 		err := c.outboundAdmissionError(ctx)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
-	defer releaseRequestSlot()
+	defer c.ReleaseRequestSlot()
 
 	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
@@ -661,7 +675,7 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 
 	responseChan := make(chan []byte, 1)
 	if c.logger != nil {
-		c.logger.Debug("request sent", "msg_type", msgType)
+		c.logger.DebugContext(ctx, "request sent", "msg_type", msgType)
 	}
 
 	writeCtx := ctx
@@ -720,7 +734,10 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 // SendFireAndForget sends a frame without expecting a response.
 // Used for operations like Notice PUBLISH or RPC response where the server does not reply.
 func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payload []byte) error {
-	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_fire_and_forget", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	var span trace.Span = traceNoop.Span{}
+	if c.tracingEnabled {
+		ctx, span = c.tracer.Start(ctx, "fitz.connection.send_fire_and_forget", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	}
 	defer span.End()
 
 	if !c.isAuthenticated() {
@@ -728,18 +745,18 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 		return ErrNotAuthenticated
 	}
 
-	releaseRequestSlot, ok := c.AcquireRequestSlot(ctx)
+	ok := c.AcquireRequestSlot(ctx)
 	if !ok {
 		err := c.outboundAdmissionError(ctx)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	defer releaseRequestSlot()
+	defer c.ReleaseRequestSlot()
 
 	frame := protocol.EncodeFrameOwned(msgType, payload)
 	if frame == nil {
-		err := fmt.Errorf("encode frame")
+		err := errors.New("encode frame")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -768,7 +785,10 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 
 // SendFireAndForgetWithWriter sends a fire-and-forget frame using a payload writer.
 func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType uint16, writePayload func(*bytes.Buffer)) error {
-	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_fire_and_forget_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	var span trace.Span = traceNoop.Span{}
+	if c.tracingEnabled {
+		ctx, span = c.tracer.Start(ctx, "fitz.connection.send_fire_and_forget_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
+	}
 	defer span.End()
 
 	if !c.isAuthenticated() {
@@ -776,14 +796,14 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 		return ErrNotAuthenticated
 	}
 
-	releaseRequestSlot, ok := c.AcquireRequestSlot(ctx)
+	ok := c.AcquireRequestSlot(ctx)
 	if !ok {
 		err := c.outboundAdmissionError(ctx)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	defer releaseRequestSlot()
+	defer c.ReleaseRequestSlot()
 
 	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
@@ -965,24 +985,29 @@ func (c *Connection) MaxInFlightRequests() int {
 
 // AcquireRequestSlot acquires a concurrency slot for outbound request admission.
 // It returns false if acquisition was canceled by context shutdown/deadline.
-func (c *Connection) AcquireRequestSlot(ctx context.Context) (release func(), ok bool) {
-	noop := func() {}
+func (c *Connection) AcquireRequestSlot(ctx context.Context) bool {
 	if c == nil || c.requestSem == nil {
-		return noop, true
+		return true
 	}
 	if ctx == nil {
 		ctx = c.LifecycleContext()
 	}
 	select {
 	case c.requestSem <- struct{}{}:
-		return func() {
-			<-c.requestSem
-		}, true
+		return true
 	case <-ctx.Done():
-		return noop, false
+		return false
 	case <-c.done:
-		return noop, false
+		return false
 	}
+}
+
+// ReleaseRequestSlot releases a previously acquired outbound request slot.
+func (c *Connection) ReleaseRequestSlot() {
+	if c == nil || c.requestSem == nil {
+		return
+	}
+	<-c.requestSem
 }
 
 // AcquireAsyncHandlerSlot acquires a concurrency slot for async handler execution.

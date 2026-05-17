@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -50,7 +51,7 @@ func doClientHandshake(conn net.Conn, host, path string) (*bufio.Reader, error) 
 
 	accept := hdrs.Get("Sec-WebSocket-Accept")
 	if accept == "" {
-		return nil, fmt.Errorf("missing Sec-WebSocket-Accept header")
+		return nil, errors.New("missing Sec-WebSocket-Accept header")
 	}
 
 	// validate accept
@@ -262,7 +263,7 @@ func readFrame(r io.Reader) (byte, []byte, error) {
 		if _, err := io.ReadFull(r, ex[:8]); err != nil {
 			return 0, nil, err
 		}
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			length = (length << 8) | uint64(ex[i])
 		}
 	}
