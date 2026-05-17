@@ -265,6 +265,23 @@ func TestShouldRespectLimitGivenScanLimitWhenScanCalled(t *testing.T) {
 	})
 }
 
+func TestShouldRejectInvertedRangeGivenScanQueryWhenScanCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrFail(ctx)
+		route := f.UniqueRoute("kv")
+
+		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		require.NoError(t, err)
+		_, _, err = tx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("z"), EndKey: []byte("a"), Limit: 10})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fitz.ErrKVInvalidRange)
+	})
+}
+
 func TestShouldRollbackChangesGivenActiveTransactionWhenRollbackCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
