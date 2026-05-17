@@ -145,3 +145,23 @@ func TestShouldDispatchHandlersGivenIncomingNotifyFramesWhenStartCalled(t *testi
 	}
 	require.NoError(t, conn.Close())
 }
+
+func TestShouldReturnGivenCloseBeforeStartWhenCloseCalled(t *testing.T) {
+	transport := testkit.NewMockTransport()
+	conn := New(transport, DefaultConfig())
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- conn.Close()
+	}()
+
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("close blocked before start")
+	}
+
+	require.ErrorIs(t, conn.Start(context.Background()), ErrConnectionClosed)
+	assert.Equal(t, StateClosed, conn.State())
+}

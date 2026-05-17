@@ -7,6 +7,8 @@ import (
 	"sync"
 )
 
+const pooledBufferMaxCap = 64 * 1024
+
 // bufferPool provides buffer pooling for frame encoding
 var bufferPool = sync.Pool{
 	New: func() interface{} {
@@ -53,6 +55,9 @@ func getBuffer() *bytes.Buffer {
 // putBuffer returns a buffer to the pool
 func putBuffer(buf *bytes.Buffer) {
 	buf.Reset()
+	if buf.Cap() > pooledBufferMaxCap {
+		return
+	}
 	bufferPool.Put(buf)
 }
 
@@ -111,6 +116,9 @@ func DecodeMessageType(data []byte) (msgType uint16, bytesRead int, err error) {
 		return 0, 0, fmt.Errorf("insufficient data for escaped message type")
 	}
 	msgType = binary.BigEndian.Uint16(data[1:3])
+	if msgType <= 254 {
+		return 0, 0, fmt.Errorf("non-canonical escaped message type: %d", msgType)
+	}
 	return msgType, 3, nil
 }
 
@@ -136,6 +144,11 @@ func EncodeFrameOwned(msgType uint16, payload []byte) *FrameBuffer {
 	}
 
 	buf := getBuffer()
+	headerSize := 1
+	if msgType > 254 {
+		headerSize = 3
+	}
+	buf.Grow(headerSize + 2 + len(payload))
 
 	// Write message type (variable length)
 	if msgType <= 254 {
@@ -162,6 +175,11 @@ func EncodeFrameWithPayloadWriter(msgType uint16, writePayload func(*bytes.Buffe
 	}
 
 	buf := getBuffer()
+	headerSize := 1
+	if msgType > 254 {
+		headerSize = 3
+	}
+	buf.Grow(headerSize + 2)
 
 	// Write message type (variable length)
 	if msgType <= 254 {
@@ -213,6 +231,9 @@ func DecodeFrame(data []byte) (msgType uint16, payload []byte, err error) {
 	if len(data) < offset+int(length) {
 		return 0, nil, fmt.Errorf("insufficient data for payload: need %d, have %d", length, len(data)-offset)
 	}
+	if len(data) != offset+int(length) {
+		return 0, nil, fmt.Errorf("unexpected trailing bytes after frame payload")
+	}
 
 	payload = data[offset : offset+int(length)]
 	return msgType, payload, nil
@@ -241,10 +262,16 @@ func EncodeTCPFrameOwned(msgType uint16, payload []byte) *FrameBuffer {
 	}
 
 	buf := getBuffer()
+	headerSize := 1
+	if msgType > 254 {
+		headerSize = 3
+	}
+	buf.Grow(4 + headerSize + 2 + len(payload))
 
 	// Reserve space for frame length (will write later)
 	lengthPos := buf.Len()
-	buf.Write([]byte{0, 0, 0, 0}) // Placeholder for u32 length
+	var zeroPrefix [4]byte
+	buf.Write(zeroPrefix[:])
 
 	// Write message type (variable length)
 	if msgType <= 254 {

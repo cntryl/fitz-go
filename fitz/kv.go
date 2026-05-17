@@ -33,8 +33,7 @@ const (
 )
 
 type kvBeginConfig struct {
-	mode       KVMode
-	durability KVDurabilityMode
+	mode KVMode
 }
 
 type KVBeginOption func(*kvBeginConfig)
@@ -42,12 +41,6 @@ type KVBeginOption func(*kvBeginConfig)
 func WithKVMode(mode KVMode) KVBeginOption {
 	return func(cfg *kvBeginConfig) {
 		cfg.mode = mode
-	}
-}
-
-func WithKVDurability(mode KVDurabilityMode) KVBeginOption {
-	return func(cfg *kvBeginConfig) {
-		cfg.durability = mode
 	}
 }
 
@@ -68,7 +61,7 @@ type KVTx interface {
 }
 
 type KVClient interface {
-	Begin(ctx context.Context, route string, opts ...KVBeginOption) (KVTx, error)
+	Begin(ctx context.Context, route string, durability KVDurabilityMode, opts ...KVBeginOption) (KVTx, error)
 }
 
 type kvClient struct {
@@ -84,10 +77,9 @@ type kvPairIterator struct {
 	current KVPair
 }
 
-func (c *kvClient) Begin(ctx context.Context, route string, opts ...KVBeginOption) (KVTx, error) {
+func (c *kvClient) Begin(ctx context.Context, route string, durability KVDurabilityMode, opts ...KVBeginOption) (KVTx, error) {
 	cfg := kvBeginConfig{
-		mode:       KVModeReadWrite,
-		durability: KVDurabilityBuffered,
+		mode: KVModeReadWrite,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -98,8 +90,8 @@ func (c *kvClient) Begin(ctx context.Context, route string, opts ...KVBeginOptio
 	tx, err := c.inner.Begin(
 		ctx,
 		route,
+		uint8(durability),
 		internalkv.WithMode(uint8(cfg.mode)),
-		internalkv.WithDurability(uint8(cfg.durability)),
 	)
 	if err != nil {
 		return nil, err

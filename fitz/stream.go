@@ -7,18 +7,42 @@ import (
 )
 
 type StreamRecord struct {
-	Offset uint64
-	Body   []byte
+	Offset      uint64
+	AreaOffset  *uint64
+	RealmOffset *uint64
+	Body        []byte
+	Metadata    []byte
+	Timestamp   uint64
 }
 
 type StreamMetadata struct {
-	FirstOffset uint64
-	LastOffset  uint64
-	RecordCount uint64
+	FirstOffset    uint64
+	LastOffset     uint64
+	RecordCount    uint64
+	MaxBatchEvents uint64
+	MaxBatchBytes  uint64
+	TTLSeconds     *uint64
+	AreaWatermark  uint64
+	RealmWatermark uint64
 }
 
+type StreamCommitMode uint8
+
+const (
+	StreamCommitBuffered StreamCommitMode = StreamCommitMode(internalstream.CommitModeBuffered)
+	StreamCommitSync     StreamCommitMode = StreamCommitMode(internalstream.CommitModeSync)
+)
+
 type StreamCommitNotification struct {
-	Route string
+	Route               string
+	Event               string
+	FirstResourceOffset uint64
+	LastResourceOffset  uint64
+	FirstAreaOffset     uint64
+	LastAreaOffset      uint64
+	FirstRealmOffset    uint64
+	LastRealmOffset     uint64
+	BatchSize           uint64
 }
 
 type StreamCommitHandler func(context.Context, StreamCommitNotification) error
@@ -34,13 +58,13 @@ func (s *StreamSubscription) Unsubscribe() {
 }
 
 type StreamSession interface {
-	Append(ctx context.Context, body []byte) (offset uint64, err error)
-	Commit(ctx context.Context) error
+	Append(ctx context.Context, expectedOffset uint64, body []byte) (offset uint64, err error)
+	Commit(ctx context.Context, mode StreamCommitMode) error
 	Rollback(ctx context.Context) error
 }
 
 type StreamClient interface {
-	Begin(ctx context.Context, route string, expectedOffset uint64) (StreamSession, error)
+	Begin(ctx context.Context, route string) (StreamSession, error)
 	Read(ctx context.Context, route string, fromOffset uint64, limit uint64) (Iterator[StreamRecord], error)
 	Peek(ctx context.Context, route string) (*StreamRecord, error)
 	Metadata(ctx context.Context, route string) (*StreamMetadata, error)
@@ -60,8 +84,8 @@ type streamRecordIterator struct {
 	current StreamRecord
 }
 
-func (c *streamClient) Begin(ctx context.Context, route string, expectedOffset uint64) (StreamSession, error) {
-	session, err := c.inner.Begin(ctx, route, expectedOffset)
+func (c *streamClient) Begin(ctx context.Context, route string) (StreamSession, error) {
+	session, err := c.inner.Begin(ctx, route)
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +106,12 @@ func (c *streamClient) Peek(ctx context.Context, route string) (*StreamRecord, e
 		return nil, err
 	}
 	return &StreamRecord{
-		Offset: record.Offset,
-		Body:   append([]byte(nil), record.Body...),
+		Offset:      record.Offset,
+		AreaOffset:  cloneUint64Ptr(record.AreaOffset),
+		RealmOffset: cloneUint64Ptr(record.RealmOffset),
+		Body:        append([]byte(nil), record.Body...),
+		Metadata:    append([]byte(nil), record.Metadata...),
+		Timestamp:   record.Timestamp,
 	}, nil
 }
 
@@ -93,15 +121,30 @@ func (c *streamClient) Metadata(ctx context.Context, route string) (*StreamMetad
 		return nil, err
 	}
 	return &StreamMetadata{
-		FirstOffset: meta.FirstOffset,
-		LastOffset:  meta.LastOffset,
-		RecordCount: meta.RecordCount,
+		FirstOffset:    meta.FirstOffset,
+		LastOffset:     meta.LastOffset,
+		RecordCount:    meta.RecordCount,
+		MaxBatchEvents: meta.MaxBatchEvents,
+		MaxBatchBytes:  meta.MaxBatchBytes,
+		TTLSeconds:     cloneUint64Ptr(meta.TTLSeconds),
+		AreaWatermark:  meta.AreaWatermark,
+		RealmWatermark: meta.RealmWatermark,
 	}, nil
 }
 
 func (c *streamClient) Subscribe(ctx context.Context, pattern string, handler StreamCommitHandler) (*StreamSubscription, error) {
 	subscription, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notif internalstream.CommitNotification) error {
-		return handler(ctx, StreamCommitNotification{Route: notif.Route})
+		return handler(ctx, StreamCommitNotification{
+			Route:               notif.Route,
+			Event:               notif.Event,
+			FirstResourceOffset: notif.FirstResourceOffset,
+			LastResourceOffset:  notif.LastResourceOffset,
+			FirstAreaOffset:     notif.FirstAreaOffset,
+			LastAreaOffset:      notif.LastAreaOffset,
+			FirstRealmOffset:    notif.FirstRealmOffset,
+			LastRealmOffset:     notif.LastRealmOffset,
+			BatchSize:           notif.BatchSize,
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -109,12 +152,12 @@ func (c *streamClient) Subscribe(ctx context.Context, pattern string, handler St
 	return &StreamSubscription{inner: subscription}, nil
 }
 
-func (s *streamSession) Append(ctx context.Context, body []byte) (offset uint64, err error) {
-	return s.inner.Append(ctx, body)
+func (s *streamSession) Append(ctx context.Context, expectedOffset uint64, body []byte) (offset uint64, err error) {
+	return s.inner.Append(ctx, expectedOffset, body)
 }
 
-func (s *streamSession) Commit(ctx context.Context) error {
-	return s.inner.Commit(ctx)
+func (s *streamSession) Commit(ctx context.Context, mode StreamCommitMode) error {
+	return s.inner.Commit(ctx, internalstream.CommitMode(mode))
 }
 
 func (s *streamSession) Rollback(ctx context.Context) error {
@@ -127,8 +170,12 @@ func (it *streamRecordIterator) Next() bool {
 	}
 	record := it.inner.Value()
 	it.current = StreamRecord{
-		Offset: record.Offset,
-		Body:   append([]byte(nil), record.Body...),
+		Offset:      record.Offset,
+		AreaOffset:  cloneUint64Ptr(record.AreaOffset),
+		RealmOffset: cloneUint64Ptr(record.RealmOffset),
+		Body:        append([]byte(nil), record.Body...),
+		Metadata:    append([]byte(nil), record.Metadata...),
+		Timestamp:   record.Timestamp,
 	}
 	return true
 }
@@ -143,4 +190,12 @@ func (it *streamRecordIterator) Err() error {
 
 func (it *streamRecordIterator) Close() error {
 	return it.inner.Close()
+}
+
+func cloneUint64Ptr(value *uint64) *uint64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }

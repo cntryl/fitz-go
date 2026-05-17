@@ -68,11 +68,13 @@ func EncodeWithBufferOwned(fn func(*bytes.Buffer)) *OwnedBuffer {
 
 // WriteU64 writes a uint64 in big-endian format.
 func WriteU64(buf *bytes.Buffer, v uint64) {
+	buf.Grow(8)
 	connection.WriteU64BE(buf, v)
 }
 
 // WriteU32 writes a uint32 in big-endian format.
 func WriteU32(buf *bytes.Buffer, v uint32) {
+	buf.Grow(4)
 	connection.WriteU32BE(buf, v)
 }
 
@@ -81,8 +83,10 @@ func WriteU32(buf *bytes.Buffer, v uint32) {
 func WriteOptionalU64(buf *bytes.Buffer, v uint64) {
 	if v == 0 {
 		// Treat 0 as not provided (matches server default behavior)
+		buf.Grow(1)
 		buf.WriteByte(0)
 	} else {
+		buf.Grow(9)
 		buf.WriteByte(1)
 		connection.WriteU64BE(buf, v)
 	}
@@ -91,6 +95,7 @@ func WriteOptionalU64(buf *bytes.Buffer, v uint64) {
 // WriteString writes a length-prefixed string: [u32 length][bytes].
 // This is the most common pattern across all domains.
 func WriteString(buf *bytes.Buffer, s string) {
+	buf.Grow(4 + len(s))
 	connection.WriteU32BE(buf, uint32(len(s)))
 	buf.WriteString(s)
 }
@@ -98,6 +103,7 @@ func WriteString(buf *bytes.Buffer, s string) {
 // WriteBytes writes length-prefixed bytes: [u32 length][bytes].
 // This is the standard pattern for keys, values, and payloads.
 func WriteBytes(buf *bytes.Buffer, data []byte) {
+	buf.Grow(4 + len(data))
 	connection.WriteU32BE(buf, uint32(len(data)))
 	buf.Write(data)
 }

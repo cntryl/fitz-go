@@ -118,6 +118,35 @@ func TestShouldReserveBatchGivenMultipleMessagesWhenBatchSizeSpecified(t *testin
 	})
 }
 
+func TestShouldLongPollGivenReserveWithOptionsWhenMessageArrivesLater(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		consumer := fixture.NewTestFixture(t, transport)
+		producer := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		consumer.ConnectOrFail(ctx)
+		producer.ConnectOrFail(ctx)
+		route := consumer.UniqueRoute("queue")
+
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			_, _ = producer.Client().Queue().Enqueue(ctx, route, []byte("late-msg"))
+		}()
+
+		items, err := consumer.Client().Queue().ReserveWithOptions(
+			ctx,
+			route,
+			30,
+			fitz.WithQueueReserveBatchSize(1),
+			fitz.WithQueueReserveWaitSeconds(2),
+		)
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		assert.Equal(t, []byte("late-msg"), items[0].Body)
+	})
+}
+
 func TestShouldDistributeMessagesGivenMultipleConsumersWhenConcurrentReserve(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f1 := fixture.NewTestFixture(t, transport)

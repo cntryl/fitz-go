@@ -65,6 +65,23 @@ Use one control plane for request lifetime: `context.Context`.
 - Schedule/Notice/Queue/Lease/Stream subscription handlers return `error`.
 - Streaming iterators should be closed when no longer needed.
 
+Connection lifecycle is part of the stable public API:
+
+- `Disconnected`: before `Connect` and after an unrecoverable disconnect
+- `Connecting`: transport dial/handshake in progress
+- `Connected`: transport established, auth not yet settled
+- `Authenticating`: CONNECT/auth exchange in progress
+- `Authenticated`: ready for domain traffic
+- `Reconnecting`: automatic reconnect loop is actively retrying
+- `Closed`: client has been closed and will not reconnect
+
+Reconnect guarantees:
+
+- Automatic reconnect only runs when configured with `fitz.WithReconnect(...)`.
+- Notice, stream, lease, queue, and schedule subscriptions are restored after reconnect.
+- RPC worker registrations are restored after reconnect.
+- `Close()` is idempotent and permanently ends reconnect activity.
+
 RPC timeout pattern:
 
 ```go
@@ -88,7 +105,7 @@ if err := iter.Err(); err != nil {
 Schedule subscription handler pattern:
 
 ```go
-sub, err := client.Schedule().Subscribe(ctx, "schedule://realm/area/*", func(ctx context.Context, n fitz.ScheduleNotification) error {
+sub, err := client.Schedule().Subscribe(ctx, "schedule://realm/area/resource/run", func(ctx context.Context, n fitz.ScheduleNotification) error {
 	_ = n
 	return nil
 })
@@ -113,7 +130,7 @@ defer sub.Unsubscribe()
 Integration tests target a running Fitz broker and are part of the default
 verification bar for this repo.
 
-Use the local compose stack in [compose.yml](/D:/repos/cntryl/fitz/fitz-go/compose.yml):
+Use the local compose stack in [compose.yml](compose.yml):
 
 ```bash
 docker compose -f compose.yml up -d
@@ -148,6 +165,12 @@ Run the full suite with:
 ```bash
 go test ./test/...
 go test ./...
+```
+
+Or use the repo-local verification script:
+
+```powershell
+./scripts/verify.ps1
 ```
 
 Run the repo-local spec-compliance conformance suite with:
@@ -209,8 +232,14 @@ Install `benchstat` once if needed with `go install golang.org/x/perf/cmd/benchs
 This repo does not maintain an independent copy of the protocol specification.
 Use the canonical server-owned docs referenced from:
 
-- `docs/CLIENT_SPEC.md`
-- `docs/CLIENT_ACCEPTANCE_CRITERIA.md`
+- [docs/CLIENT_SPEC.md](docs/CLIENT_SPEC.md)
+- [docs/CLIENT_ACCEPTANCE_CRITERIA.md](docs/CLIENT_ACCEPTANCE_CRITERIA.md)
+
+## Documentation
+
+- [docs/README.md](docs/README.md)
+- [docs/CLIENT_SPEC.md](docs/CLIENT_SPEC.md)
+- [docs/CLIENT_ACCEPTANCE_CRITERIA.md](docs/CLIENT_ACCEPTANCE_CRITERIA.md)
 
 ## Message type and conformance coverage map
 

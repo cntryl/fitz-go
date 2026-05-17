@@ -113,3 +113,9 @@ func TestShouldReturnErrorGivenOversizedValueWhenAddTagCalled(t *testing.T) {
 	require.Error(t, enc.Err())
 	require.Nil(t, enc.Encode())
 }
+
+func TestShouldRejectNonCanonicalEscapedOpTagWhenDecoding(t *testing.T) {
+	_, _, err := DecodeOpTag([]byte{0xFF, 0x00, 0x01})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-canonical")
+}

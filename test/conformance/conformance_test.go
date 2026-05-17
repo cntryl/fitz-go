@@ -1,7 +1,7 @@
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
 // Covers all 19 scenarios: the 15 scenarios defined in the cross-language spec plus
-// 4 domain-lifecycle scenarios (CS-016–CS-019) added in the Go client to close
+// 4 domain-lifecycle scenarios (CS-016â€“CS-019) added in the Go client to close
 // coverage gaps for Queue, Lease, Notice, and Schedule domains:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
@@ -189,6 +189,9 @@ func uniqueRoute(scheme string) string {
 	routeCounterMu.Unlock()
 
 	id := fmt.Sprintf("%d-%d-%d", time.Now().UnixNano(), n, rand.IntN(1_000_000))
+	if scheme == "schedule" {
+		return fmt.Sprintf("%s://conformance/%s/res/run", scheme, id)
+	}
 	return fmt.Sprintf("%s://conformance/%s/res", scheme, id)
 }
 
@@ -238,7 +241,7 @@ func run(
 }
 
 // ---------------------------------------------------------------------------
-// TestMain — writes aggregate JSON after all scenarios
+// TestMain â€” writes aggregate JSON after all scenarios
 // ---------------------------------------------------------------------------
 
 func TestMain(m *testing.M) {
@@ -278,7 +281,7 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("kv")
-			tx, err := f.Client().KV().Begin(ctx, route)
+			tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("kv begin: %w", err)
 			}
@@ -314,9 +317,9 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictPass, ev, nil
 			}
 
-			// Didn't fail on connect — check domain access
+			// Didn't fail on connect â€” check domain access
 			ev = append(ev, "connect did not error (TCP silent-close model)")
-			_, kvErr := f.Client().KV().Begin(ctx, uniqueRoute("kv"))
+			_, kvErr := f.Client().KV().Begin(ctx, uniqueRoute("kv"), fitz.KVDurabilitySync)
 			if kvErr != nil {
 				ev = append(ev, fmt.Sprintf("domain request failed post-auth-close: %v", kvErr))
 				return VerdictPartial, ev, nil
@@ -338,7 +341,7 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("kv")
-			tx, err := f.Client().KV().Begin(ctx, route)
+			tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("begin: %w", err)
 			}
@@ -350,7 +353,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, "kv begin/put/commit succeeded")
 
-			rtx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
+			rtx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("read begin: %w", err)
 			}
@@ -400,7 +403,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Client must remain usable
 			route := uniqueRoute("kv")
-			tx, txErr := f.Client().KV().Begin(ctx, route)
+			tx, txErr := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable after error: %w", txErr)
 			}
@@ -423,7 +426,7 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("kv")
-			tx1, err := f.Client().KV().Begin(ctx, route)
+			tx1, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("begin: %w", err)
 			}
@@ -435,7 +438,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, "first insert succeeded")
 
-			tx2, err := f.Client().KV().Begin(ctx, route)
+			tx2, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("second begin: %w", err)
 			}
@@ -447,7 +450,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, fmt.Sprintf("duplicate insert returned error: %v", insertErr))
 
-			rtx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
+			rtx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable: %w", err)
 			}
@@ -494,11 +497,11 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Also verify kv conflict produces typed error
 			kvRoute := uniqueRoute("kv")
-			tx, _ := f.Client().KV().Begin(ctx, kvRoute)
+			tx, _ := f.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
 			_ = tx.Insert(ctx, []byte("x"), []byte("1"))
 			_ = tx.Commit(ctx)
 
-			tx2, _ := f.Client().KV().Begin(ctx, kvRoute)
+			tx2, _ := f.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
 			kvErr := tx2.Insert(ctx, []byte("x"), []byte("2"))
 			_ = tx2.Rollback(ctx)
 			ev = append(ev, fmt.Sprintf("kv conflict error type: %T, value: %v", kvErr, kvErr))
@@ -541,7 +544,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Connection must remain healthy
 			kvRoute := uniqueRoute("kv")
-			tx, err2 := f.Client().KV().Begin(ctx, kvRoute)
+			tx, err2 := f.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
 			if err2 != nil {
 				return VerdictFail, ev, fmt.Errorf("connection not healthy after timeout: %w", err2)
 			}
@@ -602,7 +605,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Subsequent request must succeed
 			kvRoute := uniqueRoute("kv")
-			tx, txErr := fCaller.Client().KV().Begin(ctx, kvRoute)
+			tx, txErr := fCaller.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("subsequent request failed: %w", txErr)
 			}
@@ -650,7 +653,7 @@ func TestConformanceSuite(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 			callCancel()
 			if closeErr := fCaller.Client().Close(); closeErr != nil {
-				// Close may fail if already closed — acceptable
+				// Close may fail if already closed â€” acceptable
 				ev = append(ev, fmt.Sprintf("close warning: %v", closeErr))
 			}
 
@@ -659,7 +662,7 @@ func TestConformanceSuite(t *testing.T) {
 			iter.Close()
 
 			if iterErr == nil {
-				ev = append(ev, "WARNING: in-flight request succeeded despite disconnect (race — acceptable)")
+				ev = append(ev, "WARNING: in-flight request succeeded despite disconnect (race â€” acceptable)")
 				return VerdictPartial, ev, nil
 			}
 			ev = append(ev, fmt.Sprintf("in-flight request failed: %v", iterErr))
@@ -690,7 +693,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			f2 := connectFixture(t)
 			route := uniqueRoute("kv")
-			tx, err := f2.Client().KV().Begin(ctx, route)
+			tx, err := f2.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("new requests failed after reconnect: %w", err)
 			}
@@ -714,16 +717,18 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("stream")
-			sess, err := f.Client().Stream().Begin(ctx, route, 0)
+			sess, err := f.Client().Stream().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("stream begin: %w", err)
 			}
+			var expectedOffset uint64
 			for i := range 3 {
-				if _, err := sess.Append(ctx, []byte{byte(i * 10)}); err != nil {
+				if _, err := sess.Append(ctx, expectedOffset, []byte{byte(i * 10)}); err != nil {
 					return VerdictFail, ev, fmt.Errorf("append %d: %w", i, err)
 				}
+				expectedOffset++
 			}
-			if err := sess.Commit(ctx); err != nil {
+			if err := sess.Commit(ctx, fitz.StreamCommitSync); err != nil {
 				return VerdictFail, ev, fmt.Errorf("commit: %w", err)
 			}
 			ev = append(ev, "stream session appended 3 records")
@@ -769,13 +774,13 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("stream")
-			sess, err := f.Client().Stream().Begin(ctx, route, 0)
+			sess, err := f.Client().Stream().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("begin: %w", err)
 			}
-			_, _ = sess.Append(ctx, []byte("first"))
-			_, _ = sess.Append(ctx, []byte("last"))
-			if err := sess.Commit(ctx); err != nil {
+			_, _ = sess.Append(ctx, 0, []byte("first"))
+			_, _ = sess.Append(ctx, 1, []byte("last"))
+			if err := sess.Commit(ctx, fitz.StreamCommitSync); err != nil {
 				return VerdictFail, ev, fmt.Errorf("commit: %w", err)
 			}
 			ev = append(ev, "stream session committed")
@@ -811,26 +816,30 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("stream")
-			sess, err := f.Client().Stream().Begin(ctx, route, 0)
+			sess, err := f.Client().Stream().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("begin: %w", err)
 			}
-			_, _ = sess.Append(ctx, []byte("record-1"))
-			if err := sess.Commit(ctx); err != nil {
+			_, _ = sess.Append(ctx, 0, []byte("record-1"))
+			if err := sess.Commit(ctx, fitz.StreamCommitSync); err != nil {
 				return VerdictFail, ev, fmt.Errorf("commit: %w", err)
 			}
 			ev = append(ev, "written first record at offset 0")
 
-			// begin with wrong expected offset — server should reject
-			_, beginErr := f.Client().Stream().Begin(ctx, route, 0)
-			if beginErr == nil {
+			// append with wrong expected offset â€” server should reject
+			wrongSession, err := f.Client().Stream().Begin(ctx, route)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("second begin: %w", err)
+			}
+			_, appendErr := wrongSession.Append(ctx, 0, []byte("record-2"))
+			if appendErr == nil {
 				return VerdictFail, ev, fmt.Errorf("expected error on wrong expected offset, got nil")
 			}
-			ev = append(ev, fmt.Sprintf("begin with wrong offset errored: %v", beginErr))
+			ev = append(ev, fmt.Sprintf("append with wrong offset errored: %v", appendErr))
 
 			// Client must remain usable
 			kvRoute := uniqueRoute("kv")
-			tx, txErr := f.Client().KV().Begin(ctx, kvRoute)
+			tx, txErr := f.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable: %w", txErr)
 			}
@@ -863,7 +872,7 @@ func TestConformanceSuite(t *testing.T) {
 			for i, route := range routes {
 				i, route := i, route
 				go func() {
-					tx, err := f.Client().KV().Begin(ctx, route)
+					tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 					if err != nil {
 						resultsCh <- readResult{i, "", err}
 						return
@@ -872,7 +881,7 @@ func TestConformanceSuite(t *testing.T) {
 					val := fmt.Sprintf("value-%d", i)
 					_ = tx.Put(ctx, []byte(key), []byte(val))
 					_ = tx.Commit(ctx)
-					rtx, err2 := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
+					rtx, err2 := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
 					if err2 != nil {
 						resultsCh <- readResult{i, "", err2}
 						return
@@ -930,7 +939,7 @@ func TestConformanceSuite(t *testing.T) {
 			route := uniqueRoute("kv")
 			beginCh := make(chan error, 1)
 			go func() {
-				_, err := client.KV().Begin(ctx, route)
+				_, err := client.KV().Begin(ctx, route, fitz.KVDurabilitySync)
 				beginCh <- err
 			}()
 
@@ -951,7 +960,7 @@ func TestConformanceSuite(t *testing.T) {
 				if beginErr != nil {
 					ev = append(ev, fmt.Sprintf("in-flight begin failed: %v (expected)", beginErr))
 				} else {
-					ev = append(ev, "in-flight begin completed before close (race — acceptable)")
+					ev = append(ev, "in-flight begin completed before close (race â€” acceptable)")
 				}
 			case <-time.After(2 * time.Second):
 				ev = append(ev, "in-flight begin timed out waiting for result")
@@ -966,7 +975,7 @@ func TestConformanceSuite(t *testing.T) {
 	})
 
 	// -------------------------------------------------------------------------
-	// CS-016 – CS-019: domain lifecycle scenarios not in the cross-language spec
+	// CS-016 â€“ CS-019: domain lifecycle scenarios not in the cross-language spec
 	// but required to close coverage gaps for Queue, Lease, Notice, Schedule.
 	// -------------------------------------------------------------------------
 
@@ -1039,7 +1048,7 @@ func TestConformanceSuite(t *testing.T) {
 			if l1 == nil || len(l1.Token) == 0 {
 				return VerdictFail, ev, fmt.Errorf("expected non-nil lease with token")
 			}
-			ev = append(ev, fmt.Sprintf("client1 acquired lease token=%x…", l1.Token[:min(4, len(l1.Token))]))
+			ev = append(ev, fmt.Sprintf("client1 acquired lease token=%xâ€¦", l1.Token[:min(4, len(l1.Token))]))
 
 			// Contention: second client must be rejected
 			l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
@@ -1138,7 +1147,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			route := uniqueRoute("schedule")
 
-			// Subscribe first — verify the subscription API is usable
+			// Subscribe first â€” verify the subscription API is usable
 			sub, err := f.Client().Schedule().Subscribe(ctx, route, func(_ context.Context, _ fitz.ScheduleNotification) error {
 				return nil
 			})
@@ -1160,7 +1169,7 @@ func TestConformanceSuite(t *testing.T) {
 			ev = append(ev, fmt.Sprintf("schedule created id=%q", scheduleID))
 
 			// Cancel before unsubscribing
-			if err := f.Client().Schedule().Cancel(ctx, scheduleID); err != nil {
+			if err := f.Client().Schedule().Cancel(ctx, route); err != nil {
 				sub.Unsubscribe()
 				return VerdictFail, ev, fmt.Errorf("cancel: %w", err)
 			}

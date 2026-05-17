@@ -70,8 +70,8 @@ type TLVEncoder struct {
 // NewTLVEncoder creates a new TLV encoder.
 func NewTLVEncoder() *TLVEncoder {
 	return &TLVEncoder{
-		entries: make([]TLVValue, 0),
-		seen:    make(map[uint8]bool),
+		entries: make([]TLVValue, 0, 4),
+		seen:    make(map[uint8]bool, 4),
 	}
 }
 
@@ -146,16 +146,17 @@ func (e *TLVEncoder) Encode() []byte {
 	// Pre-calculate total size.
 	totalSize := 0
 	for _, entry := range e.entries {
-		totalSize += 1 + 2 + len(entry.Value) // tag + len + value
+		totalSize += 1 + 2 + len(entry.Value)
 	}
 
-	result := make([]byte, 0, totalSize)
-	var lenBuf [2]byte
+	result := make([]byte, totalSize)
+	offset := 0
 	for _, entry := range e.entries {
-		result = append(result, entry.Tag)
-		binary.BigEndian.PutUint16(lenBuf[:], uint16(len(entry.Value)))
-		result = append(result, lenBuf[:]...)
-		result = append(result, entry.Value...)
+		result[offset] = entry.Tag
+		offset++
+		binary.BigEndian.PutUint16(result[offset:offset+2], uint16(len(entry.Value)))
+		offset += 2
+		offset += copy(result[offset:], entry.Value)
 	}
 	return result
 }
@@ -215,17 +216,17 @@ func (d *TLVDecoder) GetBytes(tag uint8) []byte {
 
 // GetString retrieves the string value for a tag, or empty string if not present.
 func (d *TLVDecoder) GetString(tag uint8) string {
-	b := d.GetBytes(tag)
-	if b == nil {
+	val, ok := d.entries[tag]
+	if !ok {
 		return ""
 	}
-	return string(b)
+	return string(val)
 }
 
 // GetUint32 retrieves a u32 BE value for a tag (first value), or 0 if not present or invalid.
 func (d *TLVDecoder) GetUint32(tag uint8) (uint32, error) {
-	value := d.GetBytes(tag)
-	if value == nil {
+	value, ok := d.entries[tag]
+	if !ok {
 		return 0, nil
 	}
 	if len(value) != 4 {
@@ -236,8 +237,8 @@ func (d *TLVDecoder) GetUint32(tag uint8) (uint32, error) {
 
 // GetUint64 retrieves a u64 BE value for a tag (first value), or 0 if not present or invalid.
 func (d *TLVDecoder) GetUint64(tag uint8) (uint64, error) {
-	value := d.GetBytes(tag)
-	if value == nil {
+	value, ok := d.entries[tag]
+	if !ok {
 		return 0, nil
 	}
 	if len(value) != 8 {
@@ -290,6 +291,9 @@ func DecodeOpTag(data []byte) (uint16, int, error) {
 		return 0, 0, errors.New("truncated TagOp escape sequence")
 	}
 	code := binary.BigEndian.Uint16(data[1:3])
+	if code <= 0xFE {
+		return 0, 0, fmt.Errorf("non-canonical escaped TagOp value: %d", code)
+	}
 	return code, 3, nil
 }
 
@@ -302,8 +306,8 @@ func (e *TLVEncoder) AddOp(opCode uint16) *TLVEncoder {
 // GetOp retrieves an operation code from TagOp, decoding escape bytes.
 // Returns 0 if TagOp is not present.
 func (d *TLVDecoder) GetOp() (uint16, error) {
-	value := d.GetBytes(TagOp)
-	if value == nil {
+	value, ok := d.entries[TagOp]
+	if !ok {
 		return 0, nil
 	}
 	code, _, err := DecodeOpTag(value)

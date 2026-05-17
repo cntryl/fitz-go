@@ -73,7 +73,7 @@ func TestShouldConnectGivenJWTWithoutSchedulePermissionWhenConnectCalled(t *test
 		require.NoError(t, client.Connect(ctx))
 
 		route := fmt.Sprintf("kv://test-%d/area/resource", time.Now().UnixNano())
-		tx, err := client.KV().Begin(ctx, route)
+		tx, err := client.KV().Begin(ctx, route, fitz.KVDurabilitySync)
 		require.NoError(t, err)
 		require.NoError(t, tx.Rollback(ctx))
 
@@ -300,7 +300,7 @@ func TestShouldReturnErrorGivenOperationAfterCloseWhenDomainMethodCalled(t *test
 		route := f.UniqueRoute("kv")
 		require.NoError(t, f.Client().Close())
 
-		_, err := f.Client().KV().Begin(ctx, route)
+		_, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 		require.Error(t, err)
 	})
 }
@@ -330,8 +330,15 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 		callCtx, callCancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			_, err := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
-			done <- err
+			iter, err := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
+			if err != nil {
+				done <- err
+				return
+			}
+			defer func() { _ = iter.Close() }()
+
+			_ = iter.Next()
+			done <- iter.Err()
 		}()
 
 		time.Sleep(50 * time.Millisecond)
@@ -342,7 +349,7 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 			require.Error(t, err)
 			assert.True(t, errors.Is(err, context.Canceled))
 		case <-time.After(5 * time.Second):
-			t.Fatal("Call did not return after context cancel")
+			t.Fatal("RPC iterator did not stop after context cancel")
 		}
 	})
 }

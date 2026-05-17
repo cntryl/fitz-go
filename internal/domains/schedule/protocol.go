@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire opcodes for Schedule domain (per CLIENT_SPEC.md). Values are message type identifiers.
@@ -24,14 +25,28 @@ var (
 	ErrScheduleNotFound = errors.New("schedule not found")
 )
 
-// mapScheduleError maps a broker error message to a domain-specific Go error.
-func mapScheduleError(msg string) error {
-	l := strings.ToLower(msg)
+// mapScheduleError maps a broker error to a domain-specific Go error.
+func mapScheduleError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		switch uint32(domainErr.Code) {
+		case coreerrors.ScheduleNotFound:
+			return ErrScheduleNotFound
+		default:
+			return err
+		}
+	}
+
+	l := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(l, "not found"):
 		return ErrScheduleNotFound
 	default:
-		return errors.New(msg)
+		return err
 	}
 }
 

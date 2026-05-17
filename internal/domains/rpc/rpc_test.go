@@ -2,9 +2,11 @@ package rpc
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,7 +15,7 @@ import (
 func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) {
 	t.Run("map no workers error", func(t *testing.T) {
 		// Arrange
-		errMsg := "no workers available for request"
+		errMsg := coreerrors.NewDomainError(coreerrors.RpcWorkerNotFound, "no workers available for request")
 
 		// Act
 		mapped := mapRPCError(errMsg)
@@ -22,50 +24,63 @@ func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) 
 		assert.Equal(t, ErrNoWorkers, mapped)
 	})
 
-	t.Run("map no workers case insensitive", func(t *testing.T) {
+	t.Run("map route not registered error", func(t *testing.T) {
 		// Arrange
-		errMsg := "NO WORKERS AVAILABLE"
+		errMsg := coreerrors.NewDomainError(coreerrors.RpcRouteNotRegistered, "route not registered")
 
 		// Act
 		mapped := mapRPCError(errMsg)
 
 		// Assert
 		assert.Equal(t, ErrNoWorkers, mapped)
+	})
+
+	t.Run("preserve typed correlation error", func(t *testing.T) {
+		// Arrange
+		errMsg := coreerrors.NewDomainError(coreerrors.RpcCorrelationNotFound, "correlation not found")
+
+		// Act
+		mapped := mapRPCError(errMsg)
+
+		// Assert
+		var domainErr *coreerrors.DomainError
+		assert.True(t, errors.As(mapped, &domainErr))
+		assert.Equal(t, uint32(coreerrors.RpcCorrelationNotFound), uint32(domainErr.Code))
 	})
 
 	t.Run("unknown error returns wrapped message", func(t *testing.T) {
 		// Arrange
-		errMsg := "unexpected error condition"
+		errMsg := errors.New("unexpected error condition")
 
 		// Act
 		mapped := mapRPCError(errMsg)
 
 		// Assert
 		assert.NotNil(t, mapped)
-		assert.Equal(t, errMsg, mapped.Error())
+		assert.Equal(t, errMsg, mapped)
 	})
 
 	t.Run("empty error message", func(t *testing.T) {
 		// Arrange
-		errMsg := ""
+		errMsg := errors.New("")
 
 		// Act
 		mapped := mapRPCError(errMsg)
 
 		// Assert
 		assert.NotNil(t, mapped)
+		assert.Equal(t, errMsg, mapped)
 	})
 
 	t.Run("timeout related error", func(t *testing.T) {
 		// Arrange
-		errMsg := "rpc operation timed out"
+		errMsg := coreerrors.NewDomainError(coreerrors.RpcTimeout, "rpc operation timed out")
 
 		// Act
 		mapped := mapRPCError(errMsg)
 
 		// Assert
-		// Should return wrapped as unknown error
-		assert.Equal(t, "rpc operation timed out", mapped.Error())
+		assert.Equal(t, ErrRPCTimeout, mapped)
 	})
 }
 

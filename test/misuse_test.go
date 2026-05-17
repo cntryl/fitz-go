@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cntryl/fitz-go/fitz"
 	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,7 +18,7 @@ func TestShouldReturnClearErrorGivenCommitAfterRollbackWhenTxMisused(t *testing.
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		tx, err := f.Client().KV().Begin(ctx, f.UniqueRoute("kv"))
+		tx, err := f.Client().KV().Begin(ctx, f.UniqueRoute("kv"), fitz.KVDurabilitySync)
 		require.NoError(t, err)
 
 		require.NoError(t, tx.Rollback(ctx))
@@ -34,7 +35,7 @@ func TestShouldReturnClearErrorGivenMutationAfterCommitWhenTxMisused(t *testing.
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		tx, err := f.Client().KV().Begin(ctx, f.UniqueRoute("kv"))
+		tx, err := f.Client().KV().Begin(ctx, f.UniqueRoute("kv"), fitz.KVDurabilitySync)
 		require.NoError(t, err)
 
 		require.NoError(t, tx.Commit(ctx))

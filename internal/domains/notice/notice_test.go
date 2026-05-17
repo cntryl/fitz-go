@@ -2,9 +2,11 @@ package notice
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,6 +66,19 @@ func TestShouldDecodeNotifyGivenEncodedPayloadWhenDecodeNotifyCalled(t *testing.
 		assert.True(t, len(decodedPayload) == 0, "payload should be empty")
 	})
 
+	t.Run("malformed notification with trailing bytes", func(t *testing.T) {
+		// Arrange
+		route := "notice://acme/app/events/published"
+		payload := []byte("user_updated")
+		encoded := append(encodePublish(route, payload), 0xAA)
+
+		// Act
+		_, _, ok := DecodeNotify(encoded)
+
+		// Assert
+		assert.False(t, ok)
+	})
+
 	t.Run("malformed notification too short", func(t *testing.T) {
 		// Arrange
 		payload := []byte{0x00, 0x00} // Too short
@@ -88,6 +103,33 @@ func TestShouldDecodeNotifyGivenEncodedPayloadWhenDecodeNotifyCalled(t *testing.
 
 		// Assert
 		assert.False(t, ok)
+	})
+}
+
+func TestShouldRejectMalformedStatusGivenTrailingOrTruncatedEnvelopeWhenDecodeStatusCalled(t *testing.T) {
+	t.Run("success status with trailing bytes", func(t *testing.T) {
+		status, message, ok := decodeStatus([]byte{0x00, 0xAA})
+
+		assert.False(t, ok)
+		assert.Equal(t, uint8(0), status)
+		assert.Empty(t, message)
+	})
+
+	t.Run("error status with truncated message envelope", func(t *testing.T) {
+		status, message, ok := decodeStatus([]byte{0x01, 0x00, 0x00, 0x00})
+
+		assert.False(t, ok)
+		assert.Equal(t, uint8(0), status)
+		assert.Empty(t, message)
+	})
+
+	t.Run("error status with trailing bytes", func(t *testing.T) {
+		body := []byte{0x01, 0x00, 0x00, 0x00, 0x03, 'b', 'a', 'd', 0xFF}
+		status, message, ok := decodeStatus(body)
+
+		assert.False(t, ok)
+		assert.Equal(t, uint8(0), status)
+		assert.Empty(t, message)
 	})
 }
 
@@ -141,6 +183,33 @@ func TestShouldDefineNoticeErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("send failed error", func(t *testing.T) {
 		assert.NotNil(t, ErrNoticeSendFailed)
 		assert.Equal(t, "notice send failed", ErrNoticeSendFailed.Error())
+	})
+}
+
+func TestShouldMapNoticeErrorGivenTypedBrokerMessageWhenMapNoticeErrorCalled(t *testing.T) {
+	t.Run("map invalid route", func(t *testing.T) {
+		mapped := mapNoticeError(coreerrors.NewDomainError(coreerrors.NoticeInvalidRoute, "invalid notice route"))
+		assert.Equal(t, ErrNoticeRouteInvalid, mapped)
+	})
+
+	t.Run("map invalid pattern", func(t *testing.T) {
+		mapped := mapNoticeError(coreerrors.NewDomainError(coreerrors.NoticeInvalidPattern, "invalid notice pattern"))
+		assert.Equal(t, ErrNoticeRouteInvalid, mapped)
+	})
+
+	t.Run("preserve typed transport closed error", func(t *testing.T) {
+		errMsg := coreerrors.NewDomainError(coreerrors.NoticeTransportClosed, "transport closed")
+		mapped := mapNoticeError(errMsg)
+
+		var domainErr *coreerrors.DomainError
+		assert.True(t, errors.As(mapped, &domainErr))
+		assert.Equal(t, uint32(coreerrors.NoticeTransportClosed), uint32(domainErr.Code))
+	})
+
+	t.Run("unknown error returns original error", func(t *testing.T) {
+		errMsg := errors.New("unexpected notice condition")
+		mapped := mapNoticeError(errMsg)
+		assert.Equal(t, errMsg, mapped)
 	})
 }
 
@@ -237,12 +306,12 @@ func BenchmarkEncodeSubscribe(b *testing.B) {
 }
 
 func BenchmarkEncodeUnsubscribe(b *testing.B) {
-	pattern := "notice://acme/app/events/published"
+	subID := uint64(42)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = encodeUnsubscribe(pattern)
+		_ = encodeUnsubscribe(subID)
 	}
 }
 

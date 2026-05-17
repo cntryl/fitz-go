@@ -4,6 +4,7 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -22,20 +23,37 @@ import (
 
 // Record represents a single stream record.
 type Record struct {
-	Offset uint64
-	Body   []byte
+	Offset      uint64
+	AreaOffset  *uint64
+	RealmOffset *uint64
+	Body        []byte
+	Metadata    []byte
+	Timestamp   uint64
 }
 
 // Metadata holds stream metadata.
 type Metadata struct {
-	FirstOffset uint64
-	LastOffset  uint64
-	RecordCount uint64
+	FirstOffset    uint64
+	LastOffset     uint64
+	RecordCount    uint64
+	MaxBatchEvents uint64
+	MaxBatchBytes  uint64
+	TTLSeconds     *uint64
+	AreaWatermark  uint64
+	RealmWatermark uint64
 }
 
 // CommitNotification is a notification of stream data availability.
 type CommitNotification struct {
-	Route string
+	Route               string
+	Event               string
+	FirstResourceOffset uint64
+	LastResourceOffset  uint64
+	FirstAreaOffset     uint64
+	LastAreaOffset      uint64
+	FirstRealmOffset    uint64
+	LastRealmOffset     uint64
+	BatchSize           uint64
 }
 
 // CommitHandler handles stream commit notifications.
@@ -58,14 +76,13 @@ func (sub *Subscription) Unsubscribe() {
 
 // StreamSession is a write session for appending to a stream.
 // Obtained from Begin; use Append, then Commit or Rollback.
-// Expected offset (OCC) is established at Begin and tracked by the session/server;
-// Append does not take or send expected_offset.
+// Expected offset (OCC) is provided on each Append call and tracked by the session/server.
 // Per CLIENT_SPEC.md, operations on a session MUST be sequential.
 type StreamSession interface {
 	// Append adds a record to the stream. Returns the assigned offset when available.
-	Append(ctx context.Context, body []byte) (offset uint64, err error)
+	Append(ctx context.Context, expectedOffset uint64, body []byte) (offset uint64, err error)
 	// Commit finalizes the write session and makes appends durable.
-	Commit(ctx context.Context) error
+	Commit(ctx context.Context, mode CommitMode) error
 	// Rollback discards uncommitted appends.
 	Rollback(ctx context.Context) error
 }
@@ -73,9 +90,8 @@ type StreamSession interface {
 // Client is the Stream domain client interface.
 type Client interface {
 	// Begin starts a write session on the given route.
-	// expectedOffset is the client's view of the stream's next offset; server rejects on mismatch (OCC).
 	// Returns a session on which to call Append, then Commit or Rollback.
-	Begin(ctx context.Context, route string, expectedOffset uint64) (StreamSession, error)
+	Begin(ctx context.Context, route string) (StreamSession, error)
 
 	// Read reads records from the given route starting at fromOffset.
 	Read(ctx context.Context, route string, fromOffset uint64, limit uint64) (iter.Iterator[Record], error)
@@ -117,27 +133,26 @@ func NewClient(conn *connection.Connection) Client {
 var _ reconnect.DomainRestorer = (*client)(nil)
 
 // Begin per server stream_codec.rs:
-// Request: [string route][u64 expected_offset][optional bytes ingest_metadata]
+// Request: [string route][optional bytes ingest_metadata]
 // Response: [status][u8 has_session_id][u64 session_id if has=1][bytes data]
-// Expected offset (OCC) is sent only here; the session tracks it internally on the server.
-func (c *client) Begin(ctx context.Context, route string, expectedOffset uint64) (StreamSession, error) {
+// Expected offset (OCC) is sent on Append; Begin creates session state only.
+func (c *client) Begin(ctx context.Context, route string) (StreamSession, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Begin", trace.WithAttributes(
 		attribute.String("fitz.route", route),
-		attribute.Int64("fitz.expected_offset", int64(expectedOffset)),
 	))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("stream.Begin", "route", route, "expected_offset", expectedOffset)
+		log.Debug("stream.Begin", "route", route)
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "stream"); err != nil {
+	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamBegin, streamBeginPayloadWriter(route, expectedOffset, nil))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamBegin, streamBeginPayloadWriter(route, nil))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -148,7 +163,7 @@ func (c *client) Begin(ctx context.Context, route string, expectedOffset uint64)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("BEGIN failed: %w", mapStreamError(err.Error()))
+		return nil, fmt.Errorf("BEGIN failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("BEGIN failed: unexpected status")
@@ -181,15 +196,16 @@ func (c *client) Begin(ctx context.Context, route string, expectedOffset uint64)
 	return &session{route: route, sessionID: sessionID, conn: c.conn}, nil
 }
 
-// Append per server stream_codec.rs. Expected offset is tracked by the session (established at Begin).
-// Request: [u64 session_id][bytes body][optional bytes metadata]
-func (s *session) Append(ctx context.Context, body []byte) (uint64, error) {
+// Append per server stream_codec.rs. Expected offset is supplied on every call.
+// Request: [u64 session_id][u64 expected_offset][bytes body][optional bytes metadata]
+func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte) (uint64, error) {
 	ctx, span := s.conn.Tracer().Start(ctx, "fitz.stream.Append", trace.WithAttributes(
 		attribute.String("fitz.route", s.route),
 		attribute.Int64("fitz.session_id", int64(s.sessionID)),
+		attribute.Int64("fitz.expected_offset", int64(expectedOffset)),
 	))
 	defer span.End()
-	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, body, nil))
+	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, expectedOffset, body, nil))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -200,7 +216,7 @@ func (s *session) Append(ctx context.Context, body []byte) (uint64, error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("SEND failed: %w", mapStreamError(err.Error()))
+		return 0, fmt.Errorf("SEND failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("SEND failed: unexpected status")
@@ -229,13 +245,13 @@ func (s *session) Append(ctx context.Context, body []byte) (uint64, error) {
 
 // Commit per server stream_codec.rs:
 // Request: [u64 session_id][u8 mode] where mode: 0=Buffered, 1=Sync
-func (s *session) Commit(ctx context.Context) error {
+func (s *session) Commit(ctx context.Context, mode CommitMode) error {
 	ctx, span := s.conn.Tracer().Start(ctx, "fitz.stream.Commit", trace.WithAttributes(
 		attribute.String("fitz.route", s.route),
 		attribute.Int64("fitz.session_id", int64(s.sessionID)),
 	))
 	defer span.End()
-	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamCommit, streamCommitPayloadWriter(s.sessionID, 0))
+	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamCommit, streamCommitPayloadWriter(s.sessionID, mode))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -246,7 +262,7 @@ func (s *session) Commit(ctx context.Context) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("COMMIT failed: %w", mapStreamError(err.Error()))
+		return fmt.Errorf("COMMIT failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("COMMIT failed: unexpected status")
@@ -276,7 +292,7 @@ func (s *session) Rollback(ctx context.Context) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("ROLLBACK failed: %w", mapStreamError(err.Error()))
+		return fmt.Errorf("ROLLBACK failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("ROLLBACK failed: unexpected status")
@@ -300,6 +316,11 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("stream.Read", "route", route, "from_offset", fromOffset, "limit", limit)
 	}
+	if err := types.ValidateSelectorRoute(route, "stream", 3, true); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
+	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRead, streamReadPayloadWriter(route, fromOffset, limit, nil))
 	if err != nil {
 		span.RecordError(err)
@@ -311,7 +332,7 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("READ failed: %w", mapStreamError(err.Error()))
+		return nil, fmt.Errorf("READ failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("READ failed: unexpected status")
@@ -320,8 +341,13 @@ func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limi
 		return nil, recordErr
 	}
 
-	// Skip optional session_id and extract data blob
-	data := skipOptionalSessionIDAndGetData(remaining)
+	// Skip optional session_id and extract data blob.
+	data, err := skipOptionalSessionIDAndGetData(remaining)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("parse READ response envelope: %w", err)
+	}
 
 	// Parse records from data
 	records, err := parseReadResponse(data)
@@ -343,6 +369,11 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("stream.Peek", "route", route)
 	}
+	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
+	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamLast, streamLastPayloadWriter(route))
 	if err != nil {
 		span.RecordError(err)
@@ -354,7 +385,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("PEEK failed: %w", mapStreamError(err.Error()))
+		return nil, fmt.Errorf("PEEK failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("PEEK failed: unexpected status")
@@ -363,8 +394,13 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 		return nil, recordErr
 	}
 
-	// Skip optional session_id and extract data blob
-	data := skipOptionalSessionIDAndGetData(remaining)
+	// Skip optional session_id and extract data blob.
+	data, err := skipOptionalSessionIDAndGetData(remaining)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("parse PEEK response envelope: %w", err)
+	}
 
 	// Empty data means no record (stream empty or server stub)
 	if len(data) == 0 {
@@ -390,6 +426,11 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("stream.Metadata", "route", route)
 	}
+	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
+	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamGetMetadata, streamGetMetadataPayloadWriter(route))
 	if err != nil {
 		span.RecordError(err)
@@ -401,7 +442,7 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("GET_METADATA failed: %w", mapStreamError(err.Error()))
+		return nil, fmt.Errorf("GET_METADATA failed: %w", mapStreamError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("GET_METADATA failed: unexpected status")
@@ -410,54 +451,48 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 		return nil, recordErr
 	}
 
-	// Skip optional session_id and extract data blob
-	data := skipOptionalSessionIDAndGetData(remaining)
-
-	meta := &Metadata{}
-	offset := 0
-
-	// Parse metadata fields from data
-	if offset+8 <= len(data) {
-		meta.FirstOffset, offset, _ = connection.ReadU64BE(data, offset)
+	// Skip optional session_id and extract data blob.
+	data, err := skipOptionalSessionIDAndGetData(remaining)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("parse GET_METADATA response envelope: %w", err)
 	}
-	if offset+8 <= len(data) {
-		meta.LastOffset, offset, _ = connection.ReadU64BE(data, offset)
-	}
-	if offset+8 <= len(data) {
-		meta.RecordCount, _, _ = connection.ReadU64BE(data, offset)
+
+	meta, err := parseMetadataPayload(data)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("parse GET_METADATA response: %w", err)
 	}
 
 	return meta, nil
 }
 
 // skipOptionalSessionIDAndGetData parses the common stream response format:
-// [u8 has_session_id][u64 session_id if has=1][u32 data_len][data]
-// Returns the data portion (after the data_len prefix).
-func skipOptionalSessionIDAndGetData(remaining []byte) []byte {
+// [u8 has_session_id][u64 session_id if has=1][bytes data]
+// Returns the decoded data payload.
+func skipOptionalSessionIDAndGetData(remaining []byte) ([]byte, error) {
 	offset := 0
-	if offset >= len(remaining) {
-		return nil
+	if len(remaining) == 0 {
+		return nil, fmt.Errorf("stream response missing payload")
 	}
 
-	// Skip optional session_id
-	hasSessionID := remaining[offset]
-	offset++
-	if hasSessionID == 1 && offset+8 <= len(remaining) {
-		offset += 8
+	if _, newOffset, err := readOptionalU64(remaining, offset); err != nil {
+		return nil, fmt.Errorf("parse optional session_id: %w", err)
+	} else {
+		offset = newOffset
 	}
 
-	// Read data blob: [u32 data_len][data]
-	if offset+4 > len(remaining) {
-		return nil
-	}
-	dataLen, newOffset, err := connection.ReadU32BE(remaining, offset)
+	data, newOffset, err := connection.ReadBytes(remaining, offset)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("parse response data: %w", err)
 	}
-	if newOffset+int(dataLen) > len(remaining) {
-		return remaining[newOffset:]
+	if newOffset != len(remaining) {
+		return nil, fmt.Errorf("stream response has trailing bytes")
 	}
-	return remaining[newOffset : newOffset+int(dataLen)]
+
+	return data, nil
 }
 
 // parseReadResponse parses records from a READ response data blob.
@@ -466,45 +501,36 @@ func parseReadResponse(data []byte) ([]Record, error) {
 		return nil, nil
 	}
 
-	var records []Record
-	offset := 0
-
-	// Parse record count if available
-	if len(data) >= 4 {
-		count, newOffset, err := connection.ReadU32BE(data, offset)
-		if err == nil {
-			offset = newOffset
-			for i := uint32(0); i < count && offset < len(data); i++ {
-				rec, err := parseRecord(data, offset)
-				if err != nil {
-					break
-				}
-				records = append(records, *rec)
-				// Advance offset past this record
-				offset += 8 // offset field
-				if offset+4 <= len(data) {
-					bodyLen, _, _ := connection.ReadU32BE(data, offset)
-					offset += 4 + int(bodyLen)
-				}
-			}
-			return records, nil
-		}
+	count, offset, err := connection.ReadU32BE(data, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse record count: %w", err)
 	}
 
-	// Fallback: try parsing as a flat sequence of records
-	for offset < len(data) {
-		rec, err := parseRecord(data, offset)
+	records := make([]Record, 0, count)
+	for i := uint32(0); i < count; i++ {
+		rec, newOffset, err := decodeStreamRecordAt(data, offset)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("parse record %d: %w", i, err)
 		}
 		records = append(records, *rec)
-		offset += 8 // offset
-		if offset+4 <= len(data) {
-			bodyLen, _, _ := connection.ReadU32BE(data, offset)
-			offset += 4 + int(bodyLen)
-		} else {
-			break
-		}
+		offset = newOffset
+	}
+
+	if _, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse last_resource_offset: %w", err)
+	}
+	if _, offset, err = readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse last_area_offset: %w", err)
+	}
+	if _, offset, err = readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse last_realm_offset: %w", err)
+	}
+	if offset >= len(data) {
+		return nil, fmt.Errorf("READ response missing has_more flag")
+	}
+	offset++
+	if offset != len(data) {
+		return nil, fmt.Errorf("READ response has trailing bytes")
 	}
 
 	return records, nil
@@ -512,24 +538,143 @@ func parseReadResponse(data []byte) ([]Record, error) {
 
 // parseRecord parses a single record from the payload at the given offset.
 func parseRecord(data []byte, offset int) (*Record, error) {
+	rec, newOffset, err := decodeStreamRecordAt(data, offset)
+	if err != nil {
+		return nil, err
+	}
+	if newOffset != len(data) {
+		return nil, fmt.Errorf("parse record has trailing bytes")
+	}
+	return rec, nil
+}
+
+func decodeStreamRecordAt(data []byte, offset int) (*Record, int, error) {
 	rec := &Record{}
 
-	// Read offset (u64)
 	var err error
 	rec.Offset, offset, err = connection.ReadU64BE(data, offset)
 	if err != nil {
-		return nil, fmt.Errorf("parse record offset: %w", err)
+		return nil, offset, fmt.Errorf("parse record offset: %w", err)
 	}
 
-	// Read body
-	bodyData, _, err := connection.ReadBytes(data, offset)
+	rec.AreaOffset, offset, err = readOptionalU64(data, offset)
 	if err != nil {
-		return nil, fmt.Errorf("parse record body: %w", err)
+		return nil, offset, fmt.Errorf("parse record area_offset: %w", err)
 	}
-	rec.Body = make([]byte, len(bodyData))
-	copy(rec.Body, bodyData)
 
-	return rec, nil
+	rec.RealmOffset, offset, err = readOptionalU64(data, offset)
+	if err != nil {
+		return nil, offset, fmt.Errorf("parse record realm_offset: %w", err)
+	}
+
+	bodyData, offset, err := connection.ReadBytes(data, offset)
+	if err != nil {
+		return nil, offset, fmt.Errorf("parse record body: %w", err)
+	}
+	rec.Body = append([]byte(nil), bodyData...)
+
+	rec.Metadata, offset, err = readOptionalBytes(data, offset)
+	if err != nil {
+		return nil, offset, fmt.Errorf("parse record metadata: %w", err)
+	}
+
+	rec.Timestamp, offset, err = connection.ReadU64BE(data, offset)
+	if err != nil {
+		return nil, offset, fmt.Errorf("parse record timestamp: %w", err)
+	}
+
+	return rec, offset, nil
+}
+
+func parseMetadataPayload(data []byte) (*Metadata, error) {
+	meta := &Metadata{}
+	offset := 0
+	var err error
+
+	if firstOffset, newOffset, err := readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse first_offset: %w", err)
+	} else {
+		if firstOffset != nil {
+			meta.FirstOffset = *firstOffset
+		}
+		offset = newOffset
+	}
+
+	if lastOffset, newOffset, err := readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse last_offset: %w", err)
+	} else {
+		if lastOffset != nil {
+			meta.LastOffset = *lastOffset
+		}
+		offset = newOffset
+	}
+
+	if meta.RecordCount, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse record_count: %w", err)
+	}
+	if meta.MaxBatchEvents, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse max_batch_events: %w", err)
+	}
+	if meta.MaxBatchBytes, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse max_batch_bytes: %w", err)
+	}
+	if meta.TTLSeconds, offset, err = readOptionalU64(data, offset); err != nil {
+		return nil, fmt.Errorf("parse ttl_seconds: %w", err)
+	}
+	if meta.AreaWatermark, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse area_watermark: %w", err)
+	}
+	if meta.RealmWatermark, offset, err = connection.ReadU64BE(data, offset); err != nil {
+		return nil, fmt.Errorf("parse realm_watermark: %w", err)
+	}
+
+	if offset != len(data) {
+		return nil, fmt.Errorf("GET_METADATA response has trailing bytes")
+	}
+
+	return meta, nil
+}
+
+func readOptionalU64(data []byte, offset int) (*uint64, int, error) {
+	if offset >= len(data) {
+		return nil, offset, fmt.Errorf("optional u64 flag missing")
+	}
+
+	flag := data[offset]
+	offset++
+	switch flag {
+	case 0:
+		return nil, offset, nil
+	case 1:
+		value, newOffset, err := connection.ReadU64BE(data, offset)
+		if err != nil {
+			return nil, newOffset, err
+		}
+		return &value, newOffset, nil
+	default:
+		return nil, offset, fmt.Errorf("invalid optional u64 flag: %d", flag)
+	}
+}
+
+func readOptionalBytes(data []byte, offset int) ([]byte, int, error) {
+	if offset >= len(data) {
+		return nil, offset, fmt.Errorf("optional bytes flag missing")
+	}
+
+	flag := data[offset]
+	offset++
+	switch flag {
+	case 0:
+		return nil, offset, nil
+	case 1:
+		value, newOffset, err := connection.ReadBytes(data, offset)
+		if err != nil {
+			return nil, newOffset, err
+		}
+		return append([]byte(nil), value...), newOffset, nil
+	default:
+		return nil, offset, fmt.Errorf("invalid optional bytes flag: %d", flag)
+	}
 }
 
 // initNotifyHandler registers the NOTIFY handler on first use.
@@ -551,6 +696,28 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 
 	notif := CommitNotification{
 		Route: route,
+	}
+	if len(payload) > 0 {
+		var decoded struct {
+			Event               string `json:"event"`
+			FirstResourceOffset uint64 `json:"first_resource_offset"`
+			LastResourceOffset  uint64 `json:"last_resource_offset"`
+			FirstAreaOffset     uint64 `json:"first_area_offset"`
+			LastAreaOffset      uint64 `json:"last_area_offset"`
+			FirstRealmOffset    uint64 `json:"first_realm_offset"`
+			LastRealmOffset     uint64 `json:"last_realm_offset"`
+			BatchSize           uint64 `json:"batch_size"`
+		}
+		if err := json.Unmarshal(payload, &decoded); err == nil {
+			notif.Event = decoded.Event
+			notif.FirstResourceOffset = decoded.FirstResourceOffset
+			notif.LastResourceOffset = decoded.LastResourceOffset
+			notif.FirstAreaOffset = decoded.FirstAreaOffset
+			notif.LastAreaOffset = decoded.LastAreaOffset
+			notif.FirstRealmOffset = decoded.FirstRealmOffset
+			notif.LastRealmOffset = decoded.LastRealmOffset
+			notif.BatchSize = decoded.BatchSize
+		}
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 
@@ -598,6 +765,11 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler CommitHa
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("stream.Subscribe", "pattern", pattern)
+	}
+	if err := types.ValidateSelectorRoute(pattern, "stream", 3, true); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	c.initNotifyHandler()
 
@@ -656,7 +828,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapStreamError(err.Error()))
+		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapStreamError(err))
 	}
 	if !success {
 		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")

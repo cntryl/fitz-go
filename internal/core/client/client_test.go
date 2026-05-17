@@ -11,6 +11,7 @@ import (
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/transport"
+	"github.com/cntryl/fitz-go/internal/domains/kv"
 	"github.com/cntryl/fitz-go/internal/domains/notice"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
@@ -109,6 +110,31 @@ func TestShouldReturnNilGivenNoConnectionWhenCloseCalledTwice(t *testing.T) {
 	// Assert
 	require.NoError(t, err1)
 	require.NoError(t, err2)
+}
+
+func TestShouldRejectSecondConnectGivenExistingConnectionWhenConnectCalled(t *testing.T) {
+	originalDialTCP := dialTCPTransport
+	defer func() {
+		dialTCPTransport = originalDialTCP
+	}()
+
+	scripted := newScriptedTransport()
+	dialCalls := 0
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		dialCalls++
+		return scripted, nil
+	}
+
+	c := NewClient("localhost:4091", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	require.NoError(t, c.Connect(ctx))
+	defer c.Close()
+
+	err := c.Connect(ctx)
+	require.ErrorIs(t, err, ErrClientAlreadyConnected)
+	assert.Equal(t, 1, dialCalls)
 }
 
 func TestShouldValidateTransportLabelGivenKnownValueWhenTransportTypeStringCalled(t *testing.T) {
@@ -307,6 +333,74 @@ func TestShouldEmitReconnectMetricsGivenReconnectSuccessWhenConnectionRestored(t
 	assert.NoError(t, c.Close())
 }
 
+func TestShouldRebindKVClientGivenReconnectWhenExistingDomainHandleUsed(t *testing.T) {
+	// Arrange
+	firstTransport := newScriptedTransport()
+	secondTransport := newScriptedTransport()
+
+	originalDialTCP := dialTCPTransport
+	originalDialWS := dialWebSocketTransport
+	defer func() {
+		dialTCPTransport = originalDialTCP
+		dialWebSocketTransport = originalDialWS
+	}()
+
+	transports := []transport.Transport{firstTransport, secondTransport}
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		if len(transports) == 0 {
+			return nil, errors.New("no transports remaining")
+		}
+		next := transports[0]
+		transports = transports[1:]
+		return next, nil
+	}
+
+	c := NewClient("localhost:4091", func(context.Context) (string, error) {
+		return "token-1", nil
+	})
+	c.config.AuthSettleDelay = 20 * time.Millisecond
+	c.config.ReconnectEnabled = true
+	c.config.ReconnectBackoff = 10 * time.Millisecond
+	c.config.MaxReconnects = 1
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, c.Connect(ctx))
+	t.Cleanup(func() {
+		_ = c.Close()
+	})
+
+	kvClient := c.KV()
+	initialConn := c.currentConnection()
+	go pushResponseAfterWrite(secondTransport, kvBeginResponseFrame(t, 44), 2)
+
+	// Act
+	require.NoError(t, initialConn.Close())
+	require.Eventually(t, func() bool {
+		return c.currentConnection() != nil && c.currentConnection() != initialConn
+	}, time.Second, 20*time.Millisecond)
+
+	tx, err := kvClient.Begin(ctx, "kv://realm/area/resource", kv.DurabilityBuffered)
+
+	// Assert
+	require.NoError(t, err)
+	require.NotNil(t, tx)
+	assert.Len(t, firstTransport.WrittenFrames(), 1)
+	require.Eventually(t, func() bool {
+		return len(secondTransport.WrittenFrames()) >= 2
+	}, time.Second, 10*time.Millisecond)
+
+	writtenFrames := secondTransport.WrittenFrames()
+	require.GreaterOrEqual(t, len(writtenFrames), 2)
+	connectType, _, err := protocol.DecodeFrame(writtenFrames[0])
+	require.NoError(t, err)
+	assert.Equal(t, protocol.MessageTypeConnect, connectType)
+
+	beginType, _, err := protocol.DecodeFrame(writtenFrames[1])
+	require.NoError(t, err)
+	assert.Equal(t, protocol.MessageTypeKvBegin, beginType)
+}
+
 func reconnectMetricPresence(metrics metricdata.ResourceMetrics) (bool, bool) {
 	foundCount := false
 	foundDuration := false
@@ -400,6 +494,18 @@ func noticeSubscribeResponseFrame(t *testing.T, subID uint64) []byte {
 
 	// Assert
 	return encoded
+}
+
+func kvBeginResponseFrame(t *testing.T, txID uint64) []byte {
+	t.Helper()
+
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	buf.WriteByte(0)
+	connection.WriteU64BE(buf, txID)
+	frame := protocol.EncodeFrameOwned(protocol.MessageTypeKvBegin, append([]byte(nil), buf.Bytes()...))
+	defer frame.Release()
+	return append([]byte(nil), frame.Bytes()...)
 }
 
 type scriptedTransport struct {

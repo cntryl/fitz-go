@@ -131,6 +131,12 @@ func TestShouldRejectDecodeMessageTypeGivenTruncatedDataWhenDecodeMessageTypeCal
 	})
 }
 
+func TestShouldRejectNonCanonicalEscapedMessageTypeGivenSingleByteValueWhenDecodeMessageTypeCalled(t *testing.T) {
+	_, _, err := DecodeMessageType([]byte{0xFF, 0x00, 0x01})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-canonical")
+}
+
 func TestShouldRoundTripFrameGivenEncodedPayloadWhenDecodeFrameCalled(t *testing.T) {
 	t.Run("empty payload", func(t *testing.T) {
 		payload := []byte{}
@@ -215,6 +221,13 @@ func TestShouldRejectFrameGivenTruncatedDataWhenDecodeFrameCalled(t *testing.T) 
 		_, _, err := DecodeFrame(data)
 		require.Error(t, err)
 	})
+}
+
+func TestShouldRejectFrameGivenTrailingBytesWhenDecodeFrameCalled(t *testing.T) {
+	encoded := append(EncodeFrame(100, []byte("hello")), 0x00)
+	_, _, err := DecodeFrame(encoded)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trailing")
 }
 
 func TestShouldHandleMaxSizePayloadGivenExactLimitWhenEncodeFrameCalled(t *testing.T) {

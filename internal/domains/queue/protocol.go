@@ -150,24 +150,17 @@ func EncodeEnqueue(route string, body []byte, delaySeconds uint64) []byte {
 }
 
 // EncodeReserve encodes a Queue RESERVE request payload per CLIENT_SPEC.md.
-// Spec: [route_len][route][lease_seconds][has_batch_size][batch_size if present][has_wait_seconds][wait_seconds if present]
-func EncodeReserve(route string, leaseSeconds uint64, batchSize uint32, waitSeconds uint64) []byte {
+// Spec: [route_len][route][lease_seconds][has_batch_size][batch_size if present]
+func EncodeReserve(route string, leaseSeconds uint64, batchSize uint32) []byte {
 	routeBytes := []byte(route)
 	hasBatchSize := uint8(0)
 	if batchSize > 0 {
 		hasBatchSize = 1
 	}
-	hasWaitSeconds := uint8(0)
-	if waitSeconds > 0 {
-		hasWaitSeconds = 1
-	}
 
-	payloadSize := 4 + len(routeBytes) + 8 + 1 + 1
+	payloadSize := 4 + len(routeBytes) + 8 + 1
 	if hasBatchSize == 1 {
 		payloadSize += 4
-	}
-	if hasWaitSeconds == 1 {
-		payloadSize += 8
 	}
 	payload := make([]byte, 0, payloadSize)
 
@@ -192,16 +185,6 @@ func EncodeReserve(route string, leaseSeconds uint64, batchSize uint32, waitSeco
 		batchBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(batchBytes, batchSize)
 		payload = append(payload, batchBytes...)
-	}
-
-	// [u8] has_wait_seconds
-	payload = append(payload, hasWaitSeconds)
-
-	// [u64 BE] wait_seconds (if has_wait_seconds)
-	if hasWaitSeconds == 1 {
-		waitBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(waitBytes, waitSeconds)
-		payload = append(payload, waitBytes...)
 	}
 
 	return payload
@@ -256,16 +239,12 @@ func enqueuePayloadWriter(route string, body []byte, delaySeconds uint64) func(*
 	}
 }
 
-func reservePayloadWriter(route string, leaseSeconds uint64, batchSize uint32, waitSeconds uint64) func(*bytes.Buffer) {
+func reservePayloadWriter(route string, leaseSeconds uint64, batchSize uint32) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		routeBytes := []byte(route)
 		hasBatchSize := uint8(0)
 		if batchSize > 0 {
 			hasBatchSize = 1
-		}
-		hasWaitSeconds := uint8(0)
-		if waitSeconds > 0 {
-			hasWaitSeconds = 1
 		}
 		// [u32 BE] route_len
 		encoding.WriteU32(buf, uint32(len(routeBytes)))
@@ -278,12 +257,6 @@ func reservePayloadWriter(route string, leaseSeconds uint64, batchSize uint32, w
 		// [u32 BE] batch_size (if has_batch_size)
 		if hasBatchSize == 1 {
 			encoding.WriteU32(buf, batchSize)
-		}
-		// [u8] has_wait_seconds
-		buf.WriteByte(hasWaitSeconds)
-		// [u64 BE] wait_seconds (if has_wait_seconds)
-		if hasWaitSeconds == 1 {
-			encoding.WriteU64(buf, waitSeconds)
 		}
 	}
 }

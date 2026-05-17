@@ -70,7 +70,7 @@ type Client interface {
 	// ListBySelector retrieves schedules matching a canonical schedule selector.
 	ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error)
 
-	// Subscribe subscribes to schedule fire notifications for the given route pattern.
+	// Subscribe subscribes to schedule fire notifications for the given exact schedule route.
 	// When a schedule fires, the handler is invoked with the schedule's payload.
 	// Subscriptions are session-scoped and lost on disconnect.
 	Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*Subscription, error)
@@ -163,7 +163,12 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 	if err := types.ValidateScheduleRoute(route); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return "", fmt.Errorf("invalid route: %w", err)
+		return "", fmt.Errorf("invalid schedule route: %w", err)
+	}
+	if err := validateCronExpression(cronExpr); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return "", err
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreate, scheduleCreatePayloadWriter(route, cronExpr, payload))
@@ -177,7 +182,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return "", fmt.Errorf("CREATE failed: %w", mapScheduleError(err.Error()))
+		return "", fmt.Errorf("CREATE failed: %w", mapScheduleError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("CREATE failed: unexpected status")
@@ -210,7 +215,7 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 	if err := types.ValidateScheduleRoute(route); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("invalid route: %w", err)
+		return fmt.Errorf("invalid schedule route: %w", err)
 	}
 
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCancel, scheduleCancelPayloadWriter(route))
@@ -224,7 +229,7 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("CANCEL failed: %w", mapScheduleError(err.Error()))
+		return fmt.Errorf("CANCEL failed: %w", mapScheduleError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("CANCEL failed: unexpected status")
@@ -256,7 +261,7 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("LIST failed: %w", mapScheduleError(err.Error()))
+		return nil, 0, fmt.Errorf("LIST failed: %w", mapScheduleError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("LIST failed: unexpected status")
@@ -278,35 +283,50 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 		span.SetStatus(codes.Error, err.Error())
 		return nil, 0, fmt.Errorf("LIST failed to parse total_count: %w", err)
 	}
-	remaining = remaining[bytesRead:]
+	entries, err := parseScheduleListEntries(remaining[bytesRead:])
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, 0, fmt.Errorf("LIST failed: %w", err)
+	}
 
-	var entries []ScheduleEntry
-	pos := 0 // Parse position in remaining bytes
-	for pos < len(remaining) {
-		if pos+1 > len(remaining) {
-			break
+	return entries, totalCount, nil
+}
+
+func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
+	entries := make([]ScheduleEntry, 0)
+	pos := 0
+	for {
+		if pos >= len(remaining) {
+			return nil, fmt.Errorf("LIST response missing entry terminator")
 		}
 		hasEntry := remaining[pos]
 		pos++
 
-		if hasEntry == 0 {
-			break
+		switch hasEntry {
+		case 0:
+			if pos != len(remaining) {
+				return nil, fmt.Errorf("LIST response has trailing bytes: %d", len(remaining)-pos)
+			}
+			return entries, nil
+		case 1:
+		default:
+			return nil, fmt.Errorf("LIST response invalid has_entry flag: %d", hasEntry)
 		}
 
-		// Per spec: route_len, route, cron_len, cron, payload_len, payload
 		routeStr, newPos, err := connection.ReadString(remaining, pos)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("LIST response invalid route: %w", err)
 		}
 		pos = newPos
 		cronStr, newPos, err := connection.ReadString(remaining, pos)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("LIST response invalid cron: %w", err)
 		}
 		pos = newPos
 		payloadBytes, newPos, err := connection.ReadBytes(remaining, pos)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("LIST response invalid payload: %w", err)
 		}
 		pos = newPos
 		payloadCopy := make([]byte, len(payloadBytes))
@@ -318,8 +338,6 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 			Payload: payloadCopy,
 		})
 	}
-
-	return entries, totalCount, nil
 }
 
 func (c *client) ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
@@ -357,7 +375,7 @@ func (c *client) ListBySelector(ctx context.Context, selector string, offset, li
 	return window, totalCount, nil
 }
 
-// Subscribe per CLIENT_SPEC.md (703): Request [route_pattern]. Response: [status][optional u64 subscription_id].
+// Subscribe per CLIENT_SPEC.md (703): Request [route]. Response: [status][optional u64 subscription_id].
 func (c *client) Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*Subscription, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
@@ -365,10 +383,10 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 		log.Debug("schedule.Subscribe", "pattern", pattern)
 	}
 	c.initScheduleNotifyHandler()
-	if err := types.ValidateScheduleSelector(pattern); err != nil {
+	if err := types.ValidateScheduleRoute(pattern); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("invalid pattern: %w", err)
+		return nil, fmt.Errorf("invalid schedule route: %w", err)
 	}
 
 	subID, handlerID, err := c.subscriptions.Subscribe(pattern, handler, func(pattern string) (uint64, error) {
@@ -388,7 +406,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 }
 
 // Unsubscribe per CLIENT_SPEC.md (704):
-// Request: [string route_pattern]
+// Request: [string route]
 func (c *client) unsubscribe(sub *Subscription) {
 	if !c.subscriptions.Unsubscribe(sub.pattern, sub.handlerID) {
 		return
@@ -427,7 +445,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapScheduleError(err.Error()))
+		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapScheduleError(err))
 	}
 	if !success {
 		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")
@@ -471,30 +489,61 @@ func (c *client) listAll(ctx context.Context) ([]ScheduleEntry, error) {
 }
 
 func filterScheduleEntries(entries []ScheduleEntry, selector string) []ScheduleEntry {
-	if strings.HasSuffix(selector, "/*") {
-		prefix := strings.TrimSuffix(selector, "*")
-		return filterScheduleEntriesByPrefix(entries, prefix)
-	}
-
-	if len(strings.Split(strings.TrimPrefix(selector, "schedule://"), "/")) == 3 {
-		filtered := make([]ScheduleEntry, 0, len(entries))
-		for _, entry := range entries {
-			if entry.Route == selector {
-				filtered = append(filtered, entry)
-			}
-		}
-		return filtered
-	}
-
-	return filterScheduleEntriesByPrefix(entries, selector+"/")
-}
-
-func filterScheduleEntriesByPrefix(entries []ScheduleEntry, prefix string) []ScheduleEntry {
 	filtered := make([]ScheduleEntry, 0, len(entries))
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Route, prefix) {
+		if scheduleSelectorMatches(selector, entry.Route) {
 			filtered = append(filtered, entry)
 		}
 	}
 	return filtered
+}
+
+func scheduleSelectorMatches(selector string, route string) bool {
+	selectorSegments, ok := scheduleSegments(selector)
+	if !ok {
+		return false
+	}
+	routeSegments, ok := scheduleSegments(route)
+	if !ok || len(routeSegments) != 4 {
+		return false
+	}
+
+	switch len(selectorSegments) {
+	case 2:
+		return selectorSegments[1] == "**" && selectorSegments[0] == routeSegments[0]
+	case 3:
+		return selectorSegments[2] == "*" &&
+			selectorSegments[0] == routeSegments[0] &&
+			selectorSegments[1] == routeSegments[1]
+	case 4:
+		if selectorSegments[3] == "*" {
+			return selectorSegments[0] == routeSegments[0] &&
+				selectorSegments[1] == routeSegments[1] &&
+				selectorSegments[2] == routeSegments[2]
+		}
+		return selectorSegments[0] == routeSegments[0] &&
+			selectorSegments[1] == routeSegments[1] &&
+			selectorSegments[2] == routeSegments[2] &&
+			selectorSegments[3] == routeSegments[3]
+	default:
+		return false
+	}
+}
+
+func scheduleSegments(route string) ([]string, bool) {
+	if !strings.HasPrefix(route, "schedule://") {
+		return nil, false
+	}
+
+	path := strings.TrimPrefix(route, "schedule://")
+	segments := strings.Split(path, "/")
+	if len(segments) == 0 {
+		return nil, false
+	}
+	for _, segment := range segments {
+		if segment == "" {
+			return nil, false
+		}
+	}
+	return segments, true
 }

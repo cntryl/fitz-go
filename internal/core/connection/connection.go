@@ -73,9 +73,11 @@ type Connection struct {
 	mux *Multiplexer
 
 	// Dispatch loop control
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{} // Closed when dispatch loop exits
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{} // Closed when dispatch loop exits
+	started atomic.Bool   // Set once Start has launched the dispatch loop
+	closed  atomic.Bool   // Set once Close has begun shutdown
 
 	// Connection error (set when connection closes)
 	connError atomic.Value // stores error
@@ -128,10 +130,11 @@ func DefaultConfig() Config {
 
 // Common errors
 var (
-	ErrNotAuthenticated      = errors.New("not authenticated")
-	ErrAuthenticationFailed  = errors.New("authentication failed")
-	ErrAuthenticationTimeout = errors.New("authentication timeout")
-	ErrConnectionClosed      = errors.New("connection closed")
+	ErrNotAuthenticated         = errors.New("not authenticated")
+	ErrAuthenticationFailed     = errors.New("authentication failed")
+	ErrAuthenticationTimeout    = errors.New("authentication timeout")
+	ErrConnectionClosed         = errors.New("connection closed")
+	ErrConnectionAlreadyStarted = errors.New("connection already started")
 )
 
 // New creates a new connection with the given transport.
@@ -270,6 +273,13 @@ func (c *Connection) initAsyncHandlerMetrics() {
 // Starts dispatch loop and performs CONNECT handshake.
 // Blocks until authentication is confirmed or fails.
 func (c *Connection) Start(ctx context.Context) error {
+	if c.closed.Load() {
+		return ErrConnectionClosed
+	}
+	if !c.started.CompareAndSwap(false, true) {
+		return ErrConnectionAlreadyStarted
+	}
+
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.start")
 	defer span.End()
 
@@ -493,12 +503,13 @@ func (c *Connection) handleReadError(err error) {
 func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []byte) (_ []byte, retErr error) {
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
 	defer span.End()
+	metricCtx := c.LifecycleContext()
 
 	reqStart := time.Now()
 	defer func() {
 		attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
 		if c.requestDuration != nil {
-			c.requestDuration.Record(context.Background(), time.Since(reqStart).Milliseconds(), attrs)
+			c.requestDuration.Record(metricCtx, time.Since(reqStart).Milliseconds(), attrs)
 		}
 		if retErr != nil && c.requestErrors != nil {
 			errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
@@ -508,7 +519,7 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 			} else {
 				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
 			}
-			c.requestErrors.Add(context.Background(), 1, metric.WithAttributes(errorAttrs...))
+			c.requestErrors.Add(metricCtx, 1, metric.WithAttributes(errorAttrs...))
 		}
 	}()
 
@@ -581,12 +592,13 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, writePayload func(*bytes.Buffer)) (_ []byte, retErr error) {
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_request_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
 	defer span.End()
+	metricCtx := c.LifecycleContext()
 
 	reqStart := time.Now()
 	defer func() {
 		attrs := metric.WithAttributes(attribute.Int("fitz.msg_type", int(msgType)))
 		if c.requestDuration != nil {
-			c.requestDuration.Record(context.Background(), time.Since(reqStart).Milliseconds(), attrs)
+			c.requestDuration.Record(metricCtx, time.Since(reqStart).Milliseconds(), attrs)
 		}
 		if retErr != nil && c.requestErrors != nil {
 			errorAttrs := []attribute.KeyValue{attribute.Int("fitz.msg_type", int(msgType))}
@@ -596,7 +608,7 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 			} else {
 				errorAttrs = append(errorAttrs, attribute.Int64("fitz.error_code", 0))
 			}
-			c.requestErrors.Add(context.Background(), 1, metric.WithAttributes(errorAttrs...))
+			c.requestErrors.Add(metricCtx, 1, metric.WithAttributes(errorAttrs...))
 		}
 	}()
 
@@ -746,6 +758,13 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 
 // Close cleanly shuts down the connection.
 func (c *Connection) Close() error {
+	if c == nil {
+		return nil
+	}
+	if !c.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+
 	// Cancel context (signals dispatch loop to stop)
 	c.cancel()
 
@@ -754,8 +773,10 @@ func (c *Connection) Close() error {
 	// because the TCP read is a blocking I/O call that ignores context cancellation.
 	err := c.transport.Close()
 
-	// Wait for dispatch loop to exit (now guaranteed to return since transport is closed)
-	<-c.done
+	// Wait for dispatch loop to exit if it has been started.
+	if c.started.Load() {
+		<-c.done
+	}
 
 	c.setState(StateClosed)
 	if c.logger != nil {
@@ -870,8 +891,9 @@ func (c *Connection) AcquireAsyncHandlerSlot(ctx context.Context) (release func(
 		return noop, true
 	}
 	if ctx == nil {
-		ctx = context.Background()
+		ctx = c.LifecycleContext()
 	}
+	metricCtx := c.LifecycleContext()
 
 	start := time.Now()
 	recordWait := func(recordCtx context.Context) {
@@ -889,16 +911,16 @@ func (c *Connection) AcquireAsyncHandlerSlot(ctx context.Context) (release func(
 	case c.asyncHandlerSem <- struct{}{}:
 		recordWait(ctx)
 		if c.asyncHandlersActive != nil {
-			c.asyncHandlersActive.Add(context.Background(), 1)
+			c.asyncHandlersActive.Add(metricCtx, 1)
 		}
 		acquiredAt := time.Now()
 		return func() {
 			<-c.asyncHandlerSem
 			if c.asyncHandlersActive != nil {
-				c.asyncHandlersActive.Add(context.Background(), -1)
+				c.asyncHandlersActive.Add(metricCtx, -1)
 			}
 			if c.asyncSlotOccupancyMs != nil {
-				c.asyncSlotOccupancyMs.Record(context.Background(), time.Since(acquiredAt).Milliseconds())
+				c.asyncSlotOccupancyMs.Record(metricCtx, time.Since(acquiredAt).Milliseconds())
 			}
 		}, true
 	case <-ctx.Done():

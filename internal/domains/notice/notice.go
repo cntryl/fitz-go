@@ -146,7 +146,7 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 	}
 
 	// Validate route format (exact route for publish, not pattern)
-	if err := types.ValidateRoute(route, "notice"); err != nil {
+	if err := types.ValidateFixedRoute(route, "notice", 3); err != nil {
 		return fmt.Errorf("invalid route: %w", err)
 	}
 
@@ -165,6 +165,11 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHa
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("notice.Subscribe", "pattern", pattern)
+	}
+	if err := types.ValidateSelectorRoute(pattern, "notice", 3, true); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	c.initNotifyHandler()
 
@@ -190,9 +195,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 	c.conn.AddSubscriptions(-1)
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
-	// Server expects [string pattern] (the original subscription pattern).
+	// Server expects [u64 subscription_id].
 	ctx := c.conn.LifecycleContext()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeUnsubscribe, unsubscribePayloadWriter(sub.route))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeUnsubscribe, unsubscribePayloadWriter(sub.subID))
 	if err != nil {
 		return
 	}
@@ -222,7 +227,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapNoticeError(err.Error()))
+		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapNoticeError(err))
 	}
 	if !success {
 		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")

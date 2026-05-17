@@ -4,7 +4,7 @@ package rpc
 
 import (
 	"context"
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"sync"
@@ -40,6 +40,16 @@ type RPCHandler func(ctx context.Context, req InboundRequest, w ResponseWriter) 
 type ResponseFrame struct {
 	Body     []byte
 	Sequence uint64
+}
+
+var readRandom = crand.Read
+
+func generateCorrelationID() ([16]byte, error) {
+	var correlationID [16]byte
+	if _, err := readRandom(correlationID[:]); err != nil {
+		return [16]byte{}, fmt.Errorf("generate correlation id: %w", err)
+	}
+	return correlationID, nil
 }
 
 // Subscription represents an active worker registration.
@@ -157,17 +167,17 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 			streamEnd = payload[offset] == 1
 		}
 
-		if streamEnd {
-			// End-of-stream: close channel and clean up; do not push a frame (caller sees N data frames then done).
-			c.mu.Lock()
-			delete(c.pendingRPCs, correlationID)
-			c.mu.Unlock()
-			close(ch)
-		} else {
+		if !streamEnd || len(body) > 0 {
 			select {
 			case ch <- ResponseFrame{Body: body, Sequence: seq}:
 			case <-c.conn.LifecycleContext().Done():
 			}
+		}
+		if streamEnd {
+			c.mu.Lock()
+			delete(c.pendingRPCs, correlationID)
+			c.mu.Unlock()
+			close(ch)
 		}
 		return
 	}
@@ -287,14 +297,15 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("rpc.RegisterWorker", "route", route)
 	}
-	c.initRPCHandler()
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "rpc"); err != nil {
+	if err := types.ValidateConcreteRoute(route, "rpc"); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
+
+	c.initRPCHandler()
 
 	sub, err := c.subscribeWorker(ctx, route, handler)
 	if err != nil {
@@ -332,7 +343,6 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("rpc.Call", "route", route)
 	}
-	c.initRPCHandler()
 
 	// Check if context is already canceled
 	select {
@@ -342,15 +352,20 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "rpc"); err != nil {
+	if err := types.ValidateConcreteRoute(route, "rpc"); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
-	// Generate correlation ID
-	var correlationID [16]byte
-	rand.Read(correlationID[:])
+	c.initRPCHandler()
+
+	correlationID, err := generateCorrelationID()
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
 
 	// Create response channel
 	ch := make(chan ResponseFrame, 32)
@@ -379,7 +394,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		close(ch)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("REQUEST failed: %w", mapRPCError(err.Error()))
+		return nil, fmt.Errorf("REQUEST failed: %w", mapRPCError(err))
 	}
 	if !success {
 		c.mu.Lock()
@@ -398,29 +413,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		correlationID: correlationID,
 		client:        c,
 	}
-
-	// Wait for first response or context cancellation
-	// This ensures Request() returns error if context is canceled before any responses arrive
-	select {
-	case frame, ok := <-ch:
-		if ok {
-			// Store first frame directly on iterator to avoid a forwarding goroutine.
-			iterator.firstFrame = frame
-			iterator.hasFirst = true
-		}
-		return iterator, nil
-	case <-ctx.Done():
-		// Context canceled before any response
-		c.mu.Lock()
-		delete(c.pendingRPCs, correlationID)
-		c.mu.Unlock()
-		iterator.mu.Lock()
-		iterator.done = true
-		iterator.err = ctx.Err()
-		iterator.mu.Unlock()
-		close(ch)
-		return nil, ctx.Err()
-	}
+	return iterator, nil
 }
 
 // responseWriter implements ResponseWriter for workers.
@@ -446,16 +439,11 @@ func (w *responseWriter) sendEnd() {
 	seq := w.seq
 	w.mu.Unlock()
 
-	payload, err := EncodeRPCResponse(w.correlationID, seq, nil, true)
-	if err != nil {
-		return
-	}
-
 	// sendEnd is called from finalisation paths (worker return, iterator close).
 	// Errors here are intentionally dropped: the correlation ID has already
 	// been removed from the in-flight map, so there is no state to roll back.
 	// The caller observes the cancellation/end via iterator.Err() or context.
-	_ = w.conn.SendFireAndForget(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, payload)
+	_ = w.conn.SendFireAndForgetWithWriter(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, rpcResponsePayloadWriter(w.correlationID, seq, nil, true))
 }
 
 // rpcIterator iterates over response frames from a Call.
@@ -464,8 +452,6 @@ type rpcIterator struct {
 	ctx           context.Context
 	correlationID [16]byte
 	client        *client
-	firstFrame    ResponseFrame
-	hasFirst      bool
 	current       ResponseFrame
 	err           error
 	done          bool
@@ -474,12 +460,6 @@ type rpcIterator struct {
 
 func (it *rpcIterator) Next() bool {
 	it.mu.Lock()
-	if it.hasFirst {
-		it.current = it.firstFrame
-		it.hasFirst = false
-		it.mu.Unlock()
-		return true
-	}
 	if it.done {
 		it.mu.Unlock()
 		return false
@@ -580,7 +560,7 @@ func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCH
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err.Error()))
+		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err))
 	}
 	if !success {
 		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: unexpected status")

@@ -12,6 +12,25 @@ type QueueAvailabilityNotification struct {
 
 type QueueAvailabilityHandler func(context.Context, QueueAvailabilityNotification) error
 
+type queueReserveConfig struct {
+	batchSize   uint32
+	waitSeconds uint64
+}
+
+type QueueReserveOption func(*queueReserveConfig)
+
+func WithQueueReserveBatchSize(batchSize uint32) QueueReserveOption {
+	return func(cfg *queueReserveConfig) {
+		cfg.batchSize = batchSize
+	}
+}
+
+func WithQueueReserveWaitSeconds(waitSeconds uint64) QueueReserveOption {
+	return func(cfg *queueReserveConfig) {
+		cfg.waitSeconds = waitSeconds
+	}
+}
+
 type QueueSubscription struct {
 	inner *internalqueue.Subscription
 }
@@ -25,6 +44,7 @@ func (s *QueueSubscription) Unsubscribe() {
 type QueueClient interface {
 	Enqueue(ctx context.Context, route string, body []byte) (uint64, error)
 	Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error)
+	ReserveWithOptions(ctx context.Context, route string, leaseSecs uint64, opts ...QueueReserveOption) ([]*QueueItem, error)
 	Subscribe(ctx context.Context, pattern string, handler QueueAvailabilityHandler) (*QueueSubscription, error)
 }
 
@@ -70,6 +90,34 @@ func (c *queueClient) Enqueue(ctx context.Context, route string, body []byte) (u
 
 func (c *queueClient) Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error) {
 	items, err := c.inner.Reserve(ctx, route, leaseSecs, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	wrapped := make([]*QueueItem, 0, len(items))
+	for _, item := range items {
+		wrapped = append(wrapped, wrapQueueItem(item))
+	}
+	return wrapped, nil
+}
+
+func (c *queueClient) ReserveWithOptions(ctx context.Context, route string, leaseSecs uint64, opts ...QueueReserveOption) ([]*QueueItem, error) {
+	cfg := queueReserveConfig{
+		batchSize: 1,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
+	internalOpts := []internalqueue.ReserveOption{
+		internalqueue.WithBatchSize(cfg.batchSize),
+	}
+	if cfg.waitSeconds > 0 {
+		internalOpts = append(internalOpts, internalqueue.WithWaitSeconds(cfg.waitSeconds))
+	}
+
+	items, err := c.inner.ReserveWithOptions(ctx, route, leaseSecs, internalOpts...)
 	if err != nil {
 		return nil, err
 	}

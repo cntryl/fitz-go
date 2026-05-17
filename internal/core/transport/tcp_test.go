@@ -73,6 +73,23 @@ func TestShouldWriteFrameWithLengthPrefixGivenPayloadWhenWriteCalled(t *testing.
 	})
 }
 
+func TestShouldWriteCompleteFrameGivenShortWritesWhenWriteCalled(t *testing.T) {
+	// Arrange
+	conn := &testkit.MockTCPConn{
+		Written:      make([]byte, 0),
+		MaxWriteSize: 2,
+	}
+	transport := newTestTCPTransport(conn)
+	payload := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
+
+	// Act
+	err := transport.Write(context.Background(), payload)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0x00, 0x00, 0x00, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}, conn.Written)
+}
+
 // TestShouldTimeoutWriteGivenShortDeadlineWhenWriteCalled tests write timeout handling.
 func TestShouldTimeoutWriteGivenShortDeadlineWhenWriteCalled(t *testing.T) {
 	// Arrange

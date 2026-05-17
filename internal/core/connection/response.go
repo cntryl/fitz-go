@@ -6,13 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
+
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // ParseStandardResponse handles the common [u8 status] prefix per CLIENT_SPEC.md.
 // Returns (success, remainingPayload, error).
 // If status=0 (success), returns remaining payload after status byte.
-// If status=1 (error), parses error message and returns it as error.
+// If status=1 (error), parses either a typed [u32 code][u32 msg_len][msg]
+// envelope or the legacy [u32 msg_len][msg] error string.
 func ParseStandardResponse(payload []byte) (bool, []byte, error) {
 	if len(payload) < 1 {
 		return false, nil, errors.New("response too short")
@@ -21,6 +25,10 @@ func ParseStandardResponse(payload []byte) (bool, []byte, error) {
 	status := payload[0]
 
 	if status == 1 { // Error (per CLIENT_SPEC.md)
+		if code, message, ok := parseTypedDomainError(payload[1:]); ok {
+			return false, nil, coreerrors.NewDomainError(code, message)
+		}
+
 		errMsg, _, err := ReadString(payload, 1)
 		if err != nil {
 			return false, nil, fmt.Errorf("decode error message: %w", err)
@@ -30,6 +38,31 @@ func ParseStandardResponse(payload []byte) (bool, []byte, error) {
 
 	// Success (status=0) - return remaining payload
 	return true, payload[1:], nil
+}
+
+func parseTypedDomainError(payload []byte) (uint32, string, bool) {
+	if len(payload) < 8 {
+		return 0, "", false
+	}
+
+	code, offset, err := ReadU32BE(payload, 0)
+	if err != nil {
+		return 0, "", false
+	}
+	if !isKnownDomainErrorCode(code) {
+		return 0, "", false
+	}
+
+	message, newOffset, err := ReadString(payload, offset)
+	if err != nil || newOffset != len(payload) {
+		return 0, "", false
+	}
+
+	return code, message, true
+}
+
+func isKnownDomainErrorCode(code uint32) bool {
+	return !strings.HasPrefix(coreerrors.ErrorCode(code).String(), "unknown_error_")
 }
 
 // Read helpers with bounds checking (per CLIENT_SPEC.md encoding).
@@ -120,6 +153,7 @@ func WriteU8(buf *bytes.Buffer, val uint8) {
 
 // WriteU16BE writes a u16 in big-endian format.
 func WriteU16BE(buf *bytes.Buffer, val uint16) {
+	buf.Grow(2)
 	var b [2]byte
 	binary.BigEndian.PutUint16(b[:], val)
 	buf.Write(b[:])
@@ -127,6 +161,7 @@ func WriteU16BE(buf *bytes.Buffer, val uint16) {
 
 // WriteU32BE writes a u32 in big-endian format.
 func WriteU32BE(buf *bytes.Buffer, val uint32) {
+	buf.Grow(4)
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], val)
 	buf.Write(b[:])
@@ -134,6 +169,7 @@ func WriteU32BE(buf *bytes.Buffer, val uint32) {
 
 // WriteU64BE writes a u64 in big-endian format.
 func WriteU64BE(buf *bytes.Buffer, val uint64) {
+	buf.Grow(8)
 	var b [8]byte
 	binary.BigEndian.PutUint64(b[:], val)
 	buf.Write(b[:])
@@ -141,18 +177,21 @@ func WriteU64BE(buf *bytes.Buffer, val uint64) {
 
 // WriteString writes [u32 BE length][bytes] per CLIENT_SPEC.md.
 func WriteString(buf *bytes.Buffer, s string) {
+	buf.Grow(4 + len(s))
 	WriteU32BE(buf, uint32(len(s)))
 	buf.WriteString(s)
 }
 
 // WriteBytes writes [u32 BE length][bytes] per CLIENT_SPEC.md.
 func WriteBytes(buf *bytes.Buffer, b []byte) {
+	buf.Grow(4 + len(b))
 	WriteU32BE(buf, uint32(len(b)))
 	buf.Write(b)
 }
 
 // WriteUUID writes a fixed 16-byte UUID.
 func WriteUUID(buf *bytes.Buffer, uuid [16]byte) {
+	buf.Grow(16)
 	buf.Write(uuid[:])
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire operation codes for Notice domain. Values are message type identifiers.
@@ -28,9 +29,23 @@ var (
 	ErrNoticeSendFailed   = errors.New("notice send failed")
 )
 
-// mapNoticeError maps a broker error message to a domain-specific Go error.
-func mapNoticeError(msg string) error {
-	l := strings.ToLower(msg)
+// mapNoticeError maps a broker error to a domain-specific Go error.
+func mapNoticeError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		switch uint32(domainErr.Code) {
+		case coreerrors.NoticeInvalidRoute, coreerrors.NoticeInvalidPattern:
+			return ErrNoticeRouteInvalid
+		default:
+			return err
+		}
+	}
+
+	l := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(l, "route") && (strings.Contains(l, "invalid") || strings.Contains(l, "bad")):
 		return ErrNoticeRouteInvalid
@@ -39,7 +54,7 @@ func mapNoticeError(msg string) error {
 	case strings.Contains(l, "send") || strings.Contains(l, "failed"):
 		return ErrNoticeSendFailed
 	default:
-		return errors.New(msg)
+		return err
 	}
 }
 
@@ -77,12 +92,16 @@ func subscribePayloadWriter(route string) func(*bytes.Buffer) {
 	}
 }
 
-func encodeUnsubscribe(route string) []byte {
-	return encodeSubscribe(route)
+func encodeUnsubscribe(subID uint64) []byte {
+	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
+		encoding.WriteU64(buf, subID)
+	})
 }
 
-func unsubscribePayloadWriter(route string) func(*bytes.Buffer) {
-	return subscribePayloadWriter(route)
+func unsubscribePayloadWriter(subID uint64) func(*bytes.Buffer) {
+	return func(buf *bytes.Buffer) {
+		encoding.WriteU64(buf, subID)
+	}
 }
 
 func DecodeNotify(body []byte) (string, []byte, bool) {
@@ -122,6 +141,9 @@ func decodePayload(body []byte) ([]byte, bool) {
 	if int(idx+int(plen)) > len(body) {
 		return nil, false
 	}
+	if idx+int(plen) != len(body) {
+		return nil, false
+	}
 	payload := append([]byte(nil), body[idx:idx+int(plen)]...)
 	return payload, true
 }
@@ -132,14 +154,17 @@ func decodeStatus(body []byte) (uint8, string, bool) {
 	}
 	status := body[0]
 	if status == 0 {
+		if len(body) != 1 {
+			return 0, "", false
+		}
 		return 0, "", true
 	}
 	if len(body) < 5 {
-		return status, "", true
+		return 0, "", false
 	}
 	msgLen := uint32(body[1])<<24 | uint32(body[2])<<16 | uint32(body[3])<<8 | uint32(body[4])
-	if int(5+msgLen) > len(body) {
-		return status, "", true
+	if int(5+msgLen) != len(body) {
+		return 0, "", false
 	}
 	return status, string(body[5 : 5+msgLen]), true
 }
@@ -161,16 +186,6 @@ func DecodeNoticeResponseKey(op uint16, body []byte) (string, error) {
 
 func NoticeWaitKey(op uint16) string {
 	return fmt.Sprintf("%d", op)
-}
-
-// ---------------------------------------------------------------------------
-// Binary helpers
-// ---------------------------------------------------------------------------
-
-func appendU64(buf []byte, v uint64) []byte {
-	return append(buf,
-		byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32),
-		byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 
 func appendU32(buf []byte, v uint32) []byte {

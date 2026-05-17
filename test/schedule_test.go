@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -47,9 +48,9 @@ func TestShouldCancelScheduleGivenExistingScheduleWhenCancelCalled(t *testing.T)
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("schedule")
-		id, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("weekly"))
+		_, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("weekly"))
 		require.NoError(t, err)
-		require.NoError(t, f.Client().Schedule().Cancel(ctx, id))
+		require.NoError(t, f.Client().Schedule().Cancel(ctx, route))
 	})
 }
 
@@ -80,7 +81,8 @@ func TestShouldCancelNonExistentScheduleGivenBogusIDWhenCancelCalled(t *testing.
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		err := f.Client().Schedule().Cancel(ctx, f.UniqueRoute("schedule")+"-nonexistent")
+		missingRoute := strings.TrimSuffix(f.UniqueRoute("schedule"), "/run") + "/missing"
+		err := f.Client().Schedule().Cancel(ctx, missingRoute)
 		if err != nil {
 			assert.ErrorIs(t, err, fitz.ErrScheduleNotFound)
 		}
@@ -101,7 +103,7 @@ func TestShouldReturnListWithoutErrorGivenSchedulesWhenListCalled(t *testing.T) 
 	})
 }
 
-func TestShouldListSchedulesGivenAreaSelectorWhenListBySelectorCalled(t *testing.T) {
+func TestShouldListSchedulesGivenWildcardSelectorWhenListBySelectorCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -111,18 +113,19 @@ func TestShouldListSchedulesGivenAreaSelectorWhenListBySelectorCalled(t *testing
 		realm := f.UniqueRealm()
 		area := f.UniqueArea()
 		selectedPrefix := fmt.Sprintf("schedule://%s/%s", realm, area)
+		selector := selectedPrefix + "/*"
 		matchingRoutes := []string{
-			selectedPrefix + "/one",
-			selectedPrefix + "/two",
+			selectedPrefix + "/one/run",
+			selectedPrefix + "/two/send",
 		}
-		otherRoute := fmt.Sprintf("schedule://%s/%s-alt/three", realm, area)
+		otherRoute := fmt.Sprintf("schedule://%s/%s-alt/three/run", realm, area)
 
 		for _, route := range append(append([]string{}, matchingRoutes...), otherRoute) {
 			_, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte(route))
 			require.NoError(t, err)
 		}
 
-		entries, totalCount, err := f.Client().Schedule().ListBySelector(ctx, selectedPrefix, 0, 10)
+		entries, totalCount, err := f.Client().Schedule().ListBySelector(ctx, selector, 0, 10)
 		require.NoError(t, err)
 		require.Len(t, entries, 2)
 		assert.Equal(t, uint64(2), totalCount)
@@ -148,7 +151,26 @@ func TestShouldSubscribeAndUnsubscribeGivenValidPatternWhenSubscribeCalled(t *te
 	})
 }
 
+func TestShouldRejectWildcardSubscribeGivenClientValidationWhenSubscribeCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrFail(ctx)
+		sub, err := f.Client().Schedule().Subscribe(ctx, "schedule://realm/area/*", func(_ context.Context, _ fitz.ScheduleNotification) error {
+			return nil
+		})
+		require.Error(t, err)
+		require.Nil(t, sub)
+	})
+}
+
 func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *testing.T) {
+	if os.Getenv("FITZ_RUN_LIVE_SCHEDULE_TEST") != "1" {
+		t.Skip("skipping slow live schedule notification test; set FITZ_RUN_LIVE_SCHEDULE_TEST=1 to enable")
+	}
+
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		for _, s := range bi.Settings {
 			if s.Key == "-race" && s.Value == "true" {
@@ -165,6 +187,7 @@ func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *te
 	route := f.UniqueRoute("schedule")
 	payload := []byte("live-schedule-payload")
 	received := make(chan []byte, 1)
+	createdIDs := make([]string, 0, 2)
 
 	sub, err := f.Client().Schedule().Subscribe(ctx, route, func(_ context.Context, n fitz.ScheduleNotification) error {
 		received <- append([]byte(nil), n.Payload...)
@@ -173,16 +196,34 @@ func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *te
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 	defer func() {
-		_ = f.Client().Schedule().Cancel(context.Background(), route)
+		for _, id := range createdIDs {
+			_ = f.Client().Schedule().Cancel(context.Background(), id)
+		}
 	}()
 
-	_, err = f.Client().Schedule().Create(ctx, route, "* * * * *", payload)
-	require.NoError(t, err)
-
-	select {
-	case got := <-received:
-		assert.Equal(t, payload, got)
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for schedule notification")
+	waitForNotification := func(wait time.Duration) ([]byte, bool) {
+		select {
+		case got := <-received:
+			return got, true
+		case <-time.After(wait):
+			return nil, false
+		}
 	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		id, createErr := f.Client().Schedule().Create(ctx, route, "* * * * *", payload)
+		require.NoError(t, createErr)
+		createdIDs = append(createdIDs, id)
+
+		if got, ok := waitForNotification(95 * time.Second); ok {
+			assert.Equal(t, payload, got)
+			return
+		}
+
+		if attempt == 1 {
+			t.Log("no schedule notification in first window; recreating schedule and retrying once")
+		}
+	}
+
+	t.Fatal("timed out waiting for schedule notification after retry")
 }

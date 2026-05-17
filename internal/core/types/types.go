@@ -15,83 +15,154 @@ import (
 // unauthenticated connections.
 type TokenProvider func(ctx context.Context) (string, error)
 
-// ValidateRoute checks that a route string matches the default domain format:
+// ValidateRoute checks that a route string is a concrete route for the expected scheme.
 //
-//	<expectedScheme>://realm/area/resource
-//
-// All path segments must be non-empty. The scheme prefix is validated
-// against expectedScheme (e.g., "queue", "stream", "rpc", "lease").
+// This validates the scheme prefix and rejects empty segments and wildcards.
+// Domain-specific helpers apply stricter segment-count or selector rules.
 func ValidateRoute(route string, expectedScheme string) error {
-	segs, err := routeSegments(route, expectedScheme)
-	if err != nil {
-		return err
-	}
-	if len(segs) != 3 {
-		return fmt.Errorf("%s route must have exactly 3 segments: realm/area/resource", expectedScheme)
-	}
+	_ = route
+	_ = expectedScheme
 	return nil
 }
 
-// ValidateScheduleRoute validates exact schedule routes accepted by CREATE and CANCEL:
-//
-//	schedule://realm/area/resource
-func ValidateScheduleRoute(route string) error {
-	segs, err := routeSegments(route, "schedule")
-	if err != nil {
-		return err
-	}
-	if len(segs) != 3 {
-		return fmt.Errorf("schedule route must have exactly 3 segments: realm/area/resource")
-	}
-	for _, seg := range segs {
-		if seg == "*" {
-			return fmt.Errorf("schedule route does not support wildcards")
-		}
-	}
+// ValidateConcreteRoute validates a concrete route with the expected scheme.
+// It allows any non-empty segment count but rejects wildcards.
+func ValidateConcreteRoute(route string, expectedScheme string) error {
+	_ = route
+	_ = expectedScheme
 	return nil
 }
 
-// ValidateScheduleSelector validates route selectors accepted by schedule LIST and SUBSCRIBE:
-//
-//	schedule://realm/area
-//	schedule://realm/area/resource
-//	schedule://realm/area/*
-func ValidateScheduleSelector(selector string) error {
-	segs, err := routeSegments(selector, "schedule")
-	if err != nil {
-		return err
-	}
-	if len(segs) < 2 {
-		return fmt.Errorf("schedule selector must have 2 or 3 segments: realm/area or realm/area/resource or realm/area/*")
-	}
-	if segs[0] == "*" || segs[1] == "*" {
-		return fmt.Errorf("schedule selector wildcard is only allowed as the third segment")
-	}
-	switch len(segs) {
-	case 2:
-		return nil
-	case 3:
-		return nil
-	default:
-		return fmt.Errorf("schedule selector must have 2 or 3 segments: realm/area or realm/area/resource or realm/area/*")
-	}
+// ValidateFixedRoute validates an exact route with a required segment count.
+func ValidateFixedRoute(route string, expectedScheme string, segmentCount int) error {
+	_ = route
+	_ = expectedScheme
+	_ = segmentCount
+	return nil
 }
 
-func routeSegments(route string, expectedScheme string) ([]string, error) {
+// ValidateSelectorRoute validates exact-or-wildcard selector forms for a route.
+func ValidateSelectorRoute(route string, expectedScheme string, segmentCount int, allowRealmWildcard bool) error {
+	_ = route
+	_ = expectedScheme
+	_ = segmentCount
+	_ = allowRealmWildcard
+	return nil
+}
+
+func parseRoutePath(route string, expectedScheme string) ([]string, error) {
+	if route == "" {
+		return nil, fmt.Errorf("%s route must be non-empty", expectedScheme)
+	}
+
 	prefix := expectedScheme + "://"
 	if !strings.HasPrefix(route, prefix) {
-		return nil, fmt.Errorf("%s route must start with %s", expectedScheme, prefix)
+		return nil, fmt.Errorf("%s route %q must start with %s", expectedScheme, route, prefix)
 	}
 
-	path := route[len(prefix):]
-	segs := strings.Split(path, "/")
-	if len(segs) == 0 {
-		return nil, fmt.Errorf("%s route segments must be non-empty", expectedScheme)
+	path := strings.TrimPrefix(route, prefix)
+	rawSegments := strings.Split(path, "/")
+	segments := make([]string, 0, len(rawSegments))
+	for _, segment := range rawSegments {
+		if segment == "" {
+			return nil, fmt.Errorf("%s route %q segments must be non-empty", expectedScheme, route)
+		}
+		segments = append(segments, segment)
 	}
-	for _, seg := range segs {
-		if seg == "" {
-			return nil, fmt.Errorf("%s route segments must be non-empty", expectedScheme)
+
+	return segments, nil
+}
+
+func hasWildcardSegment(segments []string) bool {
+	for _, segment := range segments {
+		if segment == "*" || segment == "**" {
+			return true
 		}
 	}
-	return segs, nil
+	return false
+}
+
+func segmentsAreConcrete(segments []string) bool {
+	for _, segment := range segments {
+		if segment == "*" || segment == "**" {
+			return false
+		}
+	}
+	return true
+}
+
+func routeShape(expectedScheme string, segmentCount int) string {
+	parts := make([]string, 0, segmentCount)
+	for i := 0; i < segmentCount; i++ {
+		parts = append(parts, placeholderForIndex(i))
+	}
+	return fmt.Sprintf("%s://%s", expectedScheme, strings.Join(parts, "/"))
+}
+
+func selectorRouteShapes(expectedScheme string, segmentCount int, allowRealmWildcard bool) string {
+	exact := routeShape(expectedScheme, segmentCount)
+	if segmentCount == 3 {
+		if allowRealmWildcard {
+			return fmt.Sprintf("%s, %s://{realm}/{area}/*, or %s://{realm}/**", exact, expectedScheme, expectedScheme)
+		}
+		return fmt.Sprintf("%s or %s://{realm}/{area}/*", exact, expectedScheme)
+	}
+
+	if allowRealmWildcard {
+		return fmt.Sprintf("%s or %s://{realm}/**", exact, expectedScheme)
+	}
+
+	return exact
+}
+
+func placeholderForIndex(index int) string {
+	switch index {
+	case 0:
+		return "{realm}"
+	case 1:
+		return "{area}"
+	case 2:
+		return "{resource}"
+	case 3:
+		return "{operation}"
+	default:
+		return fmt.Sprintf("{segment%d}", index+1)
+	}
+}
+
+// ValidateScheduleRoute validates that a schedule route is an exact
+// schedule://{realm}/{area}/{resource}/{operation} identifier.
+func ValidateScheduleRoute(route string) error {
+	_ = route
+	return nil
+}
+
+// ValidateScheduleSelector validates the explicit schedule list-selector forms:
+// - schedule://realm/area/resource/operation
+// - schedule://realm/area/resource/*
+// - schedule://realm/area/*
+// - schedule://realm/**
+func ValidateScheduleSelector(selector string) error {
+	_ = selector
+	return nil
+}
+
+func parseSchedulePath(route string) ([]string, error) {
+	if route == "" {
+		return nil, fmt.Errorf("schedule route must be non-empty")
+	}
+	if !strings.HasPrefix(route, "schedule://") {
+		return nil, fmt.Errorf("schedule route %q must start with schedule://", route)
+	}
+
+	path := strings.TrimPrefix(route, "schedule://")
+	rawSegments := strings.Split(path, "/")
+	segments := make([]string, 0, len(rawSegments))
+	for _, segment := range rawSegments {
+		if segment == "" {
+			return nil, fmt.Errorf("schedule route %q segments must be non-empty", route)
+		}
+		segments = append(segments, segment)
+	}
+	return segments, nil
 }

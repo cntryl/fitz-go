@@ -60,4 +60,30 @@
 //	    _ = frame.Body
 //	}
 //	if err := iter.Err(); err != nil { ... }
+//
+// # Lifecycle and cancellation
+//
+// [Client.Connect] and every domain operation accept a [context.Context]. In
+// the Go SDK, context is the single control plane for deadlines and
+// cancellation:
+//
+//   - canceling Connect aborts the full dial + auth attempt
+//   - canceling a unary domain call aborts the in-flight request
+//   - canceling a streaming RPC call stops the returned iterator; observe the
+//     terminal cause via [Iterator.Err]
+//
+// [Client.State] exposes the connection lifecycle:
+//
+//   - [ConnectionStateDisconnected] before Connect and after unrecoverable loss
+//   - [ConnectionStateConnecting] while establishing the transport
+//   - [ConnectionStateConnected] after the transport is up, before auth settles
+//   - [ConnectionStateAuthenticating] while CONNECT / auth is in progress
+//   - [ConnectionStateAuthenticated] once the client is ready for domain traffic
+//   - [ConnectionStateReconnecting] while automatic reconnect is actively retrying
+//   - [ConnectionStateClosed] after [Client.Close]
+//
+// When reconnect is enabled, domain subscriptions and RPC worker registrations
+// are restored automatically after the transport is re-established. [Client.Close]
+// is idempotent and permanently transitions the client to Closed; closed clients
+// are not reusable.
 package fitz

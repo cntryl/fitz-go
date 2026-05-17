@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire opcodes for Stream domain (per CLIENT_SPEC.md). Values are message type identifiers.
@@ -22,6 +23,13 @@ const (
 	StreamNotify      uint16 = 609 // Server -> Client only
 )
 
+type CommitMode uint8
+
+const (
+	CommitModeBuffered CommitMode = 0
+	CommitModeSync     CommitMode = 1
+)
+
 // Domain-specific errors. Returned when the server rejects a stream operation.
 //   - ErrStreamNotFound: the stream route does not exist.
 //   - ErrStreamConflict: Begin failed due to expected-offset mismatch (OCC).
@@ -32,26 +40,43 @@ var (
 	ErrStreamReadError = errors.New("stream read error")
 )
 
-// mapStreamError maps a broker error message to a domain-specific Go error.
-func mapStreamError(msg string) error {
-	l := strings.ToLower(msg)
+// mapStreamError maps a broker error to a domain-specific Go error.
+func mapStreamError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		switch uint32(domainErr.Code) {
+		case coreerrors.StreamConcurrencyConflict:
+			return ErrStreamConflict
+		case coreerrors.StreamResourceNotFound:
+			return ErrStreamNotFound
+		case coreerrors.StreamOffsetTooFarAhead, coreerrors.StreamInvalidReadBound, coreerrors.StreamReadBeyondWatermark:
+			return ErrStreamReadError
+		default:
+			return err
+		}
+	}
+
+	l := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(l, "not found"):
 		return ErrStreamNotFound
 	case strings.Contains(l, "conflict"):
 		return ErrStreamConflict
 	default:
-		return errors.New(msg)
+		return err
 	}
 }
 
 // EncodeStreamBegin encodes a STREAM BEGIN request per CLIENT_SPEC.md.
-// Wire format: [string route][u64 expected_offset][u8 has_ingest_metadata][bytes? ingest_metadata]
+// Wire format: [string route][u8 has_ingest_metadata][bytes? ingest_metadata]
 // ingestMetadata is optional; pass nil to omit.
-func EncodeStreamBegin(route string, expectedOffset uint64, ingestMetadata []byte) ([]byte, error) {
+func EncodeStreamBegin(route string, ingestMetadata []byte) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
-		encoding.WriteU64(buf, expectedOffset)
 		if ingestMetadata != nil {
 			buf.WriteByte(1)
 			encoding.WriteBytes(buf, ingestMetadata)
@@ -62,11 +87,12 @@ func EncodeStreamBegin(route string, expectedOffset uint64, ingestMetadata []byt
 }
 
 // EncodeStreamAppend encodes a STREAM APPEND request per CLIENT_SPEC.md.
-// Wire format: [u64 session_id][bytes body][u8 has_metadata][bytes? metadata]
+// Wire format: [u64 session_id][u64 expected_offset][bytes body][u8 has_metadata][bytes? metadata]
 // metadata is optional; pass nil to omit.
-func EncodeStreamAppend(sessionID uint64, body []byte, metadata []byte) ([]byte, error) {
+func EncodeStreamAppend(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
+		encoding.WriteU64(buf, expectedOffset)
 		encoding.WriteBytes(buf, body)
 		if metadata != nil {
 			buf.WriteByte(1)
@@ -80,10 +106,10 @@ func EncodeStreamAppend(sessionID uint64, body []byte, metadata []byte) ([]byte,
 // EncodeStreamCommit encodes a STREAM COMMIT request per CLIENT_SPEC.md.
 // Wire format: [u64 session_id][u8 mode]
 // mode: 0=Buffered, 1=Sync
-func EncodeStreamCommit(sessionID uint64, mode uint8) ([]byte, error) {
+func EncodeStreamCommit(sessionID uint64, mode CommitMode) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
-		buf.WriteByte(mode)
+		buf.WriteByte(byte(mode))
 	}), nil
 }
 
@@ -147,10 +173,9 @@ func EncodeStreamUnsubscribe(route string) ([]byte, error) {
 
 // Payload writer helpers for zero-copy frame encoding
 
-func streamBeginPayloadWriter(route string, expectedOffset uint64, ingestMetadata []byte) func(*bytes.Buffer) {
+func streamBeginPayloadWriter(route string, ingestMetadata []byte) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
-		encoding.WriteU64(buf, expectedOffset)
 		if ingestMetadata != nil {
 			buf.WriteByte(1)
 			encoding.WriteBytes(buf, ingestMetadata)
@@ -160,9 +185,10 @@ func streamBeginPayloadWriter(route string, expectedOffset uint64, ingestMetadat
 	}
 }
 
-func streamAppendPayloadWriter(sessionID uint64, body []byte, metadata []byte) func(*bytes.Buffer) {
+func streamAppendPayloadWriter(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
+		encoding.WriteU64(buf, expectedOffset)
 		encoding.WriteBytes(buf, body)
 		if metadata != nil {
 			buf.WriteByte(1)
@@ -173,10 +199,10 @@ func streamAppendPayloadWriter(sessionID uint64, body []byte, metadata []byte) f
 	}
 }
 
-func streamCommitPayloadWriter(sessionID uint64, mode uint8) func(*bytes.Buffer) {
+func streamCommitPayloadWriter(sessionID uint64, mode CommitMode) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
-		buf.WriteByte(mode)
+		buf.WriteByte(byte(mode))
 	}
 }
 

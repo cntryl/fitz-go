@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire opcodes for Lease domain (per CLIENT_SPEC.md 400–403).
@@ -30,9 +31,29 @@ var (
 	ErrLeaseNotFound = errors.New("lease not found")
 )
 
-// mapLeaseError maps a broker error message to a domain-specific Go error.
-func mapLeaseError(msg string) error {
-	lower := strings.ToLower(msg)
+// mapLeaseError maps a broker error to a domain-specific Go error.
+func mapLeaseError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		switch uint32(domainErr.Code) {
+		case coreerrors.LeaseHeld:
+			return ErrLeaseHeld
+		case coreerrors.LeaseInvalidFence:
+			return ErrInvalidFence
+		case coreerrors.LeaseExpired:
+			return ErrLeaseExpired
+		case coreerrors.LeaseNotFound:
+			return ErrLeaseNotFound
+		default:
+			return err
+		}
+	}
+
+	lower := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(lower, "held"):
 		return ErrLeaseHeld
@@ -43,7 +64,7 @@ func mapLeaseError(msg string) error {
 	case strings.Contains(lower, "not found"):
 		return ErrLeaseNotFound
 	default:
-		return errors.New(msg)
+		return err
 	}
 }
 

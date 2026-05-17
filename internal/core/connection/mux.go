@@ -99,6 +99,9 @@ func (m *Multiplexer) UnregisterRequest(msgType uint16, responseChan chan []byte
 		if req.responseChan == responseChan {
 			queue.Remove(e)
 			m.requestsInFlight.Add(-1)
+			if queue.Len() == 0 {
+				delete(m.pending, msgType)
+			}
 			return
 		}
 	}
@@ -108,8 +111,15 @@ func (m *Multiplexer) UnregisterRequest(msgType uint16, responseChan chan []byte
 // Called by the connection's dispatch loop when a frame arrives.
 func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	// Handle async deliveries (per CLIENT_SPEC.md MessageType ranges)
-	// Queue NOTIFY (209), Lease NOTIFY (409), Notice NOTIFY (504), Stream NOTIFY (609) use same payload format
-	if msgType == 209 || msgType == 409 || msgType == 504 || msgType == 609 {
+	// Queue NOTIFY (209) uses a queue-specific payload shape.
+	if msgType == 209 {
+		if handler := m.notifyHandlers[msgType]; handler != nil {
+			m.handleQueueNotify(payload, handler)
+		}
+		return
+	}
+	// Lease NOTIFY (409), Notice NOTIFY (504), Stream NOTIFY (609) use the shared route/payload shape.
+	if msgType == 409 || msgType == 504 || msgType == 609 {
 		if handler := m.notifyHandlers[msgType]; handler != nil {
 			m.handleNotify(payload, handler)
 		}
@@ -163,19 +173,33 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	// Pop oldest pending request (FIFO order)
 	elem := queue.Front()
 	req := queue.Remove(elem).(*pendingRequest)
+	if queue.Len() == 0 {
+		delete(m.pending, msgType)
+	}
 	m.mu.Unlock()
 
 	m.requestsInFlight.Add(-1)
 	m.responsesTotal.Add(1)
 
-	// Non-blocking send (prevents dispatch loop from stalling)
+	// Deliver on a fast path first; if the consumer is slow, wait off the
+	// dispatch loop so response routing stays responsive under backpressure.
 	select {
 	case req.responseChan <- payload:
-		// Success - response delivered
-	case <-time.After(100 * time.Millisecond):
-		// Slow consumer - drop response and close channel
+		// Success - response delivered immediately.
+	default:
+		go m.deliverResponse(req.responseChan, append([]byte(nil), payload...))
+	}
+}
+
+func (m *Multiplexer) deliverResponse(responseChan chan []byte, payload []byte) {
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case responseChan <- payload:
+	case <-timer.C:
 		m.responsesDropped.Add(1)
-		close(req.responseChan)
+		close(responseChan)
 	}
 }
 
@@ -218,6 +242,33 @@ func (m *Multiplexer) handleNotify(payload []byte, handler func(subID uint64, ro
 	msgPayload := payload[offset : offset+int(payloadLen)]
 
 	handler(subID, route, msgPayload)
+}
+
+// handleQueueNotify processes Queue NOTIFY messages (209).
+// Per queue sink wire format: [u64 BE subscription_id][u32 route_len][route][u64 ready][u64 delayed][u64 inflight]
+func (m *Multiplexer) handleQueueNotify(payload []byte, handler func(subID uint64, route string, payload []byte)) {
+	if len(payload) < 8+4 {
+		return
+	}
+
+	offset := 0
+	subID := binary.BigEndian.Uint64(payload[offset : offset+8])
+	offset += 8
+
+	routeLen := binary.BigEndian.Uint32(payload[offset : offset+4])
+	offset += 4
+	if len(payload) < offset+int(routeLen) {
+		return
+	}
+	route := string(payload[offset : offset+int(routeLen)])
+	offset += int(routeLen)
+
+	// Queue watch notifications carry three u64 counters after the route.
+	if len(payload) < offset+24 {
+		return
+	}
+
+	handler(subID, route, payload[offset:])
 }
 
 // handleScheduleNotify processes Schedule NOTIFY messages (705).
@@ -314,6 +365,10 @@ func (m *Multiplexer) Close() error {
 	for _, queue := range m.pending {
 		for e := queue.Front(); e != nil; e = e.Next() {
 			req := e.Value.(*pendingRequest)
+			if req.cancelFunc != nil {
+				req.cancelFunc()
+			}
+			m.requestsInFlight.Add(-1)
 			close(req.responseChan)
 		}
 	}

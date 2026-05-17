@@ -46,7 +46,7 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 	))
 	defer span.End()
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRenew, leaseRenewPayloadWriter(l.route, tokenToU64(token), ttlSecs))
-	if err != nil {
+	if isLeaseHeldError(err) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("EXTEND request failed: %w", err)
@@ -55,7 +55,7 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("EXTEND failed: %w", mapLeaseError(err.Error()))
+		return 0, fmt.Errorf("EXTEND failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("EXTEND failed: unexpected status")
@@ -97,7 +97,7 @@ func (l *Lease) releaseWithToken(ctx context.Context, token []byte) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("RELEASE failed: %w", mapLeaseError(err.Error()))
+		return fmt.Errorf("RELEASE failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("RELEASE failed: unexpected status")
@@ -188,7 +188,7 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 	}
 
 	// Validate route format
-	if err := types.ValidateRoute(route, "lease"); err != nil {
+	if err := types.ValidateFixedRoute(route, "lease", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -209,7 +209,7 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("ACQUIRE failed: %w", mapLeaseError(err.Error()))
+		return nil, fmt.Errorf("ACQUIRE failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		return nil, ErrLeaseHeld
@@ -254,6 +254,11 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("lease.Query", "route", route)
 	}
+	if err := types.ValidateFixedRoute(route, "lease", 3); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
+	}
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseQuery, leaseQueryPayloadWriter(route))
 	if err != nil {
 		span.RecordError(err)
@@ -265,7 +270,7 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("QUERY failed: %w", mapLeaseError(err.Error()))
+		return nil, fmt.Errorf("QUERY failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		recordErr := fmt.Errorf("QUERY failed: unexpected status")
@@ -274,42 +279,61 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 		return nil, recordErr
 	}
 
+	info, err := parseLeaseQueryResponse(remaining)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("QUERY failed: %w", err)
+	}
+	return info, nil
+}
+
+func parseLeaseQueryResponse(remaining []byte) (*LeaseInfo, error) {
 	info := &LeaseInfo{}
 	if len(remaining) < 1 {
-		return info, nil
+		return nil, fmt.Errorf("QUERY response too short: got %d bytes", len(remaining))
 	}
 
 	hasHolder := remaining[0]
 	if hasHolder == 0 {
 		// Lease free: [u32 pending_waiters]
-		if len(remaining) >= 5 {
-			info.PendingWaiters = binary.BigEndian.Uint32(remaining[1:5])
+		if len(remaining) != 5 {
+			return nil, fmt.Errorf("QUERY free response malformed: expected 5 bytes, got %d", len(remaining))
 		}
+		info.PendingWaiters = binary.BigEndian.Uint32(remaining[1:5])
 		return info, nil
+	}
+	if hasHolder != 1 {
+		return nil, fmt.Errorf("QUERY response invalid has_holder flag: %d", hasHolder)
 	}
 
 	info.Held = true
 	offset := 1
 	// owner_id (string = u32 len + bytes)
 	if offset+4 > len(remaining) {
-		return info, nil
+		return nil, fmt.Errorf("QUERY held response missing owner_id length")
 	}
 	ownerIDLen := binary.BigEndian.Uint32(remaining[offset : offset+4])
 	offset += 4
 	if offset+int(ownerIDLen) > len(remaining) {
-		return info, nil
+		return nil, fmt.Errorf("QUERY held response truncated owner_id")
 	}
 	info.OwnerID = string(remaining[offset : offset+int(ownerIDLen)])
 	offset += int(ownerIDLen)
 	// ttl_remaining_secs (u64)
 	if offset+8 > len(remaining) {
-		return info, nil
+		return nil, fmt.Errorf("QUERY held response missing ttl_remaining_secs")
 	}
 	info.TTLRemainingSecs = binary.BigEndian.Uint64(remaining[offset : offset+8])
 	offset += 8
 	// pending_waiters (u32)
-	if offset+4 <= len(remaining) {
-		info.PendingWaiters = binary.BigEndian.Uint32(remaining[offset : offset+4])
+	if offset+4 > len(remaining) {
+		return nil, fmt.Errorf("QUERY held response missing pending_waiters")
+	}
+	info.PendingWaiters = binary.BigEndian.Uint32(remaining[offset : offset+4])
+	offset += 4
+	if offset != len(remaining) {
+		return nil, fmt.Errorf("QUERY held response has trailing bytes: %d", len(remaining)-offset)
 	}
 	return info, nil
 }
@@ -370,7 +394,6 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 			),
 		)
 		defer cancel()
-		defer span.End()
 
 		release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
 		if !ok {
@@ -393,12 +416,17 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 }
 
 // Subscribe registers a handler for lease change notifications.
-// Pattern should be a wildcard pattern (e.g., "lease://realm/area/resource/changed" or "lease://realm/area/**/changed").
+// Pattern must be an exact lease route (lease://realm/area/resource).
 func (c *client) Subscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.lease.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.Debug("lease.Subscribe", "pattern", pattern)
+	}
+	if err := types.ValidateFixedRoute(pattern, "lease", 3); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	c.initNotifyHandler()
 
@@ -467,7 +495,7 @@ func (c *client) subscribe(ctx context.Context, pattern string, handler ChangeHa
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err.Error()))
+		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
 	}
 	if !success {
 		return nil, fmt.Errorf("SUBSCRIBE failed: unexpected status")

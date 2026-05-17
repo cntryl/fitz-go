@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -73,16 +74,39 @@ func TestShouldCleanupPendingResponseGivenStreamEndWhenHandleRPCResponseCalled(t
 	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
 	var correlationID [16]byte
 	correlationID[0] = 2
-	ch := make(chan ResponseFrame)
+	ch := make(chan ResponseFrame, 1)
 	c.pendingRPCs[correlationID] = ch
 
 	// Act
-	c.handleRPCResponse(correlationID, rpcResponsePayload(4, []byte("ignored"), true))
+	c.handleRPCResponse(correlationID, rpcResponsePayload(4, nil, true))
 
 	// Assert
 	_, stillPending := c.pendingRPCs[correlationID]
 	assert.False(t, stillPending)
 	_, ok := <-ch
+	assert.False(t, ok)
+}
+
+func TestShouldDeliverTerminalResponseFrameGivenBodyWhenHandleRPCResponseCalled(t *testing.T) {
+	// Arrange
+	c := &client{pendingRPCs: make(map[[16]byte]chan ResponseFrame)}
+	var correlationID [16]byte
+	correlationID[0] = 3
+	ch := make(chan ResponseFrame, 1)
+	c.pendingRPCs[correlationID] = ch
+
+	// Act
+	c.handleRPCResponse(correlationID, rpcResponsePayload(5, []byte("final"), true))
+
+	// Assert
+	frame, ok := <-ch
+	require.True(t, ok)
+	assert.Equal(t, uint64(5), frame.Sequence)
+	assert.Equal(t, []byte("final"), frame.Body)
+
+	_, stillPending := c.pendingRPCs[correlationID]
+	assert.False(t, stillPending)
+	_, ok = <-ch
 	assert.False(t, ok)
 }
 
@@ -132,6 +156,33 @@ func TestShouldIgnoreMalformedWorkerPayloadGivenShortPayloadWhenHandleWorkerRequ
 
 	// Assert
 	assert.False(t, called)
+}
+
+func TestShouldReturnErrorGivenCorrelationIDGenerationFailureWhenCallCalled(t *testing.T) {
+	// Arrange
+	conn, transport := newStartedRPCConnection(t)
+	client := &client{
+		conn:        conn,
+		workers:     make(map[string]RPCHandler),
+		pendingRPCs: make(map[[16]byte]chan ResponseFrame),
+	}
+	originalReadRandom := readRandom
+	readRandom = func([]byte) (int, error) {
+		return 0, errors.New("entropy unavailable")
+	}
+	t.Cleanup(func() {
+		readRandom = originalReadRandom
+	})
+
+	// Act
+	iter, err := client.Call(context.Background(), "rpc://realm/area/resource", []byte("payload"))
+
+	// Assert
+	require.Error(t, err)
+	require.Nil(t, iter)
+	assert.Contains(t, err.Error(), "generate correlation id")
+	assert.Len(t, transport.GetWrittenFrames(), 1)
+	assert.Empty(t, client.pendingRPCs)
 }
 
 func TestShouldCleanupPendingRPCGivenContextDeadlineWhenNextCalled(t *testing.T) {

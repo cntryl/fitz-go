@@ -1,11 +1,13 @@
 package connection_test
 
 import (
+	"encoding/binary"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -99,6 +101,42 @@ func TestShouldUnblockWaiterGivenPendingRequestWhenDispatchCalled(t *testing.T) 
 	// Assert
 	success := <-done
 	assert.True(t, success)
+}
+
+func TestShouldReturnPromptlyGivenSlowConsumerWhenDispatchCalled(t *testing.T) {
+	// Arrange
+	mux := connection.NewMultiplexer()
+	defer mux.Close()
+
+	ch := make(chan []byte)
+	mux.RegisterRequest(100, ch, nil)
+
+	received := make(chan []byte, 1)
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		received <- <-ch
+	}()
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		mux.Dispatch(100, []byte("response"))
+		close(done)
+	}()
+
+	// Assert dispatch returns quickly instead of parking the loop for the slow consumer window.
+	select {
+	case <-done:
+	case <-time.After(20 * time.Millisecond):
+		t.Fatalf("dispatch blocked for %s", time.Since(start))
+	}
+
+	select {
+	case resp := <-received:
+		assert.Equal(t, []byte("response"), resp)
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("slow consumer did not receive response")
+	}
 }
 
 // TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCalled tests concurrent dispatch behavior.
@@ -203,6 +241,24 @@ func TestShouldCloseGracefullyGivenRegisteredRequestWhenCloseCalledTwice(t *test
 	// Assert
 }
 
+// TestShouldCancelPendingRequestsGivenCancelFuncsWhenCloseCalled tests that pending cancel callbacks run on shutdown.
+func TestShouldCancelPendingRequestsGivenCancelFuncsWhenCloseCalled(t *testing.T) {
+	// Arrange
+	mux := connection.NewMultiplexer()
+	var cancelCount int
+	ch := make(chan []byte, 1)
+	mux.RegisterRequest(100, ch, func() { cancelCount++ })
+
+	// Act
+	err := mux.Close()
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, 1, cancelCount)
+	metrics := mux.Metrics()
+	assert.Equal(t, int64(0), metrics.RequestsInFlight)
+}
+
 // TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead tests metric updates across dispatch.
 func TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead(t *testing.T) {
 	// Arrange
@@ -235,6 +291,53 @@ func TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead(t *testing.T) {
 	metrics = mux.Metrics()
 	assert.Equal(t, int64(0), metrics.RequestsInFlight)
 	assert.Equal(t, uint64(1), metrics.RequestsTotal)
+}
+
+// TestShouldDispatchQueueNotifyGivenQueuePayloadWhenNotifyHandlerRegistered verifies queue watch payload parsing.
+func TestShouldDispatchQueueNotifyGivenQueuePayloadWhenNotifyHandlerRegistered(t *testing.T) {
+	mux := connection.NewMultiplexer()
+	defer mux.Close()
+
+	got := make(chan struct {
+		subID uint64
+		route string
+		body  []byte
+	}, 1)
+
+	mux.SetNotifyHandler(protocol.MessageTypeQueueNotify, func(subID uint64, route string, payload []byte) {
+		copied := append([]byte(nil), payload...)
+		got <- struct {
+			subID uint64
+			route string
+			body  []byte
+		}{subID: subID, route: route, body: copied}
+	})
+
+	route := "queue://realm/area/resource/ready"
+	payload := make([]byte, 8+4+len(route)+24)
+	offset := 0
+	binary.BigEndian.PutUint64(payload[offset:offset+8], 99)
+	offset += 8
+	binary.BigEndian.PutUint32(payload[offset:offset+4], uint32(len(route)))
+	offset += 4
+	copy(payload[offset:offset+len(route)], []byte(route))
+	offset += len(route)
+	binary.BigEndian.PutUint64(payload[offset:offset+8], 3)
+	offset += 8
+	binary.BigEndian.PutUint64(payload[offset:offset+8], 0)
+	offset += 8
+	binary.BigEndian.PutUint64(payload[offset:offset+8], 0)
+
+	mux.Dispatch(protocol.MessageTypeQueueNotify, payload)
+
+	select {
+	case delivered := <-got:
+		assert.Equal(t, uint64(99), delivered.subID)
+		assert.Equal(t, route, delivered.route)
+		assert.Equal(t, payload[8+4+len(route):], delivered.body)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected queue notify delivery")
+	}
 }
 
 // Benchmarks
