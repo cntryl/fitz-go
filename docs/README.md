@@ -17,4 +17,4 @@ The Go SDK follows the canonical Fitz client docs in the server repository under
 - [GRADING.md](GRADING.md)
 - [PERF_RESULTS.md](PERF_RESULTS.md)
 
-Use the canonical docs for protocol behavior and the local docs for Go-specific validation and performance evidence.
+Use the canonical docs for protocol behavior and the local docs for Go-specific verification, parity evidence, and performance notes.

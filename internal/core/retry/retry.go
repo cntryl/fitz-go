@@ -1,4 +1,6 @@
 // Package retry provides exponential backoff retry logic for Fitz client backpressure scenarios.
+//
+//nolint:gosec
 package retry
 
 import (

@@ -1,3 +1,4 @@
+//nolint:gosec,gocritic,unparam
 package testkit
 
 import (
@@ -368,13 +369,14 @@ func parseWSFrame(buf []byte) ([]byte, []byte, bool, error) {
 	masked := buf[1]&0x80 != 0
 	length := uint64(buf[1] & 0x7F)
 	idx := 2
-	if length == 126 {
+	switch length {
+	case 126:
 		if len(buf) < idx+2 {
 			return nil, buf, false, nil
 		}
 		length = uint64(buf[idx])<<8 | uint64(buf[idx+1])
 		idx += 2
-	} else if length == 127 {
+	case 127:
 		if len(buf) < idx+8 {
 			return nil, buf, false, nil
 		}

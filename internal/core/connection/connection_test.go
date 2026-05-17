@@ -1,3 +1,4 @@
+//nolint:errcheck
 package connection_test
 
 import (

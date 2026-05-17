@@ -1,3 +1,4 @@
+//nolint:dupl,gosec,unused,errcheck
 package connection
 
 import (

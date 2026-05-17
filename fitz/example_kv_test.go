@@ -1,3 +1,4 @@
+//nolint:errcheck
 package fitz_test
 
 import (

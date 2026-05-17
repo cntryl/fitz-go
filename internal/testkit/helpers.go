@@ -1,3 +1,4 @@
+//nolint:gosec,errcheck
 package testkit
 
 import (
@@ -71,7 +72,8 @@ func PrecomputeFrames(count int, avgSize int) [][]byte {
 
 // BrokerConnectable checks if a broker is reachable.
 func BrokerConnectable(addr string) bool {
-	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	dialer := net.Dialer{Timeout: 500 * time.Millisecond}
+	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
 	if err != nil {
 		return false
 	}

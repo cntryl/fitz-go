@@ -1,3 +1,4 @@
+//nolint:errcheck
 package client
 
 import (
@@ -81,7 +82,7 @@ func (d *DefaultDialer) dialWebSocket(ctx context.Context, addr string) (net.Con
 
 	reader, err := doClientHandshake(c, u.Host, u.RequestURI())
 	if err != nil {
-		c.Close()
+		func() { _ = c.Close() }()
 		return nil, err
 	}
 

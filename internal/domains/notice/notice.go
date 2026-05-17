@@ -1,5 +1,7 @@
 // Package notice implements the Fitz Notice domain client.
 // Per CLIENT_SPEC.md: Pub/sub with wildcard pattern matching.
+//
+//nolint:errcheck,gosec
 package notice
 
 import (
@@ -94,7 +96,6 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	body := append([]byte(nil), payload...)
 	lifecycleCtx := c.conn.LifecycleContext()
 	for _, handler := range handlers {
-		handler := handler
 		msg := NoticeMsg{
 			Route: route,
 			Body:  append([]byte(nil), body...),

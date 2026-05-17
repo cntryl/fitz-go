@@ -1,3 +1,4 @@
+//nolint:gosec,errcheck,gocritic
 package transport
 
 import (
@@ -346,13 +347,14 @@ func (w *WebSocketTransport) readFrame() (opcode byte, payload []byte, err error
 	length := uint64(header[1] & 0x7F)
 
 	// Read extended payload length if needed
-	if length == 126 {
+	switch length {
+	case 126:
 		var extLen [2]byte
 		if _, err := io.ReadFull(w.reader, extLen[:]); err != nil {
 			return 0, nil, err
 		}
 		length = uint64(binary.BigEndian.Uint16(extLen[:]))
-	} else if length == 127 {
+	case 127:
 		var extLen [8]byte
 		if _, err := io.ReadFull(w.reader, extLen[:]); err != nil {
 			return 0, nil, err

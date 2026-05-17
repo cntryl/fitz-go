@@ -9,6 +9,17 @@ Platform: Windows amd64, 12th Gen Intel(R) Core(TM) i9-12900HK
 go test ./bench -run ^$ -bench "Benchmark(KVTransactionLoopback|NoticePublishHotPath|FrameEncode|RPCCorrelation1KInFlight)" -benchmem -count=3
 ```
 
+## Release Gates
+
+These measurements are the release gate for the hot-path benchmark suite:
+
+- KV transaction loopback stays under 500 us/op.
+- Frame encode stays under 500 ns/op.
+- RPC correlation lookup at 1K in-flight stays under 2 us/op.
+- Notice publish hot path stays above 50,000 ops/sec.
+
+All benchmark runs use `-benchmem` so allocation regressions remain visible. This report is the source of truth for the release bar, and it intentionally does not claim zero-allocation or zero-copy steady-state parsing. If a future change wants that stronger claim, it needs a dedicated proof that is measured separately from these gates.
+
 ## Results Summary
 
 - `BenchmarkKVTransactionLoopback`: ~11.5-15.5 us/op, 4914 B/op, 87 allocs/op
@@ -28,6 +39,8 @@ go test ./bench -run ^$ -bench "Benchmark(KVTransactionLoopback|NoticePublishHot
   - Target (REQ-PERF-007): > 50,000 ops/sec single goroutine loopback
   - Result: PASS by large margin
 
-## Allocation Tracking
+## Comparing Changes
 
-The benchmark command includes `-benchmem`, and the current output records allocation counts for each hot path. The measurements remain throughput-positive, but they do not justify any zero-allocation or zero-copy claim, so this report keeps those claims out of scope.
+Capture two local benchmark runs and compare them with `benchstat` when you need a regression diff. The repo does not maintain a committed benchmark baseline file; the numeric gates above are the authoritative release bar.
+
+Install `benchstat` once if needed with `go install golang.org/x/perf/cmd/benchstat@latest`.

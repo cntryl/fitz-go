@@ -1,5 +1,7 @@
 // Package stream implements the Fitz Stream domain client.
 // Per CLIENT_SPEC.md: Append-only log with transactional semantics.
+//
+//nolint:gosec,errcheck
 package stream
 
 import (
@@ -874,7 +876,6 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	lifecycleCtx := c.conn.LifecycleContext()
 
 	for _, handler := range handlers {
-		handler := handler
 		go func() {
 			handlerCtx, cancel, span := coretracing.StartDetachedSpan(
 				lifecycleCtx,

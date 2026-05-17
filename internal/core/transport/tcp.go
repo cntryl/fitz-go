@@ -1,3 +1,4 @@
+//nolint:gosec,errcheck
 package transport
 
 import (

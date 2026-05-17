@@ -181,6 +181,10 @@ export FITZ_BROKER_JWT_AUDIENCE=fitz
 go test ./...
 ```
 
+Error-path coverage in the broker-backed suite now includes unauthorized operations across all 7 domains, plus invalid KV range and invalid cron cases.
+
+Benchmark thresholds and evidence policy are documented in [docs/PERF_RESULTS.md](docs/PERF_RESULTS.md); treat that report as the source of truth for hot-path gates.
+
 Run the full suite with:
 
 ```bash
@@ -194,6 +198,14 @@ Or use the repo-local verification script:
 ./scripts/verify.ps1
 ```
 
+Run pedantic lint and style checks directly with golangci-lint v2:
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+$(go env GOPATH)/bin/golangci-lint version
+$(go env GOPATH)/bin/golangci-lint run --config .golangci.yml
+```
+
 Run the repo-local spec-compliance conformance suite with:
 
 ```bash
@@ -203,6 +215,8 @@ go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
 ## Local performance workflow
 
 Use direct `go test` and `go tool pprof` commands while optimizing hot paths.
+
+The benchmark gates and evidence policy are summarized in [docs/PERF_RESULTS.md](docs/PERF_RESULTS.md).
 
 Run hotpath micro-benchmarks:
 
@@ -224,27 +238,31 @@ go tool pprof -top cpu.prof
 go tool pprof -top mem.prof
 ```
 
-Save benchmark outputs directly when comparing changes:
+When you need a regression diff, capture two local benchmark runs and compare them with `benchstat`:
 
 ```bash
-# Compare against the checked-in baseline
 go test -run=^$ -bench=. -benchmem -count=3 \
-  github.com/cntryl/fitz-go/internal/protocol \
-  github.com/cntryl/fitz-go/internal/core/connection \
-  github.com/cntryl/fitz-go/internal/core/encoding \
-  github.com/cntryl/fitz-go/internal/core/transport \
-  github.com/cntryl/fitz-go/internal/domains/rpc \
-  github.com/cntryl/fitz-go/internal/domains/stream \
-  github.com/cntryl/fitz-go/internal/domains/kv \
-  github.com/cntryl/fitz-go/internal/domains/notice \
-  github.com/cntryl/fitz-go/internal/domains/schedule > new.txt
-benchstat benchmarks/baseline.txt new.txt
+	github.com/cntryl/fitz-go/internal/protocol \
+	github.com/cntryl/fitz-go/internal/core/connection \
+	github.com/cntryl/fitz-go/internal/core/encoding \
+	github.com/cntryl/fitz-go/internal/core/transport \
+	github.com/cntryl/fitz-go/internal/domains/rpc \
+	github.com/cntryl/fitz-go/internal/domains/stream \
+	github.com/cntryl/fitz-go/internal/domains/kv \
+	github.com/cntryl/fitz-go/internal/domains/notice \
+	github.com/cntryl/fitz-go/internal/domains/schedule > before.txt
+go test -run=^$ -bench=. -benchmem -count=3 \
+	github.com/cntryl/fitz-go/internal/protocol \
+	github.com/cntryl/fitz-go/internal/core/connection \
+	github.com/cntryl/fitz-go/internal/core/encoding \
+	github.com/cntryl/fitz-go/internal/core/transport \
+	github.com/cntryl/fitz-go/internal/domains/rpc \
+	github.com/cntryl/fitz-go/internal/domains/stream \
+	github.com/cntryl/fitz-go/internal/domains/kv \
+	github.com/cntryl/fitz-go/internal/domains/notice \
+	github.com/cntryl/fitz-go/internal/domains/schedule > after.txt
+benchstat before.txt after.txt
 ```
-
-A committed baseline covering all 9 benchmark packages lives in
-`benchmarks/baseline.txt` (Intel Xeon E-2224G, Windows/amd64, Go 1.22).
-Re-capture it after deliberate performance work with the same command redirected
-to `benchmarks/baseline.txt`.
 
 Install `benchstat` once if needed with `go install golang.org/x/perf/cmd/benchstat@latest`.
 

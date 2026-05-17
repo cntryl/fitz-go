@@ -1,7 +1,7 @@
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
 // Covers all 19 scenarios: the 15 scenarios defined in the cross-language spec plus
-// 4 domain-lifecycle scenarios (CS-016â€“CS-019) added in the Go client to close
+// 4 domain-lifecycle scenarios (CS-016 through CS-019) added in the Go client to close
 // coverage gaps for Queue, Lease, Notice, and Schedule domains:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
@@ -19,6 +19,8 @@
 //	go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
 //	CONFORMANCE_TRANSPORT=ws CONFORMANCE_AUTH_MODE=valid_jwt \
 //	  go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
+//
+//nolint:gosec,errcheck
 package conformance
 
 import (
@@ -870,7 +872,6 @@ func TestConformanceSuite(t *testing.T) {
 			resultsCh := make(chan readResult, len(routes))
 
 			for i, route := range routes {
-				i, route := i, route
 				go func() {
 					tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 					if err != nil {

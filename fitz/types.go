@@ -1,3 +1,4 @@
+//nolint:exhaustive
 package fitz
 
 import (

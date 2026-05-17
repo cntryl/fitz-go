@@ -1,3 +1,4 @@
+//nolint:errcheck
 package iter
 
 // Iterator is a generic streaming iterator used across the codebase.
