@@ -1045,10 +1045,10 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("acquire: %w", err)
 			}
-			if l1 == nil || len(l1.Token) == 0 {
-				return VerdictFail, ev, fmt.Errorf("expected non-nil lease with token")
+			if l1 == nil || l1.ExpiresAt == 0 {
+				return VerdictFail, ev, fmt.Errorf("expected non-nil lease with expiry")
 			}
-			ev = append(ev, fmt.Sprintf("client1 acquired lease token=%xâ€¦", l1.Token[:min(4, len(l1.Token))]))
+			ev = append(ev, fmt.Sprintf("client1 acquired lease expiresAt=%d", l1.ExpiresAt))
 
 			// Contention: second client must be rejected
 			l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
@@ -1067,7 +1067,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err3 != nil {
 				return VerdictFail, ev, fmt.Errorf("acquire after release: %w", err3)
 			}
-			if l3 == nil || len(l3.Token) == 0 {
+			if l3 == nil || l3.ExpiresAt == 0 {
 				return VerdictFail, ev, fmt.Errorf("expected lease after release, got nil")
 			}
 			ev = append(ev, "client2 acquired lease after release (correct)")

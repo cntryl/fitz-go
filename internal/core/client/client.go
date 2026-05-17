@@ -341,7 +341,7 @@ func transportTypeString(t TransportType) string {
 // validate checks if the configuration is valid.
 func (c *Config) validate() error {
 	if c.URL == "" {
-		return errors.New("URL is required")
+		return errors.New("url is required")
 	}
 	return nil
 }

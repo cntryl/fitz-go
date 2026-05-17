@@ -7,10 +7,10 @@ import (
 )
 
 type RPCInboundRequest struct {
-	CorrelationID [16]byte
 	Route         string
 	ReplyRoute    string
 	Body          []byte
+	correlationID [16]byte
 }
 
 type RPCResponseFrame struct {
@@ -58,17 +58,19 @@ type rpcResponseIterator struct {
 	current RPCResponseFrame
 }
 
+// Send writes a response frame body for the current inbound RPC request.
 func (w *rpcResponseWriter) Send(body []byte) error {
 	return w.inner.Send(body)
 }
 
+// RegisterWorker registers a handler for a route and returns a deregistration handle.
 func (c *rpcClient) RegisterWorker(ctx context.Context, route string, handler RPCHandler) (*RPCWorkerRegistration, error) {
 	registration, err := c.inner.RegisterWorker(ctx, route, func(ctx context.Context, req internalrpc.InboundRequest, writer internalrpc.ResponseWriter) error {
 		return handler(ctx, RPCInboundRequest{
-			CorrelationID: req.CorrelationID,
 			Route:         req.Route,
 			ReplyRoute:    req.ReplyRoute,
 			Body:          append([]byte(nil), req.Body...),
+			correlationID: req.CorrelationID,
 		}, &rpcResponseWriter{inner: writer})
 	})
 	if err != nil {
@@ -77,6 +79,7 @@ func (c *rpcClient) RegisterWorker(ctx context.Context, route string, handler RP
 	return &RPCWorkerRegistration{inner: registration}, nil
 }
 
+// Call invokes an RPC route and returns an iterator over response frames.
 func (c *rpcClient) Call(ctx context.Context, route string, body []byte) (Iterator[RPCResponseFrame], error) {
 	iter, err := c.inner.Call(ctx, route, body)
 	if err != nil {
@@ -85,6 +88,7 @@ func (c *rpcClient) Call(ctx context.Context, route string, body []byte) (Iterat
 	return &rpcResponseIterator{inner: iter}, nil
 }
 
+// Next advances to the next response frame.
 func (it *rpcResponseIterator) Next() bool {
 	if !it.inner.Next() {
 		return false
@@ -97,14 +101,17 @@ func (it *rpcResponseIterator) Next() bool {
 	return true
 }
 
+// Value returns the current response frame.
 func (it *rpcResponseIterator) Value() RPCResponseFrame {
 	return it.current
 }
 
+// Err returns the terminal iterator error, if any.
 func (it *rpcResponseIterator) Err() error {
 	return it.inner.Err()
 }
 
+// Close releases iterator resources.
 func (it *rpcResponseIterator) Close() error {
 	return it.inner.Close()
 }

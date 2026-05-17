@@ -137,7 +137,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 
 // Publish per CLIENT_SPEC.md:
 // Request: [route_len][route][payload_len][payload]
-// Notice PUBLISH is fire-and-forget — the server does not send a response frame.
+// Notice PUBLISH is fire-and-forget - the server does not send a response frame.
 func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.notice.Publish", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
@@ -151,7 +151,7 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 	}
 
 	if err := c.conn.SendFireAndForgetWithWriter(ctx, protocol.MessageTypeNoticePublish, publishPayloadWriter(route, body)); err != nil {
-		return fmt.Errorf("PUBLISH failed: %w", err)
+		return fmt.Errorf("publish failed: %w", err)
 	}
 
 	return nil
@@ -222,25 +222,25 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeSubscribe, subscribePayloadWriter(pattern))
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+		return 0, fmt.Errorf("subscribe request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapNoticeError(err))
+		return 0, fmt.Errorf("subscribe failed: %w", mapNoticeError(err))
 	}
 	if !success {
-		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")
+		return 0, fmt.Errorf("subscribe failed: unexpected status")
 	}
 
 	if len(remaining) < 1 {
-		return 0, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
+		return 0, fmt.Errorf("subscribe response too short: got %d bytes", len(remaining))
 	}
 	if remaining[0] != 1 {
-		return 0, fmt.Errorf("SUBSCRIBE response missing subscription_id")
+		return 0, fmt.Errorf("subscribe response missing subscription_id")
 	}
 	if len(remaining) < 9 {
-		return 0, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
+		return 0, fmt.Errorf("subscribe response too short for subscription_id: got %d bytes", len(remaining))
 	}
 
 	subID, _, err := connection.ReadU64BE(remaining, 1)

@@ -76,27 +76,27 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 	// Encode request per CLIENT_SPEC.md
 	writer, err := getPayloadWriter(t.txID, t.route, key)
 	if err != nil {
-		return nil, false, fmt.Errorf("encode GET: %w", err)
+		return nil, false, fmt.Errorf("encode get: %w", err)
 	}
 
 	// Send request
 	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvGet, writer)
 	if err != nil {
-		return nil, false, fmt.Errorf("GET request failed: %w", err)
+		return nil, false, fmt.Errorf("get request failed: %w", err)
 	}
 
 	// Parse standard response status
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, false, fmt.Errorf("GET failed: %w", mapKVError(err))
+		return nil, false, fmt.Errorf("get failed: %w", mapKVError(err))
 	}
 	if !success {
-		return nil, false, fmt.Errorf("GET failed: unexpected status")
+		return nil, false, fmt.Errorf("get failed: unexpected status")
 	}
 
 	// Parse GET-specific response: [found][value_len?][value?]
 	if len(remaining) < 1 {
-		return nil, false, fmt.Errorf("invalid GET response: expected at least 1 byte for found flag")
+		return nil, false, fmt.Errorf("invalid get response: expected at least 1 byte for found flag")
 	}
 
 	found := remaining[0] == 1
@@ -107,7 +107,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 
 	// Extract value
 	if len(remaining) < 5 { // found(1) + value_len(4)
-		return nil, false, fmt.Errorf("invalid GET response: missing value length")
+		return nil, false, fmt.Errorf("invalid get response: missing value length")
 	}
 
 	valueLen, offset, err := connection.ReadU32BE(remaining, 1)
@@ -116,7 +116,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 	}
 
 	if len(remaining) < offset+int(valueLen) {
-		return nil, false, fmt.Errorf("invalid GET response: truncated value")
+		return nil, false, fmt.Errorf("invalid get response: truncated value")
 	}
 
 	value := make([]byte, valueLen)
@@ -151,22 +151,22 @@ func (t *transaction) Put(ctx context.Context, key, value []byte) error {
 	// Encode request
 	writer, err := putPayloadWriter(t.txID, t.route, key, value)
 	if err != nil {
-		return fmt.Errorf("encode PUT: %w", err)
+		return fmt.Errorf("encode put: %w", err)
 	}
 
 	// Send request
 	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvPut, writer)
 	if err != nil {
-		return fmt.Errorf("PUT request failed: %w", err)
+		return fmt.Errorf("put request failed: %w", err)
 	}
 
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("PUT failed: %w", mapKVError(err))
+		return fmt.Errorf("put failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("PUT failed: unexpected status")
+		return fmt.Errorf("put failed: unexpected status")
 	}
 
 	return nil
@@ -198,22 +198,22 @@ func (t *transaction) Insert(ctx context.Context, key, value []byte) error {
 	// Encode request (wire format same as PUT)
 	writer, err := insertPayloadWriter(t.txID, t.route, key, value)
 	if err != nil {
-		return fmt.Errorf("encode INSERT: %w", err)
+		return fmt.Errorf("encode insert: %w", err)
 	}
 
 	// Send request
 	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvInsert, writer)
 	if err != nil {
-		return fmt.Errorf("INSERT request failed: %w", err)
+		return fmt.Errorf("insert request failed: %w", err)
 	}
 
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("INSERT failed: %w", mapKVError(err))
+		return fmt.Errorf("insert failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("INSERT failed: unexpected status")
+		return fmt.Errorf("insert failed: unexpected status")
 	}
 
 	return nil
@@ -242,22 +242,22 @@ func (t *transaction) Delete(ctx context.Context, key []byte) error {
 	// Encode request
 	writer, err := deletePayloadWriter(t.txID, t.route, key)
 	if err != nil {
-		return fmt.Errorf("encode DELETE: %w", err)
+		return fmt.Errorf("encode delete: %w", err)
 	}
 
 	// Send request
 	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvDelete, writer)
 	if err != nil {
-		return fmt.Errorf("DELETE request failed: %w", err)
+		return fmt.Errorf("delete request failed: %w", err)
 	}
 
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("DELETE failed: %w", mapKVError(err))
+		return fmt.Errorf("delete failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("DELETE failed: unexpected status")
+		return fmt.Errorf("delete failed: unexpected status")
 	}
 
 	return nil
@@ -289,22 +289,22 @@ func (t *transaction) DeleteRange(ctx context.Context, startKey, endKey []byte) 
 	// Encode request
 	writer, err := deleteRangePayloadWriter(t.txID, t.route, startKey, endKey)
 	if err != nil {
-		return fmt.Errorf("encode DELETE_RANGE: %w", err)
+		return fmt.Errorf("encode delete_range: %w", err)
 	}
 
 	// Send request
 	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvDeleteRange, writer)
 	if err != nil {
-		return fmt.Errorf("DELETE_RANGE request failed: %w", err)
+		return fmt.Errorf("delete_range request failed: %w", err)
 	}
 
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("DELETE_RANGE failed: %w", mapKVError(err))
+		return fmt.Errorf("delete_range failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("DELETE_RANGE failed: unexpected status")
+		return fmt.Errorf("delete_range failed: unexpected status")
 	}
 
 	return nil
@@ -329,28 +329,28 @@ func (t *transaction) Scan(ctx context.Context, query ScanQuery) (iter.Iterator[
 	// Encode request
 	writer, err := scanPayloadWriter(t.txID, t.route, query)
 	if err != nil {
-		return nil, false, fmt.Errorf("encode SCAN: %w", err)
+		return nil, false, fmt.Errorf("encode scan: %w", err)
 	}
 
 	// Send request
 	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvScan, writer)
 	if err != nil {
-		return nil, false, fmt.Errorf("SCAN request failed: %w", err)
+		return nil, false, fmt.Errorf("scan request failed: %w", err)
 	}
 
 	// Parse standard response status
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, false, fmt.Errorf("SCAN failed: %w", mapKVError(err))
+		return nil, false, fmt.Errorf("scan failed: %w", mapKVError(err))
 	}
 	if !success {
-		return nil, false, fmt.Errorf("SCAN failed: unexpected status")
+		return nil, false, fmt.Errorf("scan failed: unexpected status")
 	}
 
 	// Parse SCAN response: [item_count][items...][has_more]
 	pairs, hasMore, err := parseScanResponse(remaining)
 	if err != nil {
-		return nil, false, fmt.Errorf("parse SCAN response: %w", err)
+		return nil, false, fmt.Errorf("parse scan response: %w", err)
 	}
 
 	// Return SliceIterator for batch results
@@ -361,7 +361,7 @@ func (t *transaction) Scan(ctx context.Context, query ScanQuery) (iter.Iterator[
 // Response: [item_count][key_len][key][value_len][value]...[has_more]
 func parseScanResponse(remaining []byte) ([]KVPair, bool, error) {
 	if len(remaining) < 4 { // item_count(4)
-		return nil, false, fmt.Errorf("invalid SCAN response: too short")
+		return nil, false, fmt.Errorf("invalid scan response: too short")
 	}
 
 	itemCount, offset, err := connection.ReadU32BE(remaining, 0)
@@ -449,16 +449,16 @@ func (t *transaction) Commit(ctx context.Context) error {
 	// Send request
 	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvCommit, commitPayloadWriter(t.txID, t.route))
 	if err != nil {
-		return fmt.Errorf("COMMIT request failed: %w", err)
+		return fmt.Errorf("commit request failed: %w", err)
 	}
 
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("COMMIT failed: %w", mapKVError(err))
+		return fmt.Errorf("commit failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("COMMIT failed: unexpected status")
+		return fmt.Errorf("commit failed: unexpected status")
 	}
 
 	// Mark transaction as committed
@@ -483,16 +483,16 @@ func (t *transaction) Rollback(ctx context.Context) error {
 	// Send request
 	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvRollback, rollbackPayloadWriter(t.txID, t.route))
 	if err != nil {
-		return fmt.Errorf("ROLLBACK request failed: %w", err)
+		return fmt.Errorf("rollback request failed: %w", err)
 	}
 
 	// Parse standard response
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return fmt.Errorf("ROLLBACK failed: %w", mapKVError(err))
+		return fmt.Errorf("rollback failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("ROLLBACK failed: unexpected status")
+		return fmt.Errorf("rollback failed: unexpected status")
 	}
 
 	// Mark transaction as rolled back

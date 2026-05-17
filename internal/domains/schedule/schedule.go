@@ -175,17 +175,17 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return "", fmt.Errorf("CREATE request failed: %w", err)
+		return "", fmt.Errorf("create request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return "", fmt.Errorf("CREATE failed: %w", mapScheduleError(err))
+		return "", fmt.Errorf("create failed: %w", mapScheduleError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("CREATE failed: unexpected status")
+		recordErr := fmt.Errorf("create failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return "", recordErr
@@ -222,17 +222,17 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("CANCEL request failed: %w", err)
+		return fmt.Errorf("cancel request failed: %w", err)
 	}
 
 	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("CANCEL failed: %w", mapScheduleError(err))
+		return fmt.Errorf("cancel failed: %w", mapScheduleError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("CANCEL failed: unexpected status")
+		recordErr := fmt.Errorf("cancel failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -254,17 +254,17 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("LIST request failed: %w", err)
+		return nil, 0, fmt.Errorf("list request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("LIST failed: %w", mapScheduleError(err))
+		return nil, 0, fmt.Errorf("list failed: %w", mapScheduleError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("LIST failed: unexpected status")
+		recordErr := fmt.Errorf("list failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, 0, recordErr
@@ -272,7 +272,7 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 
 	// Parse total_count
 	if len(remaining) < 8 {
-		recordErr := fmt.Errorf("LIST response missing total_count")
+		recordErr := fmt.Errorf("list response missing total_count")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, 0, recordErr
@@ -281,13 +281,13 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("LIST failed to parse total_count: %w", err)
+		return nil, 0, fmt.Errorf("list failed to parse total_count: %w", err)
 	}
 	entries, err := parseScheduleListEntries(remaining[bytesRead:])
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("LIST failed: %w", err)
+		return nil, 0, fmt.Errorf("list failed: %w", err)
 	}
 
 	return entries, totalCount, nil
@@ -298,7 +298,7 @@ func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
 	pos := 0
 	for {
 		if pos >= len(remaining) {
-			return nil, fmt.Errorf("LIST response missing entry terminator")
+			return nil, fmt.Errorf("list response missing entry terminator")
 		}
 		hasEntry := remaining[pos]
 		pos++
@@ -306,27 +306,27 @@ func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
 		switch hasEntry {
 		case 0:
 			if pos != len(remaining) {
-				return nil, fmt.Errorf("LIST response has trailing bytes: %d", len(remaining)-pos)
+				return nil, fmt.Errorf("list response has trailing bytes: %d", len(remaining)-pos)
 			}
 			return entries, nil
 		case 1:
 		default:
-			return nil, fmt.Errorf("LIST response invalid has_entry flag: %d", hasEntry)
+			return nil, fmt.Errorf("list response invalid has_entry flag: %d", hasEntry)
 		}
 
 		routeStr, newPos, err := connection.ReadString(remaining, pos)
 		if err != nil {
-			return nil, fmt.Errorf("LIST response invalid route: %w", err)
+			return nil, fmt.Errorf("list response invalid route: %w", err)
 		}
 		pos = newPos
 		cronStr, newPos, err := connection.ReadString(remaining, pos)
 		if err != nil {
-			return nil, fmt.Errorf("LIST response invalid cron: %w", err)
+			return nil, fmt.Errorf("list response invalid cron: %w", err)
 		}
 		pos = newPos
 		payloadBytes, newPos, err := connection.ReadBytes(remaining, pos)
 		if err != nil {
-			return nil, fmt.Errorf("LIST response invalid payload: %w", err)
+			return nil, fmt.Errorf("list response invalid payload: %w", err)
 		}
 		pos = newPos
 		payloadCopy := make([]byte, len(payloadBytes))
@@ -440,25 +440,25 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleSubscribe, scheduleSubscribePayloadWriter(pattern))
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+		return 0, fmt.Errorf("subscribe request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapScheduleError(err))
+		return 0, fmt.Errorf("subscribe failed: %w", mapScheduleError(err))
 	}
 	if !success {
-		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")
+		return 0, fmt.Errorf("subscribe failed: unexpected status")
 	}
 
 	if len(remaining) < 1 {
-		return 0, fmt.Errorf("SUBSCRIBE response too short: got %d bytes", len(remaining))
+		return 0, fmt.Errorf("subscribe response too short: got %d bytes", len(remaining))
 	}
 	if remaining[0] != 1 {
-		return 0, fmt.Errorf("SUBSCRIBE response missing subscription_id")
+		return 0, fmt.Errorf("subscribe response missing subscription_id")
 	}
 	if len(remaining) < 9 {
-		return 0, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
+		return 0, fmt.Errorf("subscribe response too short for subscription_id: got %d bytes", len(remaining))
 	}
 
 	subID, _, err := connection.ReadU64BE(remaining, 1)

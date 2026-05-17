@@ -68,7 +68,7 @@ func TestShouldReturnErrorGivenMissingURLWhenDialCalled(t *testing.T) {
 	// Assert
 	require.Error(t, err)
 	assert.Nil(t, c)
-	assert.Contains(t, err.Error(), "URL is required")
+	assert.Contains(t, err.Error(), "url is required")
 }
 
 func TestShouldReturnErrorGivenTokenProviderFailureWhenConnectCalled(t *testing.T) {
@@ -97,7 +97,7 @@ func TestShouldReturnErrorGivenInvalidConfigWhenConnectCalled(t *testing.T) {
 
 	// Assert
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL is required")
+	assert.Contains(t, err.Error(), "url is required")
 }
 
 func TestShouldReturnNilGivenNoConnectionWhenCloseCalledTwice(t *testing.T) {

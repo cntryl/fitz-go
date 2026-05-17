@@ -5,6 +5,7 @@ package kv
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/types"
@@ -41,6 +42,7 @@ func WithMode(mode uint8) BeginOption {
 
 // client is a concrete implementation of Client using the connection layer.
 type client struct {
+	mu   sync.RWMutex
 	conn *connection.Connection
 }
 
@@ -52,15 +54,24 @@ func NewClient(conn *connection.Connection) Client {
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.conn = conn
+}
+
+func (c *client) currentConnection() *connection.Connection {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn
 }
 
 // Begin opens a transaction scoped to the provided route.
 // Per CLIENT_SPEC.md: Server assigns tx_id and returns it in response.
 func (c *client) Begin(ctx context.Context, route string, durability uint8, opts ...BeginOption) (Tx, error) {
-	ctx, span := c.conn.Tracer().Start(ctx, "fitz.kv.Begin", trace.WithAttributes(attribute.String("fitz.route", route)))
+	conn := c.currentConnection()
+	ctx, span := conn.Tracer().Start(ctx, "fitz.kv.Begin", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
-	if log := c.conn.Logger(); log != nil {
+	if log := conn.Logger(); log != nil {
 		log.Debug("kv.Begin", "route", route)
 	}
 
@@ -81,7 +92,7 @@ func (c *client) Begin(ctx context.Context, route string, durability uint8, opts
 
 	// Encode BEGIN request per CLIENT_SPEC.md
 	// Send request and wait for response
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, cfg.mode, durability))
+	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, cfg.mode, durability))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -120,7 +131,7 @@ func (c *client) Begin(ctx context.Context, route string, durability uint8, opts
 	// Create transaction with server-assigned tx_id
 	tx := &transaction{
 		route:    route,
-		conn:     c.conn,
+		conn:     conn,
 		readOnly: cfg.mode == TxModeReadOnly,
 		txID:     txID,
 	}

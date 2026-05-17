@@ -30,6 +30,10 @@ var DefaultBackoff = BackoffConfig{
 func Do(ctx context.Context, cfg BackoffConfig, maxRetries int, fn func() error, isRetryable func(error) bool) error {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		if err := fn(); err == nil {
 			return nil
 		} else if !isRetryable(err) {

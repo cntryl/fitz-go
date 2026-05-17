@@ -86,16 +86,16 @@ func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("EXTEND request failed: %w", err)
+		return fmt.Errorf("extend request failed: %w", err)
 	}
 	success, _, err := parseQueueResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("EXTEND failed: %w", err)
+		return fmt.Errorf("extend failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("EXTEND failed: unexpected status")
+		recordErr := fmt.Errorf("extend failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -119,16 +119,16 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("COMPLETE request failed: %w", err)
+		return fmt.Errorf("complete request failed: %w", err)
 	}
 	success, _, err := parseQueueResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("COMPLETE failed: %w", err)
+		return fmt.Errorf("complete failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("COMPLETE failed: unexpected status")
+		recordErr := fmt.Errorf("complete failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -194,24 +194,24 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("ENQUEUE request failed: %w", err)
+		return 0, fmt.Errorf("enqueue request failed: %w", err)
 	}
 
 	success, remaining, err := parseQueueResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("ENQUEUE failed: %w", err)
+		return 0, fmt.Errorf("enqueue failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("ENQUEUE failed: unexpected status")
+		recordErr := fmt.Errorf("enqueue failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return 0, recordErr
 	}
 
 	if len(remaining) < 8 {
-		recordErr := fmt.Errorf("ENQUEUE response too short: got %d bytes", len(remaining))
+		recordErr := fmt.Errorf("enqueue response too short: got %d bytes", len(remaining))
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return 0, recordErr
@@ -328,15 +328,15 @@ func (c *client) reserveOnce(
 		reservePayloadWriter(route, leaseSecs, batchSize),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("RESERVE request failed: %w", err)
+		return nil, fmt.Errorf("reserve request failed: %w", err)
 	}
 
 	success, remaining, err := parseQueueResponse(resp)
 	if err != nil {
-		return nil, fmt.Errorf("RESERVE failed: %w", err)
+		return nil, fmt.Errorf("reserve failed: %w", err)
 	}
 	if !success {
-		return nil, fmt.Errorf("RESERVE failed: unexpected status")
+		return nil, fmt.Errorf("reserve failed: unexpected status")
 	}
 
 	items, err := parseReserveItems(remaining, route, c.conn)
@@ -379,7 +379,7 @@ func parseReserveItems(remaining []byte, route string, conn *connection.Connecti
 	}
 
 	if offset != len(remaining) {
-		return nil, fmt.Errorf("RESERVE response has trailing bytes")
+		return nil, fmt.Errorf("reserve response has trailing bytes")
 	}
 
 	return items, nil
@@ -509,15 +509,15 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueSubscribe, subscribePayloadWriter(wireWatchPattern(pattern)))
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+		return 0, fmt.Errorf("subscribe request failed: %w", err)
 	}
 
 	success, remaining, err := parseQueueResponse(resp)
 	if err != nil {
-		return 0, fmt.Errorf("SUBSCRIBE failed: %w", err)
+		return 0, fmt.Errorf("subscribe failed: %w", err)
 	}
 	if !success {
-		return 0, fmt.Errorf("SUBSCRIBE failed: unexpected status")
+		return 0, fmt.Errorf("subscribe failed: unexpected status")
 	}
 
 	subID, err := parseSubscriptionID(remaining)
@@ -553,10 +553,10 @@ func parseSubscriptionID(remaining []byte) (uint64, error) {
 			return 0, fmt.Errorf("parse subscription_id: %w", err)
 		}
 		if len(remaining) != 9 {
-			return 0, fmt.Errorf("SUBSCRIBE response has trailing bytes: got %d bytes", len(remaining))
+			return 0, fmt.Errorf("subscribe response has trailing bytes: got %d bytes", len(remaining))
 		}
 		return subID, nil
 	default:
-		return 0, fmt.Errorf("SUBSCRIBE response missing subscription_id")
+		return 0, fmt.Errorf("subscribe response missing subscription_id")
 	}
 }

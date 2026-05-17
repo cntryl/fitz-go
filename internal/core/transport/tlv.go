@@ -76,7 +76,7 @@ func NewTLVEncoder() *TLVEncoder {
 }
 
 // ErrTLVValueTooLarge is returned when a TLV value exceeds the 64KiB limit.
-var ErrTLVValueTooLarge = errors.New("TLV value exceeds maximum length of 65535 bytes")
+var ErrTLVValueTooLarge = errors.New("tlv value exceeds maximum length of 65535 bytes")
 
 // AddTag appends a TLV entry with the given tag and raw value.
 // Invalid input is recorded on the encoder and surfaced via Err/Encode instead
@@ -280,7 +280,7 @@ func EncodeOpTag(opCode uint16) []byte {
 // Returns the decoded code and the number of bytes consumed, or an error if truncated.
 func DecodeOpTag(data []byte) (uint16, int, error) {
 	if len(data) == 0 {
-		return 0, 0, errors.New("empty TLV value for TagOp")
+		return 0, 0, errors.New("empty tlv value for TagOp")
 	}
 	if data[0] != 0xFF {
 		// Single byte code (0x00-0xFE)
