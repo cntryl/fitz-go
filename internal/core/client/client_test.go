@@ -12,10 +12,13 @@ import (
 	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/iter"
 	"github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/domains/kv"
 	"github.com/cntryl/fitz-go/internal/domains/notice"
+	"github.com/cntryl/fitz-go/internal/domains/rpc"
 	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
@@ -23,6 +26,27 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
+
+type cleanupRPCClient struct {
+	once     sync.Once
+	called   chan struct{}
+	callErr  error
+	callIter iter.Iterator[rpc.ResponseFrame]
+}
+
+func (c *cleanupRPCClient) RegisterWorker(context.Context, string, rpc.RPCHandler) (*rpc.Subscription, error) {
+	return nil, nil
+}
+
+func (c *cleanupRPCClient) Call(context.Context, string, []byte) (iter.Iterator[rpc.ResponseFrame], error) {
+	return c.callIter, c.callErr
+}
+
+func (c *cleanupRPCClient) ClosePendingRPCs() {
+	c.once.Do(func() {
+		close(c.called)
+	})
+}
 
 func TestShouldCreateClientGivenAddressWhenNewClientCalled(t *testing.T) {
 	// Arrange
@@ -112,6 +136,42 @@ func TestShouldReturnNilGivenNoConnectionWhenCloseCalledTwice(t *testing.T) {
 	// Assert
 	require.NoError(t, err1)
 	require.NoError(t, err2)
+}
+
+func TestShouldClosePendingRPCsGivenConnectionLossWhenMonitorConnectionEnds(t *testing.T) {
+	transport := testkit.NewMockTransport()
+	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	called := make(chan struct{})
+	c := &Client{
+		config:    &Config{ReconnectEnabled: false},
+		rpcClient: &cleanupRPCClient{called: called},
+	}
+	c.conn.Store(conn)
+
+	done := make(chan struct{})
+	go func() {
+		c.monitorConnection(conn)
+		close(done)
+	}()
+
+	require.NoError(t, conn.Close())
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("expected pending RPC cleanup on connection loss")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("monitorConnection did not return")
+	}
 }
 
 func TestShouldRejectSecondConnectGivenExistingConnectionWhenConnectCalled(t *testing.T) {

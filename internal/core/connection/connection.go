@@ -12,6 +12,7 @@ import (
 	"time"
 
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -57,12 +58,15 @@ func (s State) String() string {
 // Connection manages a single connection to the Fitz server.
 // Handles authentication, dispatch loop, and request/response correlation.
 type Connection struct {
-	transport       transport.Transport
-	state           atomic.Int32 // State enum
-	stateMu         sync.RWMutex // Protects state transitions
-	writeMu         sync.Mutex   // Serializes outbound frames so FIFO request queues match wire order
-	requestSem      chan struct{}
-	asyncHandlerSem chan struct{}
+	transport        transport.Transport
+	state            atomic.Int32 // State enum
+	stateMu          sync.RWMutex // Protects state transitions
+	writeMu          sync.Mutex   // Serializes outbound frames so FIFO request queues match wire order
+	requestSem       chan struct{}
+	oneWaySem        chan struct{}
+	asyncHandlerSem  chan struct{}
+	asyncHandlerJobs chan asyncHandlerJob
+	asyncWorkersOnce sync.Once
 
 	// CONNECT configuration (per CLIENT_SPEC.md)
 	token string
@@ -177,21 +181,23 @@ func New(trans transport.Transport, cfg Config) *Connection {
 	}
 
 	conn := &Connection{
-		transport:       trans,
-		requestSem:      make(chan struct{}, cfg.MaxInFlightRequests),
-		asyncHandlerSem: make(chan struct{}, cfg.AsyncHandlerMaxConcurrency),
-		token:           cfg.Token,
-		authConfirmed:   make(chan struct{}),
-		mux:             NewMultiplexer(),
-		ctx:             ctx,
-		cancel:          cancel,
-		done:            make(chan struct{}),
-		cfg:             cfg,
-		logger:          cfg.Logger,
-		tracer:          tracer,
-		meter:           meter,
-		metricsEnabled:  cfg.Meter != nil,
-		tracingEnabled:  cfg.Tracer != nil,
+		transport:        trans,
+		requestSem:       make(chan struct{}, cfg.MaxInFlightRequests),
+		oneWaySem:        make(chan struct{}, cfg.MaxInFlightRequests),
+		asyncHandlerSem:  make(chan struct{}, cfg.AsyncHandlerMaxConcurrency),
+		asyncHandlerJobs: make(chan asyncHandlerJob, cfg.AsyncHandlerMaxConcurrency),
+		token:            cfg.Token,
+		authConfirmed:    make(chan struct{}),
+		mux:              NewMultiplexer(),
+		ctx:              ctx,
+		cancel:           cancel,
+		done:             make(chan struct{}),
+		cfg:              cfg,
+		logger:           cfg.Logger,
+		tracer:           tracer,
+		meter:            meter,
+		metricsEnabled:   cfg.Meter != nil,
+		tracingEnabled:   cfg.Tracer != nil,
 	}
 	conn.initAsyncHandlerMetrics()
 	return conn
@@ -745,14 +751,14 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 		return ErrNotAuthenticated
 	}
 
-	ok := c.AcquireRequestSlot(ctx)
+	ok := c.AcquireWriteSlot(ctx)
 	if !ok {
 		err := c.outboundAdmissionError(ctx)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	defer c.ReleaseRequestSlot()
+	defer c.ReleaseWriteSlot()
 
 	frame := protocol.EncodeFrameOwned(msgType, payload)
 	if frame == nil {
@@ -796,14 +802,14 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 		return ErrNotAuthenticated
 	}
 
-	ok := c.AcquireRequestSlot(ctx)
+	ok := c.AcquireWriteSlot(ctx)
 	if !ok {
 		err := c.outboundAdmissionError(ctx)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	defer c.ReleaseRequestSlot()
+	defer c.ReleaseWriteSlot()
 
 	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
@@ -855,6 +861,7 @@ func (c *Connection) Close() error {
 
 	// Cancel context (signals dispatch loop to stop)
 	c.cancel()
+	c.drainAsyncHandlerJobs()
 
 	// Close transport FIRST to unblock any pending Read() calls.
 	// Without this, the dispatch loop would block forever on transport.Read()
@@ -1008,6 +1015,131 @@ func (c *Connection) ReleaseRequestSlot() {
 		return
 	}
 	<-c.requestSem
+}
+
+// AcquireWriteSlot acquires a concurrency slot for one-way outbound writes.
+// It returns false if acquisition was canceled by context shutdown/deadline.
+func (c *Connection) AcquireWriteSlot(ctx context.Context) bool {
+	if c == nil || c.oneWaySem == nil {
+		return true
+	}
+	if ctx == nil {
+		ctx = c.LifecycleContext()
+	}
+	select {
+	case c.oneWaySem <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-c.done:
+		return false
+	}
+}
+
+// ReleaseWriteSlot releases a previously acquired one-way outbound write slot.
+func (c *Connection) ReleaseWriteSlot() {
+	if c == nil || c.oneWaySem == nil {
+		return
+	}
+	<-c.oneWaySem
+}
+
+type asyncHandlerJob struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	span   trace.Span
+	run    func(context.Context, trace.Span)
+}
+
+// LaunchAsyncHandler schedules an async callback on the connection's bounded handler pool.
+// It returns false when the job cannot be accepted because the connection is shutting down
+// the caller's context has already been canceled, or the bounded queue is full.
+func (c *Connection) LaunchAsyncHandler(parent context.Context, spanName string, timeout time.Duration, run func(context.Context, trace.Span), opts ...trace.SpanStartOption) bool {
+	if c == nil || c.asyncHandlerJobs == nil || run == nil {
+		return false
+	}
+	if parent == nil {
+		parent = c.LifecycleContext()
+	}
+	if err := c.ctx.Err(); err != nil {
+		return false
+	}
+	if err := parent.Err(); err != nil {
+		return false
+	}
+	c.ensureAsyncHandlerWorkers()
+	handlerCtx, cancel, span := coretracing.StartDetachedSpan(parent, c.tracer, spanName, timeout, opts...)
+	job := asyncHandlerJob{
+		ctx:    handlerCtx,
+		cancel: cancel,
+		span:   span,
+		run:    run,
+	}
+
+	select {
+	case c.asyncHandlerJobs <- job:
+		return true
+	default:
+		queueErr := errors.New("async handler queue full")
+		span.RecordError(queueErr)
+		span.SetStatus(codes.Error, queueErr.Error())
+		cancel()
+		span.End()
+		return false
+	}
+}
+
+func (c *Connection) ensureAsyncHandlerWorkers() {
+	if c == nil || c.asyncHandlerJobs == nil {
+		return
+	}
+	c.asyncWorkersOnce.Do(func() {
+		workerCount := c.AsyncHandlerMaxConcurrency()
+		for range workerCount {
+			go c.asyncHandlerWorker()
+		}
+	})
+}
+
+func (c *Connection) asyncHandlerWorker() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case job := <-c.asyncHandlerJobs:
+			c.executeAsyncHandlerJob(job)
+		}
+	}
+}
+
+func (c *Connection) executeAsyncHandlerJob(job asyncHandlerJob) {
+	defer job.cancel()
+	defer job.span.End()
+
+	release, ok := c.AcquireAsyncHandlerSlot(job.ctx)
+	if !ok {
+		if err := job.ctx.Err(); err != nil {
+			job.span.RecordError(err)
+			job.span.SetStatus(codes.Error, err.Error())
+		}
+		return
+	}
+	defer release()
+
+	job.run(job.ctx, job.span)
+}
+
+func (c *Connection) drainAsyncHandlerJobs() {
+	if c == nil || c.asyncHandlerJobs == nil {
+		return
+	}
+	for {
+		select {
+		case <-c.asyncHandlerJobs:
+		default:
+			return
+		}
+	}
 }
 
 // AcquireAsyncHandlerSlot acquires a concurrency slot for async handler execution.

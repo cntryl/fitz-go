@@ -261,3 +261,22 @@ func TestShouldCleanupPendingRPCGivenCanceledContextWhenNextCalled(t *testing.T)
 	_, stillPending := c.pendingRPCs[correlationID]
 	assert.False(t, stillPending)
 }
+
+func TestShouldFailPendingRPCGivenConnectionLossWhenClosePendingRPCsCalled(t *testing.T) {
+	// Arrange
+	c := &client{pendingRPCs: make(map[[16]byte]*responseStream)}
+	var correlationID [16]byte
+	correlationID[0] = 6
+	stream := newResponseStream()
+	c.pendingRPCs[correlationID] = stream
+
+	// Act
+	c.ClosePendingRPCs()
+
+	// Assert
+	_, stillPending := c.pendingRPCs[correlationID]
+	assert.False(t, stillPending)
+	_, ok, err := stream.next(context.Background())
+	require.False(t, ok)
+	require.ErrorIs(t, err, connection.ErrConnectionClosed)
+}

@@ -15,7 +15,6 @@ import (
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
-	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -384,30 +383,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 
-	// Call handler asynchronously to avoid blocking the dispatch loop
-	go func() {
-		handlerCtx, cancel, span := coretracing.StartDetachedSpan(
-			lifecycleCtx,
-			c.conn.Tracer(),
-			"fitz.lease.handler",
-			c.conn.AsyncHandlerTimeout(),
-			trace.WithAttributes(
-				attribute.Int64("fitz.subscription_id", int64(subID)),
-				attribute.String("fitz.route", route),
-			),
-		)
-		defer cancel()
-
-		release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
-		if !ok {
-			if err := handlerCtx.Err(); err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
-			}
-			return
-		}
-		defer release()
-
+	if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.lease.handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 		if err := sub.handler(handlerCtx, notif); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -415,7 +391,14 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 				log.Warn("lease notify handler failed", "route", route, "error", err)
 			}
 		}
-	}()
+	}, trace.WithAttributes(
+		attribute.Int64("fitz.subscription_id", int64(subID)),
+		attribute.String("fitz.route", route),
+	)) {
+		if log := c.conn.Logger(); log != nil {
+			log.Warn("lease notify handler dropped", "route", route, "sub_id", subID, "reason", "async handler queue full")
+		}
+	}
 }
 
 // Subscribe registers a handler for lease change notifications.
@@ -479,6 +462,9 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	for _, sub := range snapshot {
 		restoredSub, err := c.subscribe(ctx, sub.pattern, sub.handler)
 		if err != nil {
+			for _, restoredSub := range restored {
+				c.unsubscribe(restoredSub)
+			}
 			return err
 		}
 		restored[restoredSub.subID] = restoredSub

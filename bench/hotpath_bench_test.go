@@ -282,9 +282,12 @@ func BenchmarkSubscriptionRegistryRestore(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		if err := registry.Restore(func(string) (uint64, error) {
-			return nextID.Add(1), nil
-		}); err != nil {
+		if err := registry.Restore(
+			func(string) (uint64, error) {
+				return nextID.Add(1), nil
+			},
+			func(string, uint64) error { return nil },
+		); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -160,19 +160,12 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 		return
 	}
 	if msgType == 302 {
-		// 302 can be either: (1) sync response (ack) to our outgoing REQUEST, or (2) async REQUEST forwarded to us as worker.
-		// If we have a pending request for 302, this is the ack; otherwise deliver to worker handler.
-		m.mu.Lock()
-		queue, exists := m.pending[302]
-		hasPending := exists && queue.len() > 0
-		m.mu.Unlock()
-		if hasPending {
-			// Sync response to caller's SendRequest(302) — fall through to sync path below
-		} else if m.rpcRequestHandler() != nil {
+		// RPC worker requests have a fixed TLV shape: [u32 len=16][16-byte correlation_id][route][reply_route][body].
+		// Route those explicitly so an in-flight 302 call cannot steal an inbound worker request.
+		if m.looksLikeRpcWorkerRequest(payload) {
 			m.handleRpcRequest(payload)
 			return
 		}
-		// If no pending and no handler, fall through to sync path (will drop if no pending)
 	}
 	if msgType == 303 {
 		// 303 can be either: (1) sync response (ack) to our outgoing RESPONSE as worker, or (2) async RESPONSE forwarded to us as caller.
@@ -329,6 +322,14 @@ func (m *Multiplexer) handleRpcRequest(payload []byte) {
 	if handler := m.rpcRequestHandler(); handler != nil {
 		handler(payload)
 	}
+}
+
+func (m *Multiplexer) looksLikeRpcWorkerRequest(payload []byte) bool {
+	if len(payload) < 20 {
+		return false
+	}
+	corrLen := binary.BigEndian.Uint32(payload[0:4])
+	return corrLen == 16 && len(payload) >= 4+int(corrLen)
 }
 
 // handleRpcResponse processes RPC RESPONSE messages (async delivery).

@@ -13,7 +13,6 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/iter"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
-	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -49,6 +48,7 @@ type responseStream struct {
 	frames   []ResponseFrame
 	closed   bool
 	signaled bool
+	err      error
 }
 
 func newResponseStream() *responseStream {
@@ -71,9 +71,18 @@ func (s *responseStream) enqueue(frame ResponseFrame) bool {
 }
 
 func (s *responseStream) close() {
+	s.closeWithError(nil)
+}
+
+func (s *responseStream) fail(err error) {
+	s.closeWithError(err)
+}
+
+func (s *responseStream) closeWithError(err error) {
 	s.mu.Lock()
 	if !s.closed {
 		s.closed = true
+		s.err = err
 		if !s.signaled {
 			close(s.notify)
 			s.signaled = true
@@ -97,8 +106,9 @@ func (s *responseStream) next(ctx context.Context) (ResponseFrame, bool, error) 
 			return frame, true, nil
 		}
 		if s.closed {
+			err := s.err
 			s.mu.Unlock()
-			return ResponseFrame{}, false, nil
+			return ResponseFrame{}, false, err
 		}
 		notify := s.notify
 		s.mu.Unlock()
@@ -318,30 +328,7 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 
-	go func() {
-		handlerCtx, cancel, span := coretracing.StartDetachedSpan(
-			lifecycleCtx,
-			c.conn.Tracer(),
-			"fitz.rpc.worker_handler",
-			c.conn.AsyncHandlerTimeout(),
-			trace.WithAttributes(
-				attribute.String("fitz.route", route),
-				attribute.String("fitz.reply_route", replyRoute),
-			),
-		)
-		defer cancel()
-		defer span.End()
-
-		release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
-		if !ok {
-			if err := handlerCtx.Err(); err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
-			}
-			return
-		}
-		defer release()
-
+	if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.rpc.worker_handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 		if err := handler(handlerCtx, req, w); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -351,7 +338,14 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 		}
 		// Send stream_end
 		w.sendEnd()
-	}()
+	}, trace.WithAttributes(
+		attribute.String("fitz.route", route),
+		attribute.String("fitz.reply_route", replyRoute),
+	)) {
+		if log := c.conn.Logger(); log != nil {
+			log.Warn("rpc worker handler dropped", "route", route, "reply_route", replyRoute, "reason", "async handler queue full")
+		}
+	}
 }
 
 // RegisterWorker per CLIENT_SPEC.md:
@@ -482,6 +476,22 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 	return iterator, nil
 }
 
+// ClosePendingRPCs fails all in-flight RPC call iterators with connection.ErrConnectionClosed.
+func (c *client) ClosePendingRPCs() {
+	c.mu.Lock()
+	if len(c.pendingRPCs) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	pending := c.pendingRPCs
+	c.pendingRPCs = make(map[[16]byte]*responseStream, len(pending))
+	c.mu.Unlock()
+
+	for _, stream := range pending {
+		stream.fail(connection.ErrConnectionClosed)
+	}
+}
+
 // responseWriter implements ResponseWriter for workers.
 type responseWriter struct {
 	conn          *connection.Connection
@@ -607,10 +617,16 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 
+	restoredRoutes := make([]string, 0, len(snapshot))
+
 	for route, handler := range snapshot {
 		if _, err := c.subscribeWorker(ctx, route, handler); err != nil {
+			for idx := len(restoredRoutes) - 1; idx >= 0; idx-- {
+				c.unsubscribeWorker(restoredRoutes[idx])
+			}
 			return err
 		}
+		restoredRoutes = append(restoredRoutes, route)
 	}
 	return nil
 }

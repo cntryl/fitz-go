@@ -16,7 +16,6 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/internal/core/subscriptions"
-	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -411,30 +410,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	lifecycleCtx := c.conn.LifecycleContext()
 
 	for _, handler := range handlers {
-		go func() {
-			handlerCtx, cancel, span := coretracing.StartDetachedSpan(
-				lifecycleCtx,
-				c.conn.Tracer(),
-				"fitz.queue.handler",
-				c.conn.AsyncHandlerTimeout(),
-				trace.WithAttributes(
-					attribute.Int64("fitz.subscription_id", int64(subID)),
-					attribute.String("fitz.route", route),
-				),
-			)
-			defer cancel()
-			defer span.End()
-
-			release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
-			if !ok {
-				if err := handlerCtx.Err(); err != nil {
-					span.RecordError(err)
-					span.SetStatus(codes.Error, err.Error())
-				}
-				return
-			}
-			defer release()
-
+		if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.queue.handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 			if err := handler(handlerCtx, notif); err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
@@ -442,7 +418,14 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 					log.Warn("queue notify handler failed", "route", route, "error", err)
 				}
 			}
-		}()
+		}, trace.WithAttributes(
+			attribute.Int64("fitz.subscription_id", int64(subID)),
+			attribute.String("fitz.route", route),
+		)) {
+			if log := c.conn.Logger(); log != nil {
+				log.Warn("queue notify handler dropped", "route", route, "sub_id", subID, "reason", "async handler queue full")
+			}
+		}
 	}
 }
 
@@ -503,9 +486,19 @@ func (c *client) ReplaceConnection(conn *connection.Connection) {
 }
 
 func (c *client) RestoreSubscriptions(ctx context.Context) error {
-	return c.subscriptions.Restore(func(pattern string) (uint64, error) {
-		return c.subscribeWire(ctx, pattern)
-	})
+	return c.subscriptions.Restore(
+		func(pattern string) (uint64, error) {
+			return c.subscribeWire(ctx, pattern)
+		},
+		func(pattern string, _ uint64) error {
+			resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(wireWatchPattern(pattern)))
+			if err != nil {
+				return err
+			}
+			_, _, err = parseQueueResponse(resp)
+			return err
+		},
+	)
 }
 
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {

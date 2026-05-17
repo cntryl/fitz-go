@@ -50,6 +50,10 @@ type domainConnectionReplacer interface {
 	ReplaceConnection(conn *connection.Connection)
 }
 
+type pendingRPCCleaner interface {
+	ClosePendingRPCs()
+}
+
 // Client implements the Fitz client with connection management.
 // Per CLIENT_SPEC.md: Handles authentication, request/response correlation, and domain routing.
 type Client struct {
@@ -574,6 +578,10 @@ func (c *Client) replaceDomainConnections(conn *connection.Connection) {
 
 func (c *Client) monitorConnection(conn *connection.Connection) {
 	<-conn.Done()
+
+	if cleaner, ok := c.rpcClient.(pendingRPCCleaner); ok {
+		cleaner.ClosePendingRPCs()
+	}
 
 	if c.closed.Load() {
 		return

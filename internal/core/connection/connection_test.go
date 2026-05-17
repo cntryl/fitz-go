@@ -327,6 +327,45 @@ func TestShouldBoundConcurrentOutboundRequestsGivenMaxOneWhenSecondRequestStarts
 	require.NoError(t, conn.Close())
 }
 
+func TestShouldNotBlockFireAndForgetGivenPendingRequestWhenAdmissionPoolsAreSeparated(t *testing.T) {
+	transport := newAdmissionBlockingTransport()
+	cfg := connection.DefaultConfig()
+	cfg.Token = ""
+	cfg.AuthSettleDelay = 20 * time.Millisecond
+	cfg.ReadTimeout = time.Second
+	cfg.MaxInFlightRequests = 1
+	conn := connection.New(transport, cfg)
+	require.NoError(t, conn.Start(context.Background()))
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := conn.SendRequest(context.Background(), protocol.MessageTypeKvBegin, []byte("first"))
+		firstResult <- err
+	}()
+
+	transport.waitForRequestWrite(t, 1)
+
+	fireAndForgetResult := make(chan error, 1)
+	go func() {
+		fireAndForgetResult <- conn.SendFireAndForget(context.Background(), protocol.MessageTypeNoticePublish, []byte("fire-and-forget"))
+	}()
+
+	select {
+	case err := <-fireAndForgetResult:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("fire-and-forget blocked behind the synchronous request slot")
+	}
+
+	assert.Equal(t, 2, transport.requestWriteCount())
+	transport.pushResponse(protocol.MessageTypeKvBegin, []byte("ok"))
+
+	require.NoError(t, <-firstResult)
+}
+
 // TestShouldParseStandardResponseGivenSuccessStatus tests success response parsing.
 func TestShouldParseStandardResponseGivenSuccessStatusWhenParseStandardResponseCalled(t *testing.T) {
 	// Arrange - Success response: [status=0][remaining data]
