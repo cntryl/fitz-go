@@ -404,17 +404,9 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 	select {
 	case frame, ok := <-ch:
 		if ok {
-			// Got first response, put it back in the channel for the iterator
-			// by creating a new channel and prepending this response
-			newCh := make(chan ResponseFrame, 32)
-			newCh <- frame
-			go func() {
-				for frame := range ch {
-					newCh <- frame
-				}
-				close(newCh)
-			}()
-			iterator.ch = newCh
+			// Store first frame directly on iterator to avoid a forwarding goroutine.
+			iterator.firstFrame = frame
+			iterator.hasFirst = true
 		}
 		return iterator, nil
 	case <-ctx.Done():
@@ -472,6 +464,8 @@ type rpcIterator struct {
 	ctx           context.Context
 	correlationID [16]byte
 	client        *client
+	firstFrame    ResponseFrame
+	hasFirst      bool
 	current       ResponseFrame
 	err           error
 	done          bool
@@ -480,6 +474,12 @@ type rpcIterator struct {
 
 func (it *rpcIterator) Next() bool {
 	it.mu.Lock()
+	if it.hasFirst {
+		it.current = it.firstFrame
+		it.hasFirst = false
+		it.mu.Unlock()
+		return true
+	}
 	if it.done {
 		it.mu.Unlock()
 		return false

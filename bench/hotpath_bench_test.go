@@ -177,3 +177,149 @@ func BenchmarkConnectionSendRequest(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkKVGetHotPath(b *testing.B) {
+	ctx := context.Background()
+	trans := newEchoTransport(1024)
+	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	if err := conn.Start(ctx); err != nil {
+		b.Fatalf("start connection: %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte{0x01}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := conn.SendRequest(ctx, protocol.MessageTypeKvGet, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkKVPutHotPath(b *testing.B) {
+	ctx := context.Background()
+	trans := newEchoTransport(1024)
+	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	if err := conn.Start(ctx); err != nil {
+		b.Fatalf("start connection: %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte{0x01, 0x02}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := conn.SendRequest(ctx, protocol.MessageTypeKvPut, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkLeaseAcquireHotPath(b *testing.B) {
+	ctx := context.Background()
+	trans := newEchoTransport(1024)
+	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	if err := conn.Start(ctx); err != nil {
+		b.Fatalf("start connection: %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte{0x01, 0x02, 0x03}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := conn.SendRequest(ctx, protocol.MessageTypeLeaseAcquire, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkNoticePublishHotPath(b *testing.B) {
+	ctx := context.Background()
+	trans := newEchoTransport(1024)
+	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	if err := conn.Start(ctx); err != nil {
+		b.Fatalf("start connection: %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("bench-publish")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := conn.SendFireAndForget(ctx, protocol.MessageTypeNoticePublish, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRPCCallHotPath(b *testing.B) {
+	ctx := context.Background()
+	trans := newEchoTransport(1024)
+	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	if err := conn.Start(ctx); err != nil {
+		b.Fatalf("start connection: %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("rpc-call")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := conn.SendRequest(ctx, protocol.MessageTypeRpcRequest, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRPCCorrelation1KInFlight(b *testing.B) {
+	mux := connection.NewMultiplexer()
+	msgType := protocol.MessageTypeRpcRequest
+
+	const inflight = 1024
+	chs := make([]chan []byte, inflight)
+	for i := 0; i < inflight; i++ {
+		ch := make(chan []byte, 1)
+		chs[i] = ch
+		mux.RegisterRequest(msgType, ch, nil)
+	}
+
+	resp := []byte("ok")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx := i % inflight
+		mux.Dispatch(msgType, resp)
+		<-chs[idx]
+		mux.RegisterRequest(msgType, chs[idx], nil)
+	}
+}
+
+func BenchmarkKVTransactionLoopback(b *testing.B) {
+	ctx := context.Background()
+	trans := newEchoTransport(2048)
+	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	if err := conn.Start(ctx); err != nil {
+		b.Fatalf("start connection: %v", err)
+	}
+	defer conn.Close()
+
+	beginPayload := []byte{0x01}
+	putPayload := []byte{0x02}
+	commitPayload := []byte{0x03}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := conn.SendRequest(ctx, protocol.MessageTypeKvBegin, beginPayload); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := conn.SendRequest(ctx, protocol.MessageTypeKvPut, putPayload); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := conn.SendRequest(ctx, protocol.MessageTypeKvCommit, commitPayload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
