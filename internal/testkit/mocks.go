@@ -1,4 +1,3 @@
-//nolint:gosec,gocritic,unparam
 package testkit
 
 import (
@@ -328,20 +327,21 @@ func buildWSFrame(opcode byte, payload []byte, mask bool) []byte {
 	header := make([]byte, 0, 14)
 	header = append(header, 0x80|opcode)
 	length := len(payload)
-	if length < 126 {
+	switch {
+	case length < 126:
 		if mask {
 			header = append(header, byte(length)|0x80)
 		} else {
 			header = append(header, byte(length))
 		}
-	} else if length <= 0xFFFF {
+	case length <= 0xFFFF:
 		if mask {
 			header = append(header, 126|0x80)
 		} else {
 			header = append(header, 126)
 		}
 		header = append(header, byte(length>>8), byte(length))
-	} else {
+	default:
 		if mask {
 			header = append(header, 127|0x80)
 		} else {

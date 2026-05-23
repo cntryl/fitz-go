@@ -1,4 +1,3 @@
-//nolint:gosec,errcheck
 package integration
 
 import (
@@ -50,7 +49,7 @@ func TestShouldReadRecordsInOrderGivenOffsetRangeWhenReadCalled(t *testing.T) {
 
 		iter, err := f.Client().Stream().Read(ctx, route, 0, 10)
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var offsets []uint64
 		for iter.Next() {
@@ -85,7 +84,7 @@ func TestShouldReadMatchingDiscriminatorRecordsGivenFilterWhenReadCalled(t *test
 		filter := &fitz.StreamFilterSet{Clauses: []fitz.StreamFilterClause{{Kind: fitz.StreamFilterEquals, Value: "proj.alpha"}}}
 		iter, err := f.Client().Stream().Read(ctx, route, 0, 10, &fitz.StreamReadOptions{Filter: filter})
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var bodies [][]byte
 		for iter.Next() {
@@ -148,7 +147,7 @@ func TestShouldRollbackUncommittedAppendsGivenActiveSessionWhenRollbackCalled(t 
 
 		iter, err := f.Client().Stream().Read(ctx, route, 0, 10)
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		count := 0
 		for iter.Next() {
@@ -221,7 +220,7 @@ func TestShouldRejectReadGivenOffsetBeyondWatermarkWhenConsumeCalled(t *testing.
 			assert.Error(t, err)
 			return
 		}
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		for iter.Next() {
 		}

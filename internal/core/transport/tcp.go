@@ -1,4 +1,3 @@
-//nolint:gosec,errcheck
 package transport
 
 import (
@@ -48,7 +47,7 @@ func DialTCP(ctx context.Context, addr string) (Transport, error) {
 
 // Write sends a length-prefixed frame: [u32 BE length][frame].
 // Thread-safe and atomic (header + frame written together).
-func (t *TCPTransport) Write(ctx context.Context, frame []byte) error {
+func (t *TCPTransport) Write(ctx context.Context, frame []byte) (retErr error) {
 	if t.closed.Load() {
 		return ErrTransportClosed
 	}
@@ -61,9 +60,15 @@ func (t *TCPTransport) Write(ctx context.Context, frame []byte) error {
 
 	// Set write deadline from context
 	if deadline, ok := ctx.Deadline(); ok {
-		t.conn.SetWriteDeadline(deadline)
+		if err := t.conn.SetWriteDeadline(deadline); err != nil {
+			return fmt.Errorf("set tcp write deadline: %w", err)
+		}
+		defer func() {
+			if err := t.conn.SetWriteDeadline(time.Time{}); retErr == nil && err != nil {
+				retErr = fmt.Errorf("clear tcp write deadline: %w", err)
+			}
+		}()
 	}
-	defer t.conn.SetWriteDeadline(time.Time{}) // Clear deadline
 
 	// Build length-prefixed frame: [u32 BE][frame]
 	var header [4]byte
@@ -90,15 +95,21 @@ func (t *TCPTransport) Write(ctx context.Context, frame []byte) error {
 // Read blocks until next complete frame is read.
 // Handles partial reads correctly (uses io.ReadFull).
 // Returns immediately if context is canceled.
-func (t *TCPTransport) Read(ctx context.Context) ([]byte, error) {
+func (t *TCPTransport) Read(ctx context.Context) (frame []byte, retErr error) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 
 	// Set read deadline from context
 	if deadline, ok := ctx.Deadline(); ok {
-		t.conn.SetReadDeadline(deadline)
+		if err := t.conn.SetReadDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("set tcp read deadline: %w", err)
+		}
+		defer func() {
+			if err := t.conn.SetReadDeadline(time.Time{}); retErr == nil && err != nil {
+				retErr = fmt.Errorf("clear tcp read deadline: %w", err)
+			}
+		}()
 	}
-	defer t.conn.SetReadDeadline(time.Time{}) // Clear deadline
 
 	// Read 4-byte length prefix (u32 BE per CLIENT_SPEC.md)
 	var lengthBuf [4]byte
@@ -119,7 +130,7 @@ func (t *TCPTransport) Read(ctx context.Context) ([]byte, error) {
 
 	// Allocate buffer and read exact frame bytes
 	// io.ReadFull handles partial reads correctly
-	frame := make([]byte, frameLen)
+	frame = make([]byte, frameLen)
 	if _, err := io.ReadFull(t.reader, frame); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()

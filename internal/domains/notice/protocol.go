@@ -1,4 +1,3 @@
-//nolint:gosec,unconvert
 package notice
 
 import (
@@ -125,7 +124,7 @@ func decodeFirstRoute(body []byte) (int, string, bool) {
 	idx := 0
 	routeLen := readU32(body[idx:])
 	idx += 4
-	if int(idx+int(routeLen)) > len(body) {
+	if idx+int(routeLen) > len(body) {
 		return 0, "", false
 	}
 	route := string(body[idx : idx+int(routeLen)])
@@ -140,7 +139,7 @@ func decodePayload(body []byte) ([]byte, bool) {
 	}
 	plen := readU32(body[idx:])
 	idx += 4
-	if int(idx+int(plen)) > len(body) {
+	if idx+int(plen) > len(body) {
 		return nil, false
 	}
 	if idx+int(plen) != len(body) {

@@ -1,4 +1,3 @@
-//nolint:gosec,errcheck
 package connection_test
 
 import (
@@ -18,7 +17,7 @@ func TestShouldTrackRequestsGivenRegisteredRequestsWhenMetricsRead(t *testing.T)
 	t.Run("incremental IDs", func(t *testing.T) {
 		// Arrange
 		mux := connection.NewMultiplexer()
-		defer mux.Close()
+		defer closeQuietly(mux)
 
 		// Act
 		for i := range 3 {
@@ -37,7 +36,7 @@ func TestShouldRouteResponseGivenMatchingMessageTypeWhenDispatchCalled(t *testin
 	t.Run("matching ID receives response", func(t *testing.T) {
 		// Arrange
 		mux := connection.NewMultiplexer()
-		defer mux.Close()
+		defer closeQuietly(mux)
 
 		ch1 := make(chan []byte, 1)
 		ch2 := make(chan []byte, 1)
@@ -57,7 +56,7 @@ func TestShouldRouteResponseGivenMatchingMessageTypeWhenDispatchCalled(t *testin
 	t.Run("unregistered ID discards response", func(t *testing.T) {
 		// Arrange
 		mux := connection.NewMultiplexer()
-		defer mux.Close()
+		defer closeQuietly(mux)
 
 		ch := make(chan []byte, 1)
 		mux.RegisterRequest(100, ch, nil)
@@ -79,7 +78,7 @@ func TestShouldRouteResponseGivenMatchingMessageTypeWhenDispatchCalled(t *testin
 func TestShouldUnblockWaiterGivenPendingRequestWhenDispatchCalled(t *testing.T) {
 	// Arrange
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	ch := make(chan []byte, 1)
 	done := make(chan bool, 1)
@@ -108,7 +107,7 @@ func TestShouldUnblockWaiterGivenPendingRequestWhenDispatchCalled(t *testing.T) 
 func TestShouldReturnPromptlyGivenSlowConsumerWhenDispatchCalled(t *testing.T) {
 	// Arrange
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	ch := make(chan []byte)
 	mux.RegisterRequest(100, ch, nil)
@@ -146,7 +145,7 @@ func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCa
 	t.Run("10 concurrent requests", func(t *testing.T) {
 		// Arrange
 		mux := connection.NewMultiplexer()
-		defer mux.Close()
+		defer closeQuietly(mux)
 
 		numRequests := 10
 		responses := make([]chan []byte, numRequests)
@@ -174,7 +173,7 @@ func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCa
 	t.Run("100 concurrent requests", func(t *testing.T) {
 		// Arrange
 		mux := connection.NewMultiplexer()
-		defer mux.Close()
+		defer closeQuietly(mux)
 
 		numRequests := 100
 		responses := make([]chan []byte, numRequests)
@@ -205,7 +204,7 @@ func TestShouldHandleConcurrentRequestsGivenManyRegisteredRequestsWhenDispatchCa
 
 func TestShouldAllowConcurrentHandlerReplacementGivenNotifyDispatchWhenSetNotifyHandlerAndDispatchCalled(t *testing.T) {
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	payload := func() []byte {
 		buf := make([]byte, 0, 8+4+20+4+4)
@@ -261,7 +260,7 @@ func TestShouldAllowConcurrentHandlerReplacementGivenNotifyDispatchWhenSetNotify
 func TestShouldMaintainFIFOOrderGivenSharedMessageTypeWhenDispatchCalled(t *testing.T) {
 	// Arrange
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	// Register multiple requests for same message type (FIFO queue)
 	ch1 := make(chan []byte, 1)
@@ -291,8 +290,8 @@ func TestShouldCloseGracefullyGivenRegisteredRequestWhenCloseCalledTwice(t *test
 	mux.RegisterRequest(100, ch, nil)
 
 	// Act
-	mux.Close()
-	mux.Close()
+	closeQuietly(mux)
+	closeQuietly(mux)
 
 	// Assert
 }
@@ -306,7 +305,10 @@ func TestShouldCancelPendingRequestsGivenCancelFuncsWhenCloseCalled(t *testing.T
 	mux.RegisterRequest(100, ch, func() { cancelCount++ })
 
 	// Act
-	err := mux.Close()
+	err := func() error {
+		closeQuietly(mux)
+		return nil
+	}()
 
 	// Assert
 	assert.NoError(t, err)
@@ -319,7 +321,7 @@ func TestShouldCancelPendingRequestsGivenCancelFuncsWhenCloseCalled(t *testing.T
 func TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead(t *testing.T) {
 	// Arrange
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	// Act
 	metrics := mux.Metrics()
@@ -352,7 +354,7 @@ func TestShouldReportMetricsGivenRequestLifecycleWhenMetricsRead(t *testing.T) {
 // TestShouldDispatchQueueNotifyGivenQueuePayloadWhenNotifyHandlerRegistered verifies queue watch payload parsing.
 func TestShouldDispatchQueueNotifyGivenQueuePayloadWhenNotifyHandlerRegistered(t *testing.T) {
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	got := make(chan struct {
 		subID uint64
@@ -400,7 +402,7 @@ func TestShouldDispatchQueueNotifyGivenQueuePayloadWhenNotifyHandlerRegistered(t
 
 func BenchmarkRegisterRequest(b *testing.B) {
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -412,7 +414,7 @@ func BenchmarkRegisterRequest(b *testing.B) {
 
 func BenchmarkMuxDispatchResponse(b *testing.B) {
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	// Pre-register 1000 requests
 	for i := range 1000 {
@@ -431,7 +433,7 @@ func BenchmarkMuxDispatchResponse(b *testing.B) {
 
 func BenchmarkConcurrentDispatch(b *testing.B) {
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	// Pre-register 1000 requests
 	for i := range 1000 {

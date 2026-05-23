@@ -1,7 +1,5 @@
 // Package lease implements the Fitz Lease domain client.
 // Per CLIENT_SPEC.md: Distributed lease acquisition with fencing tokens.
-//
-//nolint:gosec,errcheck
 package lease
 
 import (
@@ -438,7 +436,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	connection.ParseStandardResponse(resp)
+	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+		return
+	}
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {

@@ -1,4 +1,3 @@
-//nolint:errcheck
 package connection_test
 
 import (
@@ -501,7 +500,7 @@ func TestShouldEncodeDecodeStringGivenValueWhenHelpersCalled(t *testing.T) {
 func TestShouldMatchResponsesInFIFOOrderGivenSharedMessageTypeWhenDispatchCalled(t *testing.T) {
 	// Arrange
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	// Register 3 requests for same MessageType
 	resp1 := make(chan []byte, 1)
@@ -527,7 +526,7 @@ func TestShouldMatchResponsesInFIFOOrderGivenSharedMessageTypeWhenDispatchCalled
 func TestShouldReturnMetricsGivenRegisteredRequestWhenMetricsCalled(t *testing.T) {
 	// Arrange
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	respChan := make(chan []byte, 1)
 	mux.RegisterRequest(100, respChan, nil)
@@ -543,7 +542,7 @@ func TestShouldReturnMetricsGivenRegisteredRequestWhenMetricsCalled(t *testing.T
 // TestShouldDispatchToCorrectChannel tests response routing.
 func TestShouldDispatchToCorrectChannelGivenMatchingMessageTypeWhenDispatchCalled(t *testing.T) {
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	resp := make(chan []byte, 1)
 	mux.RegisterRequest(100, resp, nil)
@@ -669,7 +668,7 @@ func BenchmarkEncodeDecodeString(b *testing.B) {
 
 func BenchmarkDispatchResponse(b *testing.B) {
 	mux := connection.NewMultiplexer()
-	defer mux.Close()
+	defer closeQuietly(mux)
 
 	// Pre-register channels to avoid registration overhead in benchmark
 	channels := make([]chan []byte, 100)

@@ -11,6 +11,7 @@ linters:
   enable:
     - bodyclose
     - copyloopvar
+    - embeddedstructfieldcheck
     - errcheck
     - errorlint
     - gocritic

@@ -1,7 +1,5 @@
 // Package queue implements the Fitz Queue domain client.
 // Per CLIENT_SPEC.md: FIFO message queue with lease-based processing.
-//
-//nolint:gosec,errcheck
 package queue
 
 import (
@@ -473,7 +471,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	parseQueueResponse(resp)
+	if _, _, err := parseQueueResponse(resp); err != nil {
+		return
+	}
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {

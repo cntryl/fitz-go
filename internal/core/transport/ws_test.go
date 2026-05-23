@@ -1,4 +1,3 @@
-//nolint:gosec,errcheck,staticcheck
 package transport
 
 import (
@@ -235,11 +234,11 @@ func TestShouldParseWSURLGivenURLStringWhenURLParsed(t *testing.T) {
 		assert.Equal(t, "wss", u.Scheme)
 	})
 
-	t.Run("invalid url", func(t *testing.T) {
+	t.Run("non-websocket scheme", func(t *testing.T) {
 		// Arrange
 
 		// Act
-		_, err := url.Parse("ht!tp://invalid")
+		_, err := DialWebSocket(context.Background(), "http://localhost:4090/ws")
 
 		// Assert
 		require.Error(t, err)

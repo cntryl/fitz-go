@@ -19,8 +19,6 @@
 //	go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
 //	CONFORMANCE_TRANSPORT=ws CONFORMANCE_AUTH_MODE=valid_jwt \
 //	  go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
-//
-//nolint:gosec,errcheck
 package conformance
 
 import (
@@ -393,7 +391,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				ev = append(ev, fmt.Sprintf("call to unregistered route returned error: %v", err))
 			} else {
-				defer iter.Close()
+				defer closeQuietly(iter)
 				iter.Next()
 				if iterErr := iter.Err(); iterErr != nil {
 					ev = append(ev, fmt.Sprintf("iterator error on unregistered route: %v", iterErr))
@@ -488,7 +486,7 @@ func TestConformanceSuite(t *testing.T) {
 				ev = append(ev, fmt.Sprintf("rpc call error type: %T", err))
 				ev = append(ev, fmt.Sprintf("rpc call error: %v", err))
 			} else {
-				defer iter.Close()
+				defer closeQuietly(iter)
 				iter.Next()
 				err = iter.Err()
 				ev = append(ev, fmt.Sprintf("rpc iterator error type: %T", err))
@@ -535,7 +533,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				timeoutErr = err
 			} else {
-				defer iter.Close()
+				defer closeQuietly(iter)
 				iter.Next()
 				timeoutErr = iter.Err()
 			}
@@ -597,7 +595,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			iter.Next()
 			iterErr := iter.Err()
-			iter.Close()
+			closeQuietly(iter)
 
 			if iterErr == nil {
 				ev = append(ev, "expected cancellation error, got nil (race: call may have completed)")
@@ -662,7 +660,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			iter.Next()
 			iterErr := iter.Err()
-			iter.Close()
+			closeQuietly(iter)
 
 			if iterErr == nil {
 				ev = append(ev, "WARNING: in-flight request succeeded despite disconnect (race â€” acceptable)")
@@ -740,7 +738,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("stream read: %w", err)
 			}
-			defer iter.Close()
+			defer closeQuietly(iter)
 
 			var offsets []uint64
 			for iter.Next() {
@@ -796,7 +794,7 @@ func TestConformanceSuite(t *testing.T) {
 			for iter.Next() {
 				count++
 			}
-			iter.Close()
+			closeQuietly(iter)
 
 			if count < 2 {
 				ev = append(ev, fmt.Sprintf("expected >=2 records, got %d", count))
@@ -1010,13 +1008,13 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("first rpc call: %w", err)
 			}
-			defer firstIter.Close()
+			defer closeQuietly(firstIter)
 
 			secondIter, err := f.Client().RPC().Call(callCtx, route, []byte("second"))
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("second rpc call: %w", err)
 			}
-			defer secondIter.Close()
+			defer closeQuietly(secondIter)
 
 			firstDoneCh := make(chan error, 1)
 			secondDoneCh := make(chan error, 1)

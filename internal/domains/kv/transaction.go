@@ -1,4 +1,3 @@
-//nolint:gosec,dupl
 package kv
 
 import (

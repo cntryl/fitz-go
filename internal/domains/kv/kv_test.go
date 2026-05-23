@@ -1,4 +1,3 @@
-//nolint:gosec,unconvert
 package kv
 
 import (
@@ -34,8 +33,8 @@ func TestShouldEncodeBeginGivenValidRouteWhenBeginPayloadWritten(t *testing.T) {
 	require.Equal(t, route, actualRoute)
 
 	offset += int(routeLen)
-	require.Equal(t, uint8(TxModeReadOnly), payload[offset])
-	require.Equal(t, uint8(DurabilityBuffered), payload[offset+1])
+	require.Equal(t, TxModeReadOnly, payload[offset])
+	require.Equal(t, DurabilityBuffered, payload[offset+1])
 }
 
 // TestShouldEncodeBeginGivenReadWriteMode tests BEGIN encoding with ReadWrite mode.
@@ -56,8 +55,8 @@ func TestShouldEncodeBeginGivenReadWriteModeWhenBeginPayloadWritten(t *testing.T
 	require.NoError(t, err)
 	offset := 4 + int(routeLen)
 
-	require.Equal(t, uint8(TxModeReadWrite), payload[offset])
-	require.Equal(t, uint8(DurabilitySync), payload[offset+1])
+	require.Equal(t, TxModeReadWrite, payload[offset])
+	require.Equal(t, DurabilitySync, payload[offset+1])
 }
 
 // TestShouldEncodeGetGivenValidKeyAndTxID tests GET request encoding.

@@ -1,4 +1,3 @@
-//nolint:errcheck
 package integration
 
 import (
@@ -32,7 +31,7 @@ func TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled(t *tes
 
 		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("ping"))
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		require.True(t, iter.Next())
 		assert.Equal(t, []byte("ping"), iter.Value().Body)
@@ -63,7 +62,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 
 		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("stream-me"))
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var seqs []uint64
 		for iter.Next() {

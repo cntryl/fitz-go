@@ -1,4 +1,3 @@
-//nolint:errcheck
 package integration
 
 import (
@@ -45,7 +44,7 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 					if err != nil {
 						return err
 					}
-					defer tx.Rollback(ctx)
+					defer rollbackQuietly(ctx, tx)
 					return tx.Put(ctx, []byte("key"), []byte("value"))
 				},
 			},
@@ -103,7 +102,7 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 					if err != nil {
 						return err
 					}
-					defer session.Rollback(ctx)
+					defer rollbackQuietly(ctx, session)
 					_, err = session.Append(ctx, 0, []byte("payload"))
 					return err
 				},

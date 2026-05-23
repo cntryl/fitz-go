@@ -1,4 +1,3 @@
-//nolint:gosec,errcheck,dupl
 package integration
 
 import (
@@ -187,7 +186,7 @@ func TestShouldScanKeysInOrderGivenRangeWhenScanCalled(t *testing.T) {
 		require.NoError(t, err)
 		iter, _, err := readTx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("a"), EndKey: []byte("d"), Limit: 10})
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var keys []string
 		for iter.Next() {
@@ -224,7 +223,7 @@ func TestShouldDeleteRangeGivenRangeWhenDeleteRangeCalled(t *testing.T) {
 		require.NoError(t, err)
 		iter, _, err := readTx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("a"), EndKey: []byte("z"), Limit: 10})
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var keys []string
 		for iter.Next() {
@@ -255,7 +254,7 @@ func TestShouldRespectLimitGivenScanLimitWhenScanCalled(t *testing.T) {
 		require.NoError(t, err)
 		iter, _, err := readTx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("a"), EndKey: []byte("z"), Limit: 2})
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		count := 0
 		for iter.Next() {

@@ -1,4 +1,3 @@
-//nolint:gosec,errcheck
 package testkit
 
 import (
@@ -77,7 +76,9 @@ func BrokerConnectable(addr string) bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		return false
+	}
 	return true
 }
 

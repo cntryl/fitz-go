@@ -1,4 +1,3 @@
-//nolint:gosec,errcheck
 package bench
 
 import (
@@ -93,7 +92,7 @@ func benchmarkSendRequestHotPath(b *testing.B, msgType uint16, payload []byte) {
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -200,7 +199,7 @@ func BenchmarkKVGetHotPath(b *testing.B) {
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
 
 	payload := []byte{0x01}
 	b.ReportAllocs()
@@ -219,7 +218,7 @@ func BenchmarkKVPutHotPath(b *testing.B) {
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
 
 	payload := []byte{0x01, 0x02}
 	b.ReportAllocs()
@@ -238,7 +237,7 @@ func BenchmarkLeaseAcquireHotPath(b *testing.B) {
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
 
 	payload := []byte{0x01, 0x02, 0x03}
 	b.ReportAllocs()
@@ -300,7 +299,7 @@ func BenchmarkNoticePublishHotPath(b *testing.B) {
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
 
 	payload := []byte("bench-publish")
 	b.ReportAllocs()
@@ -319,7 +318,7 @@ func BenchmarkRPCCallHotPath(b *testing.B) {
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
 
 	payload := []byte("rpc-call")
 	b.ReportAllocs()
@@ -361,7 +360,7 @@ func BenchmarkKVTransactionLoopback(b *testing.B) {
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
 
 	beginPayload := []byte{0x01}
 	putPayload := []byte{0x02}

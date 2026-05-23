@@ -1,4 +1,3 @@
-//nolint:errcheck,unparam
 package client
 
 import (
@@ -192,7 +191,7 @@ func TestShouldRejectSecondConnectGivenExistingConnectionWhenConnectCalled(t *te
 	defer cancel()
 
 	require.NoError(t, c.Connect(ctx))
-	defer c.Close()
+	defer closeQuietly(c)
 
 	err := c.Connect(ctx)
 	require.ErrorIs(t, err, ErrClientAlreadyConnected)

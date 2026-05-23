@@ -1,4 +1,3 @@
-//nolint:dupl,gosec,unused,errcheck
 package connection
 
 import (
@@ -60,7 +59,6 @@ func (s State) String() string {
 type Connection struct {
 	transport        transport.Transport
 	state            atomic.Int32 // State enum
-	stateMu          sync.RWMutex // Protects state transitions
 	writeMu          sync.Mutex   // Serializes outbound frames so FIFO request queues match wire order
 	requestSem       chan struct{}
 	oneWaySem        chan struct{}
@@ -313,7 +311,9 @@ func (c *Connection) Start(ctx context.Context) error {
 	if err := c.sendConnect(ctx); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		c.Close()
+		if closeErr := c.Close(); closeErr != nil && c.logger != nil {
+			c.logger.WarnContext(ctx, "close after CONNECT failure", "error", closeErr)
+		}
 		return fmt.Errorf("send CONNECT: %w", err)
 	}
 
@@ -342,7 +342,9 @@ func (c *Connection) Start(ctx context.Context) error {
 		// Caller canceled
 		span.RecordError(ctx.Err())
 		span.SetStatus(codes.Error, ctx.Err().Error())
-		c.Close()
+		if closeErr := c.Close(); closeErr != nil && c.logger != nil {
+			c.logger.WarnContext(ctx, "close after start cancellation", "error", closeErr)
+		}
 		return ctx.Err()
 
 	case <-time.After(authSettleDelay):
@@ -421,7 +423,11 @@ func (c *Connection) confirmAuthentication() {
 // Runs in its own goroutine, started by Start().
 func (c *Connection) dispatchLoop() {
 	defer close(c.done)
-	defer c.mux.Close()
+	defer func() {
+		if err := c.mux.Close(); err != nil && c.logger != nil {
+			c.logger.Warn("close multiplexer", "error", err)
+		}
+	}()
 
 	firstResponse := true
 

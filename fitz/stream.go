@@ -1,4 +1,3 @@
-//nolint:unconvert
 package fitz
 
 import (
@@ -313,6 +312,6 @@ func cloneFilteredReasonPtr(value *internalstream.FilteredReason) *StreamFiltere
 	if value == nil {
 		return nil
 	}
-	clone := StreamFilteredReason(*value)
+	clone := *value
 	return &clone
 }

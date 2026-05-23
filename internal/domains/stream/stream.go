@@ -1,7 +1,5 @@
 // Package stream implements the Fitz Stream domain client.
 // Per CLIENT_SPEC.md: Append-only log with transactional semantics.
-//
-//nolint:gosec,errcheck
 package stream
 
 import (
@@ -939,7 +937,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	connection.ParseStandardResponse(resp)
+	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+		return
+	}
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {

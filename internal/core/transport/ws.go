@@ -1,4 +1,3 @@
-//nolint:gosec,errcheck,gocritic
 package transport
 
 import (
@@ -56,6 +55,9 @@ func DialWebSocket(ctx context.Context, urlStr string) (Transport, error) {
 	if err != nil {
 		return nil, newTransportError("dial", fmt.Errorf("parse url: %w", err))
 	}
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return nil, newTransportError("dial", fmt.Errorf("unsupported websocket scheme: %s", u.Scheme))
+	}
 
 	// Determine host and port
 	host := u.Host
@@ -77,7 +79,9 @@ func DialWebSocket(ctx context.Context, urlStr string) (Transport, error) {
 	// Perform WebSocket handshake
 	reader, err := performHandshake(conn, u, ctx)
 	if err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close websocket connection: %w", closeErr))
+		}
 		return nil, newTransportError("handshake", err)
 	}
 
@@ -91,7 +95,7 @@ func DialWebSocket(ctx context.Context, urlStr string) (Transport, error) {
 // performHandshake sends HTTP upgrade request and validates response.
 // It returns the buffered reader so any bytes already read during the
 // handshake remain available to the WebSocket frame parser.
-func performHandshake(conn net.Conn, u *url.URL, ctx context.Context) (*bufio.Reader, error) {
+func performHandshake(conn net.Conn, u *url.URL, ctx context.Context) (reader *bufio.Reader, retErr error) {
 	// Generate random WebSocket key (16 bytes base64 encoded)
 	keyBytes := make([]byte, 16)
 	if _, err := rand.Read(keyBytes); err != nil {
@@ -112,7 +116,11 @@ func performHandshake(conn net.Conn, u *url.URL, ctx context.Context) (*bufio.Re
 		if err := conn.SetDeadline(deadline); err != nil {
 			return nil, fmt.Errorf("set deadline: %w", err)
 		}
-		defer conn.SetDeadline(time.Time{})
+		defer func() {
+			if err := conn.SetDeadline(time.Time{}); retErr == nil && err != nil {
+				retErr = fmt.Errorf("clear deadline: %w", err)
+			}
+		}()
 	}
 
 	req := fmt.Sprintf(
@@ -131,7 +139,7 @@ func performHandshake(conn net.Conn, u *url.URL, ctx context.Context) (*bufio.Re
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	reader := bufio.NewReader(conn)
+	reader = bufio.NewReader(conn)
 	tp := textproto.NewReader(reader)
 	statusLine, err := tp.ReadLine()
 	if err != nil {
@@ -167,7 +175,7 @@ func computeAccept(key string) string {
 
 // Write sends a complete TLV frame as a binary WebSocket message.
 // Thread-safe (protected by mutex).
-func (w *WebSocketTransport) Write(ctx context.Context, frame []byte) error {
+func (w *WebSocketTransport) Write(ctx context.Context, frame []byte) (retErr error) {
 	if w.closed.Load() {
 		return ErrTransportClosed
 	}
@@ -180,9 +188,15 @@ func (w *WebSocketTransport) Write(ctx context.Context, frame []byte) error {
 
 	// Set write deadline from context
 	if deadline, ok := ctx.Deadline(); ok {
-		w.conn.SetWriteDeadline(deadline)
+		if err := w.conn.SetWriteDeadline(deadline); err != nil {
+			return fmt.Errorf("set websocket write deadline: %w", err)
+		}
+		defer func() {
+			if err := w.conn.SetWriteDeadline(time.Time{}); retErr == nil && err != nil {
+				retErr = fmt.Errorf("clear websocket write deadline: %w", err)
+			}
+		}()
 	}
-	defer w.conn.SetWriteDeadline(time.Time{})
 
 	// Write binary frame with masking (client-to-server requires mask)
 	if err := w.writeFrame(opcodeBinary, frame, true); err != nil {
@@ -205,20 +219,21 @@ func (w *WebSocketTransport) writeFrame(opcode byte, payload []byte, mask bool) 
 
 	// Byte 1+: Mask bit + payload length
 	length := len(payload)
-	if length < 126 {
+	switch {
+	case length < 126:
 		if mask {
 			header = append(header, byte(length)|0x80)
 		} else {
 			header = append(header, byte(length))
 		}
-	} else if length <= 0xFFFF {
+	case length <= 0xFFFF:
 		if mask {
 			header = append(header, 126|0x80)
 		} else {
 			header = append(header, 126)
 		}
 		header = append(header, byte(length>>8), byte(length))
-	} else {
+	default:
 		if mask {
 			header = append(header, 127|0x80)
 		} else {
@@ -267,12 +282,18 @@ func (w *WebSocketTransport) writeFrame(opcode byte, payload []byte, mask bool) 
 // Read blocks until next binary WebSocket message arrives.
 // Returns immediately if context is canceled.
 // Handles control frames (ping, pong, close) automatically.
-func (w *WebSocketTransport) Read(ctx context.Context) ([]byte, error) {
+func (w *WebSocketTransport) Read(ctx context.Context) (payload []byte, retErr error) {
 	// Set read deadline from context
 	if deadline, ok := ctx.Deadline(); ok {
-		w.conn.SetReadDeadline(deadline)
+		if err := w.conn.SetReadDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("set websocket read deadline: %w", err)
+		}
+		defer func() {
+			if err := w.conn.SetReadDeadline(time.Time{}); retErr == nil && err != nil {
+				retErr = fmt.Errorf("clear websocket read deadline: %w", err)
+			}
+		}()
 	}
-	defer w.conn.SetReadDeadline(time.Time{})
 
 	for {
 		// Check context cancellation
@@ -303,8 +324,11 @@ func (w *WebSocketTransport) Read(ctx context.Context) ([]byte, error) {
 		case opcodePing:
 			// Respond with pong
 			w.mu.Lock()
-			w.writeFrame(opcodePong, payload, true)
+			err = w.writeFrame(opcodePong, payload, true)
 			w.mu.Unlock()
+			if err != nil {
+				return nil, err
+			}
 			continue
 
 		case opcodePong:
@@ -401,11 +425,11 @@ func (w *WebSocketTransport) Close() error {
 	w.mu.Lock()
 	closePayload := make([]byte, 2)
 	binary.BigEndian.PutUint16(closePayload, statusNormalClosure)
-	w.writeFrame(opcodeClose, closePayload, true)
+	writeErr := w.writeFrame(opcodeClose, closePayload, true)
 	w.mu.Unlock()
 
 	// Close underlying connection
-	return w.conn.Close()
+	return errors.Join(writeErr, w.conn.Close())
 }
 
 // RemoteAddr returns the WebSocket URL.

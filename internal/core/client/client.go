@@ -1,4 +1,3 @@
-//nolint:exhaustive
 package client
 
 import (

@@ -1,7 +1,5 @@
 // Package schedule implements the Fitz Schedule domain client.
 // Per CLIENT_SPEC.md: Cron-based task scheduling.
-//
-//nolint:gosec,errcheck
 package schedule
 
 import (
@@ -404,7 +402,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	connection.ParseStandardResponse(resp)
+	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+		return
+	}
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {

@@ -1,7 +1,5 @@
 // Package notice implements the Fitz Notice domain client.
 // Per CLIENT_SPEC.md: Pub/sub with wildcard pattern matching.
-//
-//nolint:errcheck,gosec
 package notice
 
 import (
@@ -185,7 +183,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	connection.ParseStandardResponse(resp)
+	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+		return
+	}
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {

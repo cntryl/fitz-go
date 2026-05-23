@@ -1,4 +1,3 @@
-//nolint:errcheck
 package integration
 
 import (
@@ -49,7 +48,7 @@ func TestShouldReturnExpectedDomainErrorsGivenRejectedOperations(t *testing.T) {
 			route := f1.UniqueRoute("lease")
 			lease, err := f1.Client().Lease().Acquire(ctx, route, 3)
 			require.NoError(t, err)
-			defer lease.Release(ctx)
+			defer releaseQuietly(ctx, lease)
 
 			_, err = f2.Client().Lease().Acquire(ctx, route, 3)
 			require.Error(t, err)
