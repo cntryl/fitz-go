@@ -38,6 +38,80 @@ func TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled(t *tes
 	})
 }
 
+func TestShouldRestoreWorkerRegistrationGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		authMode := fixture.AuthModeForTestName(t.Name())
+		backendAddr, stop, err := fixture.StartBrokerIfNeeded(transport, authMode)
+		require.NoError(t, err)
+		t.Cleanup(stop)
+
+		proxy := fixture.NewDisconnectProxy(t, transport, backendAddr)
+
+		worker := fixture.NewTestFixture(t, transport)
+		worker.SetAuthMode(authMode)
+		worker.SetBrokerAddr(proxy.Addr())
+
+		caller := fixture.NewTestFixture(t, transport)
+		caller.SetAuthMode(authMode)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		require.NoError(t, worker.ConnectWithOptions(
+			ctx,
+			fitz.WithReconnect(true, 25*time.Millisecond, 20),
+			fitz.WithReconnectMaxDelay(50*time.Millisecond),
+		))
+		require.NoError(t, caller.Connect(ctx))
+
+		route := worker.UniqueRoute("rpc")
+		_, err = worker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+			return w.Send(req.Body)
+		})
+		require.NoError(t, err)
+
+		callAndExpect := func(payload string) {
+			iter, err := caller.Client().RPC().Call(ctx, route, []byte(payload))
+			require.NoError(t, err)
+			defer closeQuietly(iter)
+
+			require.True(t, iter.Next())
+			assert.Equal(t, payload, string(iter.Value().Body))
+			require.NoError(t, iter.Err())
+		}
+
+		callAndExpect("before-disconnect")
+
+		require.Eventually(t, func() bool {
+			return proxy.AcceptedCount() >= 1
+		}, 5*time.Second, 20*time.Millisecond)
+
+		proxy.DropConnections()
+
+		require.Eventually(t, func() bool {
+			return proxy.AcceptedCount() >= 2
+		}, 10*time.Second, 20*time.Millisecond)
+
+		require.Eventually(t, func() bool {
+			iter, err := caller.Client().RPC().Call(ctx, route, []byte("after-disconnect"))
+			if err != nil {
+				return false
+			}
+			defer closeQuietly(iter)
+
+			if !iter.Next() {
+				return false
+			}
+
+			if string(iter.Value().Body) != "after-disconnect" {
+				return false
+			}
+
+			return iter.Err() == nil
+		}, 10*time.Second, 100*time.Millisecond)
+	})
+}
+
 func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		fWorker := fixture.NewTestFixture(t, transport)

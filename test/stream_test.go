@@ -266,3 +266,84 @@ func TestShouldNotifyGivenSubscriptionWhenCommitAppends(t *testing.T) {
 		}
 	})
 }
+
+func TestShouldRestoreCommitSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		authMode := fixture.AuthModeForTestName(t.Name())
+		backendAddr, stop, err := fixture.StartBrokerIfNeeded(transport, authMode)
+		require.NoError(t, err)
+		t.Cleanup(stop)
+
+		proxy := fixture.NewDisconnectProxy(t, transport, backendAddr)
+
+		subscriber := fixture.NewTestFixture(t, transport)
+		subscriber.SetAuthMode(authMode)
+		subscriber.SetBrokerAddr(proxy.Addr())
+
+		producer := fixture.NewTestFixture(t, transport)
+		producer.SetAuthMode(authMode)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		require.NoError(t, subscriber.ConnectWithOptions(
+			ctx,
+			fitz.WithReconnect(true, 25*time.Millisecond, 20),
+			fitz.WithReconnectMaxDelay(50*time.Millisecond),
+		))
+		require.NoError(t, producer.Connect(ctx))
+
+		route := subscriber.UniqueRoute("stream")
+		notifications := make(chan string, 4)
+		_, err = subscriber.Client().Stream().Subscribe(ctx, route, func(_ context.Context, n fitz.StreamCommitNotification) error {
+			notifications <- n.Route
+			return nil
+		})
+		require.NoError(t, err)
+
+		commitRecord := func(body string) {
+			nextOffset := uint64(0)
+			rec, err := producer.Client().Stream().Peek(ctx, route)
+			require.NoError(t, err)
+			if rec != nil {
+				nextOffset = rec.Offset + 1
+			}
+
+			sess, err := producer.Client().Stream().Begin(ctx, route)
+			require.NoError(t, err)
+			_, err = sess.Append(ctx, nextOffset, []byte(body))
+			require.NoError(t, err)
+			require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
+		}
+
+		commitRecord("before-disconnect")
+
+		select {
+		case notifiedRoute := <-notifications:
+			require.Equal(t, route, notifiedRoute)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for initial stream notification")
+		}
+
+		require.Eventually(t, func() bool {
+			return proxy.AcceptedCount() >= 1
+		}, 5*time.Second, 20*time.Millisecond)
+
+		proxy.DropConnections()
+
+		require.Eventually(t, func() bool {
+			return proxy.AcceptedCount() >= 2
+		}, 10*time.Second, 20*time.Millisecond)
+
+		require.Eventually(t, func() bool {
+			commitRecord("after-disconnect")
+
+			select {
+			case notifiedRoute := <-notifications:
+				return notifiedRoute == route
+			default:
+				return false
+			}
+		}, 10*time.Second, 100*time.Millisecond)
+	})
+}

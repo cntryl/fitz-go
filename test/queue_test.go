@@ -247,3 +247,82 @@ func TestShouldNotifyGivenSubscribeWhenMessageEnqueued(t *testing.T) {
 		}
 	})
 }
+
+func TestShouldRestoreAvailabilitySubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		authMode := fixture.AuthModeForTestName(t.Name())
+		backendAddr, stop, err := fixture.StartBrokerIfNeeded(transport, authMode)
+		require.NoError(t, err)
+		t.Cleanup(stop)
+
+		proxy := fixture.NewDisconnectProxy(t, transport, backendAddr)
+
+		subscriber := fixture.NewTestFixture(t, transport)
+		subscriber.SetAuthMode(authMode)
+		subscriber.SetBrokerAddr(proxy.Addr())
+
+		producer := fixture.NewTestFixture(t, transport)
+		producer.SetAuthMode(authMode)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		require.NoError(t, subscriber.ConnectWithOptions(
+			ctx,
+			fitz.WithReconnect(true, 25*time.Millisecond, 20),
+			fitz.WithReconnectMaxDelay(50*time.Millisecond),
+		))
+		require.NoError(t, producer.Connect(ctx))
+
+		route := subscriber.UniqueRoute("queue")
+		notifications := make(chan string, 4)
+		_, err = subscriber.Client().Queue().Subscribe(ctx, route, func(_ context.Context, n fitz.QueueAvailabilityNotification) error {
+			notifications <- n.Route
+			return nil
+		})
+		require.NoError(t, err)
+
+		_, err = producer.Client().Queue().Enqueue(ctx, route, []byte("before-disconnect"))
+		require.NoError(t, err)
+
+		select {
+		case notifiedRoute := <-notifications:
+			require.Equal(t, route, notifiedRoute)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for initial queue notification")
+		}
+
+		items, err := subscriber.Client().Queue().Reserve(ctx, route, 30, 1)
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		require.NoError(t, items[0].Complete(ctx))
+
+		require.Eventually(t, func() bool {
+			return proxy.AcceptedCount() >= 1
+		}, 5*time.Second, 20*time.Millisecond)
+
+		proxy.DropConnections()
+
+		require.Eventually(t, func() bool {
+			return proxy.AcceptedCount() >= 2
+		}, 10*time.Second, 20*time.Millisecond)
+
+		require.Eventually(t, func() bool {
+			_, err := producer.Client().Queue().Enqueue(ctx, route, []byte("after-disconnect"))
+			if err != nil {
+				return false
+			}
+
+			select {
+			case notifiedRoute := <-notifications:
+				return notifiedRoute == route
+			default:
+				items, reserveErr := producer.Client().Queue().Reserve(ctx, route, 30, 1)
+				if reserveErr == nil && len(items) == 1 {
+					_ = items[0].Complete(ctx)
+				}
+				return false
+			}
+		}, 10*time.Second, 100*time.Millisecond)
+	})
+}

@@ -679,29 +679,87 @@ func TestConformanceSuite(t *testing.T) {
 	t.Run("CS-010_reconnect_behavior", func(t *testing.T) {
 		r := run("CS-010", "reconnect and retry behavior", "P1", func() (Verdict, []string, error) {
 			var ev []string
+			backendAddr, stop, err := fixture.StartBrokerIfNeeded(transportType(), authMode())
+			if err != nil {
+				return VerdictFail, ev, err
+			}
+			defer stop()
 
-			// Verify: create a client, close it, create a new one, confirm requests succeed.
-			// Full auto-reconnect loop requires network control not available in a unit test.
-			f1 := connectFixture(t)
+			proxy := fixture.NewDisconnectProxy(t, transportType(), backendAddr)
+
+			subscriber := newFixture(t)
+			subscriber.SetBrokerAddr(proxy.Addr())
+			publisher := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			ev = append(ev, "first client connected")
-			if err := f1.Client().Close(); err != nil {
-				ev = append(ev, fmt.Sprintf("close: %v", err))
+			if err := subscriber.ConnectWithOptions(
+				ctx,
+				fitz.WithReconnect(true, 25*time.Millisecond, 20),
+				fitz.WithReconnectMaxDelay(50*time.Millisecond),
+			); err != nil {
+				return VerdictFail, ev, fmt.Errorf("subscriber connect: %w", err)
 			}
-			ev = append(ev, "first client closed")
+			ev = append(ev, "subscriber connected through disconnect proxy")
 
-			f2 := connectFixture(t)
-			route := uniqueRoute("kv")
-			tx, err := f2.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+			route := uniqueRoute("notice")
+			received := make(chan string, 4)
+			_, err = subscriber.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg fitz.NoticeMsg) error {
+				received <- string(msg.Body)
+				return nil
+			})
 			if err != nil {
-				return VerdictFail, ev, fmt.Errorf("new requests failed after reconnect: %w", err)
+				return VerdictFail, ev, fmt.Errorf("subscribe: %w", err)
 			}
-			_ = tx.Put(ctx, []byte("after-reconnect"), []byte("ok"))
-			_ = tx.Commit(ctx)
-			ev = append(ev, "new requests succeed after reconnect (new client)")
-			ev = append(ev, "NOTE: full auto-reconnect loop requires network-level disconnection not provided here")
+
+			if err := publisher.Client().Notice().Publish(ctx, route, []byte("before-disconnect")); err != nil {
+				return VerdictFail, ev, fmt.Errorf("publish before disconnect: %w", err)
+			}
+			select {
+			case body := <-received:
+				if body != "before-disconnect" {
+					return VerdictFail, ev, fmt.Errorf("unexpected pre-disconnect body: %q", body)
+				}
+			case <-time.After(5 * time.Second):
+				return VerdictFail, ev, errors.New("timed out waiting for pre-disconnect delivery")
+			}
+			ev = append(ev, "subscription delivered before disconnect")
+
+			proxy.DropConnections()
+			ev = append(ev, "proxy dropped live connection")
+
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				if proxy.AcceptedCount() >= 2 {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if proxy.AcceptedCount() < 2 {
+				return VerdictFail, ev, errors.New("client did not reconnect through proxy")
+			}
+			ev = append(ev, "client established a new transport connection")
+
+			published := false
+			for time.Now().Before(deadline) {
+				if err := publisher.Client().Notice().Publish(ctx, route, []byte("after-disconnect")); err == nil {
+					published = true
+				}
+				select {
+				case body := <-received:
+					if body == "after-disconnect" {
+						ev = append(ev, "subscription restored after reconnect")
+						return VerdictPass, ev, nil
+					}
+				default:
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			if !published {
+				return VerdictFail, ev, errors.New("publisher could not publish after reconnect")
+			}
+			return VerdictFail, ev, errors.New("subscription was not restored after reconnect")
 			return VerdictPass, ev, nil
 		})
 		results.record(r)

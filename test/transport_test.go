@@ -203,6 +203,71 @@ func TestShouldNotRecoverNoticeSubscriptionGivenDisconnectWhenReconnectedWithout
 	})
 }
 
+func TestShouldRestoreNoticeSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		authMode := fixture.AuthModeForTestName(t.Name())
+		backendAddr, stop, err := fixture.StartBrokerIfNeeded(transport, authMode)
+		require.NoError(t, err)
+		t.Cleanup(stop)
+
+		proxy := fixture.NewDisconnectProxy(t, transport, backendAddr)
+
+		subscriber := fixture.NewTestFixture(t, transport)
+		subscriber.SetAuthMode(authMode)
+		subscriber.SetBrokerAddr(proxy.Addr())
+
+		publisher := fixture.NewTestFixture(t, transport)
+		publisher.SetAuthMode(authMode)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		require.NoError(t, subscriber.ConnectWithOptions(
+			ctx,
+			fitz.WithReconnect(true, 25*time.Millisecond, 20),
+			fitz.WithReconnectMaxDelay(50*time.Millisecond),
+		))
+		require.NoError(t, publisher.Connect(ctx))
+
+		route := subscriber.UniqueRoute("notice")
+		received := make(chan string, 4)
+		_, err = subscriber.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg fitz.NoticeMsg) error {
+			received <- string(msg.Body)
+			return nil
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, publisher.Client().Notice().Publish(ctx, route, []byte("before-disconnect")))
+		select {
+		case body := <-received:
+			require.Equal(t, "before-disconnect", body)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for initial notice delivery")
+		}
+
+		require.Eventually(t, func() bool { return proxy.AcceptedCount() >= 1 }, 5*time.Second, 20*time.Millisecond)
+
+		proxy.DropConnections()
+
+		require.Eventually(t, func() bool {
+			return proxy.AcceptedCount() >= 2
+		}, 10*time.Second, 20*time.Millisecond)
+
+		require.Eventually(t, func() bool {
+			if err := publisher.Client().Notice().Publish(ctx, route, []byte("after-disconnect")); err != nil {
+				return false
+			}
+
+			select {
+			case body := <-received:
+				return body == "after-disconnect"
+			default:
+				return false
+			}
+		}, 10*time.Second, 100*time.Millisecond)
+	})
+}
+
 func TestShouldRejectNonConnectFrameGivenNewTransportWhenFrameSentBeforeAuthentication(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
 		authMode := fixture.AuthModeForTestName(t.Name())
