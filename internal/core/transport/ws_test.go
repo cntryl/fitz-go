@@ -3,6 +3,7 @@ package transport
 import (
 	"bufio"
 	"context"
+	"net"
 	"net/url"
 	"testing"
 	"time"
@@ -262,6 +263,36 @@ func TestShouldTimeoutReadGivenShortDeadlineWhenWSReadCalled(t *testing.T) {
 	// Assert
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestShouldCancelReadGivenCanceledContextWithoutDeadlineWhenWSReadCalled(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+	transport := &WebSocketTransport{
+		conn:   clientConn,
+		reader: bufio.NewReader(clientConn),
+		addr:   "ws://pipe",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := transport.Read(ctx)
+		result <- err
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-result:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("Read did not return after context cancellation")
+	}
 }
 
 // TestShouldCloseGracefullyGivenOpenWSTransportWhenCloseCalled tests WebSocket close behavior.

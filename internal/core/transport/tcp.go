@@ -58,17 +58,18 @@ func (t *TCPTransport) Write(ctx context.Context, frame []byte) (retErr error) {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 
-	// Set write deadline from context
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := t.conn.SetWriteDeadline(deadline); err != nil {
-			return fmt.Errorf("set tcp write deadline: %w", err)
+	cleanupDeadline, err := bindConnDeadlineToContext(ctx, t.conn.SetWriteDeadline)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		defer func() {
-			if err := t.conn.SetWriteDeadline(time.Time{}); retErr == nil && err != nil {
-				retErr = fmt.Errorf("clear tcp write deadline: %w", err)
-			}
-		}()
+		return fmt.Errorf("set tcp write deadline: %w", err)
 	}
+	defer func() {
+		if err := cleanupDeadline(); retErr == nil && err != nil {
+			retErr = fmt.Errorf("clear tcp write deadline: %w", err)
+		}
+	}()
 
 	// Build length-prefixed frame: [u32 BE][frame]
 	var header [4]byte
@@ -96,20 +97,25 @@ func (t *TCPTransport) Write(ctx context.Context, frame []byte) (retErr error) {
 // Handles partial reads correctly (uses io.ReadFull).
 // Returns immediately if context is canceled.
 func (t *TCPTransport) Read(ctx context.Context) (frame []byte, retErr error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 
-	// Set read deadline from context
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := t.conn.SetReadDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("set tcp read deadline: %w", err)
+	cleanupDeadline, err := bindConnDeadlineToContext(ctx, t.conn.SetReadDeadline)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
-		defer func() {
-			if err := t.conn.SetReadDeadline(time.Time{}); retErr == nil && err != nil {
-				retErr = fmt.Errorf("clear tcp read deadline: %w", err)
-			}
-		}()
+		return nil, fmt.Errorf("set tcp read deadline: %w", err)
 	}
+	defer func() {
+		if err := cleanupDeadline(); retErr == nil && err != nil {
+			retErr = fmt.Errorf("clear tcp read deadline: %w", err)
+		}
+	}()
 
 	// Read 4-byte length prefix (u32 BE per CLIENT_SPEC.md)
 	var lengthBuf [4]byte

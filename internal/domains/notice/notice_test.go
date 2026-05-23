@@ -1,15 +1,110 @@
 package notice
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/internal/core/subscriptions"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type scriptedRestoreTransport struct {
+	mu      sync.Mutex
+	written [][]byte
+	readCh  chan []byte
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newScriptedRestoreTransport() *scriptedRestoreTransport {
+	return &scriptedRestoreTransport{
+		readCh: make(chan []byte, 8),
+		closed: make(chan struct{}),
+	}
+}
+
+func (s *scriptedRestoreTransport) Write(ctx context.Context, frame []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.closed:
+		return connection.ErrConnectionClosed
+	default:
+	}
+	s.mu.Lock()
+	s.written = append(s.written, append([]byte(nil), frame...))
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *scriptedRestoreTransport) Read(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.closed:
+		return nil, connection.ErrConnectionClosed
+	case frame := <-s.readCh:
+		return append([]byte(nil), frame...), nil
+	}
+}
+
+func (s *scriptedRestoreTransport) Close() error {
+	s.once.Do(func() {
+		close(s.closed)
+	})
+	return nil
+}
+
+func (s *scriptedRestoreTransport) RemoteAddr() string {
+	return "scripted://notice"
+}
+
+func (s *scriptedRestoreTransport) enqueue(frame []byte) {
+	s.readCh <- append([]byte(nil), frame...)
+}
+
+func noticeRestoreFrame(t *testing.T, msgType uint16, payload []byte) []byte {
+	t.Helper()
+	frame := protocol.EncodeFrameOwned(msgType, payload)
+	defer frame.Release()
+	return append([]byte(nil), frame.Bytes()...)
+}
+
+func noticeSubscribeResponsePayload(subID uint64) []byte {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	buf.WriteByte(0)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, subID)
+	return append([]byte(nil), buf.Bytes()...)
+}
+
+func noticeSuccessPayload() []byte {
+	return []byte{0}
+}
+
+func waitForRestoreWrites(t *testing.T, trans *scriptedRestoreTransport, expected int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		trans.mu.Lock()
+		defer trans.mu.Unlock()
+		return len(trans.written) >= expected
+	}, time.Second, 10*time.Millisecond)
+}
+
+func restoreWriteCount(trans *scriptedRestoreTransport) int {
+	trans.mu.Lock()
+	defer trans.mu.Unlock()
+	return len(trans.written)
+}
 
 // TestShouldDecodeNotify tests notification message decoding.
 func TestShouldDecodeNotifyGivenEncodedPayloadWhenDecodeNotifyCalled(t *testing.T) {
@@ -211,6 +306,47 @@ func TestShouldMapNoticeErrorGivenTypedBrokerMessageWhenMapNoticeErrorCalled(t *
 		mapped := mapNoticeError(errMsg)
 		assert.Equal(t, errMsg, mapped)
 	})
+}
+
+func TestShouldRollbackActiveSubscriptionsGivenRestoreFailureWhenRestoreSubscriptionsCalled(t *testing.T) {
+	trans := newScriptedRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+	baseWrites := restoreWriteCount(trans)
+
+	c := &client{conn: conn, subscriptions: subscriptions.NewRegistry[NoticeHandler]()}
+	_, _, err := c.subscriptions.Subscribe("notice://realm/area/alpha", func(context.Context, NoticeMsg) error { return nil }, func(string) (uint64, error) {
+		return 11, nil
+	})
+	require.NoError(t, err)
+	_, _, err = c.subscriptions.Subscribe("notice://realm/area/bravo", func(context.Context, NoticeMsg) error { return nil }, func(string) (uint64, error) {
+		return 12, nil
+	})
+	require.NoError(t, err)
+
+	go func() {
+		waitForRestoreWrites(t, trans, baseWrites+1)
+		trans.enqueue(noticeRestoreFrame(t, protocol.MessageTypeNoticeSubscribe, noticeSubscribeResponsePayload(101)))
+		waitForRestoreWrites(t, trans, baseWrites+2)
+		trans.enqueue(noticeRestoreFrame(t, protocol.MessageTypeNoticeSubscribe, []byte{}))
+		waitForRestoreWrites(t, trans, baseWrites+3)
+		trans.enqueue(noticeRestoreFrame(t, protocol.MessageTypeNoticeUnsubscribe, noticeSuccessPayload()))
+	}()
+
+	err = c.RestoreSubscriptions(context.Background())
+	require.Error(t, err)
+	assert.Zero(t, conn.ActiveSubscriptions())
+	assert.Len(t, c.subscriptions.Handlers(11), 1)
+	assert.Len(t, c.subscriptions.Handlers(12), 1)
+	assert.Empty(t, c.subscriptions.Handlers(101))
+	assert.Empty(t, c.subscriptions.Handlers(102))
+	waitForRestoreWrites(t, trans, baseWrites+3)
+	trans.mu.Lock()
+	defer trans.mu.Unlock()
+	assert.Len(t, trans.written, baseWrites+3)
 }
 
 // TestShouldValidateNoticeRoutes tests notice route validation.

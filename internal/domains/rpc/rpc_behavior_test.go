@@ -3,15 +3,96 @@ package rpc
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type scriptedRPCRestoreTransport struct {
+	mu      sync.Mutex
+	written [][]byte
+	readCh  chan []byte
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newScriptedRPCRestoreTransport() *scriptedRPCRestoreTransport {
+	return &scriptedRPCRestoreTransport{
+		readCh: make(chan []byte, 8),
+		closed: make(chan struct{}),
+	}
+}
+
+func (s *scriptedRPCRestoreTransport) Write(ctx context.Context, frame []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.closed:
+		return connection.ErrConnectionClosed
+	default:
+	}
+	s.mu.Lock()
+	s.written = append(s.written, append([]byte(nil), frame...))
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *scriptedRPCRestoreTransport) Read(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.closed:
+		return nil, connection.ErrConnectionClosed
+	case frame := <-s.readCh:
+		return append([]byte(nil), frame...), nil
+	}
+}
+
+func (s *scriptedRPCRestoreTransport) Close() error {
+	s.once.Do(func() {
+		close(s.closed)
+	})
+	return nil
+}
+
+func (s *scriptedRPCRestoreTransport) RemoteAddr() string {
+	return "scripted://rpc"
+}
+
+func (s *scriptedRPCRestoreTransport) enqueue(frame []byte) {
+	s.readCh <- append([]byte(nil), frame...)
+}
+
+func scriptedRPCFrame(t *testing.T, msgType uint16, payload []byte) []byte {
+	t.Helper()
+	frame := protocol.EncodeFrameOwned(msgType, payload)
+	defer frame.Release()
+	return append([]byte(nil), frame.Bytes()...)
+}
+
+func rpcAckPayload() []byte {
+	return []byte{0}
+}
+
+func scriptedRPCWriteCount(trans *scriptedRPCRestoreTransport) int {
+	trans.mu.Lock()
+	defer trans.mu.Unlock()
+	return len(trans.written)
+}
+
+func waitForRPCWrites(t *testing.T, trans *scriptedRPCRestoreTransport, expected int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return scriptedRPCWriteCount(trans) >= expected
+	}, time.Second, 10*time.Millisecond)
+}
 
 func newStartedRPCConnection(t *testing.T) (*connection.Connection, *testkit.MockTransport) {
 	t.Helper()
@@ -133,6 +214,34 @@ func TestShouldNotBlockDispatchGivenStoppedConsumerWhenHandleRPCResponseCalled(t
 		t.Fatal("handleRPCResponse blocked behind stopped consumer")
 	}
 	stream.close()
+}
+
+func TestShouldIgnoreUnexpectedResponseGivenRegisteredWorkerWhenHandleRPCResponseCalled(t *testing.T) {
+	// Arrange
+	called := make(chan struct{}, 1)
+	route := "rpc://realm/area/resource"
+	c := &client{
+		workers: map[string]RPCHandler{
+			route: func(context.Context, InboundRequest, ResponseWriter) error {
+				called <- struct{}{}
+				return nil
+			},
+		},
+		pendingRPCs: make(map[[16]byte]*responseStream),
+	}
+	var correlationID [16]byte
+	correlationID[0] = 10
+
+	// Act
+	c.handleRPCResponse(correlationID, rpcWorkerPayload(route, "rpc://realm/area/replies", []byte("body")))
+
+	// Assert
+	select {
+	case <-called:
+		t.Fatal("unexpected response routed to worker handler")
+	case <-time.After(50 * time.Millisecond):
+	}
+	assert.Empty(t, c.pendingRPCs)
 }
 
 func TestShouldDispatchWorkerRequestGivenRegisteredWorkerWhenHandleWorkerRequestCalled(t *testing.T) {
@@ -279,4 +388,43 @@ func TestShouldFailPendingRPCGivenConnectionLossWhenClosePendingRPCsCalled(t *te
 	_, ok, err := stream.next(context.Background())
 	require.False(t, ok)
 	require.ErrorIs(t, err, connection.ErrConnectionClosed)
+}
+
+func TestShouldPreserveWorkersGivenRestoreFailureWhenRestoreSubscriptionsCalled(t *testing.T) {
+	trans := newScriptedRPCRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+	baseWrites := scriptedRPCWriteCount(trans)
+
+	handlerAlpha := func(context.Context, InboundRequest, ResponseWriter) error { return nil }
+	handlerBravo := func(context.Context, InboundRequest, ResponseWriter) error { return nil }
+	c := &client{
+		conn:        conn,
+		workers:     map[string]RPCHandler{"rpc://realm/area/alpha": handlerAlpha, "rpc://realm/area/bravo": handlerBravo},
+		pendingRPCs: make(map[[16]byte]*responseStream),
+	}
+
+	go func() {
+		waitForRPCWrites(t, trans, baseWrites+1)
+		trans.enqueue(scriptedRPCFrame(t, protocol.MessageTypeRpcSubscribeWorker, rpcAckPayload()))
+		waitForRPCWrites(t, trans, baseWrites+2)
+		trans.enqueue(scriptedRPCFrame(t, protocol.MessageTypeRpcSubscribeWorker, []byte{}))
+		waitForRPCWrites(t, trans, baseWrites+3)
+		trans.enqueue(scriptedRPCFrame(t, protocol.MessageTypeRpcUnsubscribeWorker, rpcAckPayload()))
+	}()
+
+	err := c.RestoreSubscriptions(context.Background())
+	require.Error(t, err)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	assert.Len(t, c.workers, 2)
+	_, ok := c.workers["rpc://realm/area/alpha"]
+	assert.True(t, ok)
+	_, ok = c.workers["rpc://realm/area/bravo"]
+	assert.True(t, ok)
+	assert.Equal(t, baseWrites+3, len(trans.written))
 }

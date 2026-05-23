@@ -495,8 +495,11 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			_, _, err = parseQueueResponse(resp)
-			return err
+			if _, _, err = parseQueueResponse(resp); err != nil {
+				return err
+			}
+			c.conn.AddSubscriptions(-1)
+			return nil
 		},
 	)
 }

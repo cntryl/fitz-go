@@ -460,10 +460,10 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 
 	restored := make(map[uint64]*Subscription, len(snapshot))
 	for _, sub := range snapshot {
-		restoredSub, err := c.subscribe(ctx, sub.pattern, sub.handler)
+		restoredSub, err := c.restoreSubscribe(ctx, sub.pattern, sub.handler)
 		if err != nil {
 			for _, restoredSub := range restored {
-				c.unsubscribe(restoredSub)
+				c.rollbackRestoredSubscription(restoredSub)
 			}
 			return err
 		}
@@ -474,6 +474,53 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	c.subscriptions = restored
 	c.mu.Unlock()
 	return nil
+}
+
+func (c *client) restoreSubscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error) {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseSubscribe, subscribePayloadWriter(pattern))
+	if err != nil {
+		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+	}
+
+	success, remaining, err := connection.ParseStandardResponse(resp)
+	if err != nil {
+		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
+	}
+	if !success {
+		return nil, errors.New("SUBSCRIBE failed: unexpected status")
+	}
+
+	if len(remaining) < 8 {
+		return nil, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
+	}
+	subID, _, err := connection.ReadU64BE(remaining, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse subscription_id: %w", err)
+	}
+	c.conn.AddSubscriptions(1)
+
+	return &Subscription{
+		subID:   subID,
+		pattern: pattern,
+		client:  c,
+		handler: handler,
+	}, nil
+}
+
+func (c *client) rollbackRestoredSubscription(sub *Subscription) {
+	if sub == nil {
+		return
+	}
+	c.conn.AddSubscriptions(-1)
+
+	ctx := c.conn.LifecycleContext()
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseUnsubscribe, unsubscribePayloadWriter(sub.pattern))
+	if err != nil {
+		return
+	}
+	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+		return
+	}
 }
 
 func (c *client) subscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error) {

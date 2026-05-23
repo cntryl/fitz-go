@@ -578,14 +578,15 @@ func (c *Client) replaceDomainConnections(conn *connection.Connection) {
 func (c *Client) monitorConnection(conn *connection.Connection) {
 	<-conn.Done()
 
+	if c.currentConnection() != conn {
+		return
+	}
+	c.conn.CompareAndSwap(conn, nil)
+
 	if cleaner, ok := c.rpcClient.(pendingRPCCleaner); ok {
 		cleaner.ClosePendingRPCs()
 	}
-
 	if c.closed.Load() {
-		return
-	}
-	if c.currentConnection() != conn {
 		return
 	}
 	if !c.config.ReconnectEnabled {

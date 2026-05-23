@@ -186,17 +186,18 @@ func (w *WebSocketTransport) Write(ctx context.Context, frame []byte) (retErr er
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Set write deadline from context
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := w.conn.SetWriteDeadline(deadline); err != nil {
-			return fmt.Errorf("set websocket write deadline: %w", err)
+	cleanupDeadline, err := bindConnDeadlineToContext(ctx, w.conn.SetWriteDeadline)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		defer func() {
-			if err := w.conn.SetWriteDeadline(time.Time{}); retErr == nil && err != nil {
-				retErr = fmt.Errorf("clear websocket write deadline: %w", err)
-			}
-		}()
+		return fmt.Errorf("set websocket write deadline: %w", err)
 	}
+	defer func() {
+		if err := cleanupDeadline(); retErr == nil && err != nil {
+			retErr = fmt.Errorf("clear websocket write deadline: %w", err)
+		}
+	}()
 
 	// Write binary frame with masking (client-to-server requires mask)
 	if err := w.writeFrame(opcodeBinary, frame, true); err != nil {
@@ -283,17 +284,22 @@ func (w *WebSocketTransport) writeFrame(opcode byte, payload []byte, mask bool) 
 // Returns immediately if context is canceled.
 // Handles control frames (ping, pong, close) automatically.
 func (w *WebSocketTransport) Read(ctx context.Context) (payload []byte, retErr error) {
-	// Set read deadline from context
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := w.conn.SetReadDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("set websocket read deadline: %w", err)
-		}
-		defer func() {
-			if err := w.conn.SetReadDeadline(time.Time{}); retErr == nil && err != nil {
-				retErr = fmt.Errorf("clear websocket read deadline: %w", err)
-			}
-		}()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
+
+	cleanupDeadline, err := bindConnDeadlineToContext(ctx, w.conn.SetReadDeadline)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("set websocket read deadline: %w", err)
+	}
+	defer func() {
+		if err := cleanupDeadline(); retErr == nil && err != nil {
+			retErr = fmt.Errorf("clear websocket read deadline: %w", err)
+		}
+	}()
 
 	for {
 		// Check context cancellation

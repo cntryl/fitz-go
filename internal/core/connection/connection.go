@@ -422,11 +422,13 @@ func (c *Connection) confirmAuthentication() {
 // dispatchLoop reads frames from transport and routes to multiplexer.
 // Runs in its own goroutine, started by Start().
 func (c *Connection) dispatchLoop() {
-	defer close(c.done)
 	defer func() {
+		c.cancel()
+		c.setState(StateClosed)
 		if err := c.mux.Close(); err != nil && c.logger != nil {
 			c.logger.Warn("close multiplexer", "error", err)
 		}
+		close(c.done)
 	}()
 
 	firstResponse := true
@@ -445,6 +447,9 @@ func (c *Connection) dispatchLoop() {
 			frame, err := c.transport.Read(readCtx)
 			cancel()
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) && c.ctx.Err() == nil {
+					continue
+				}
 				c.handleReadError(err)
 				return
 			}
@@ -1174,6 +1179,18 @@ func (c *Connection) AcquireAsyncHandlerSlot(ctx context.Context) (release func(
 
 	select {
 	case c.asyncHandlerSem <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-c.asyncHandlerSem
+			recordWait(ctx)
+			recordFailure(ctx, "context_done")
+			return noop, false
+		}
+		if err := c.ctx.Err(); err != nil {
+			<-c.asyncHandlerSem
+			recordWait(c.ctx)
+			recordFailure(c.ctx, "connection_shutdown")
+			return noop, false
+		}
 		recordWait(ctx)
 		if c.asyncHandlersActive != nil {
 			c.asyncHandlersActive.Add(metricCtx, 1)
@@ -1209,4 +1226,12 @@ func (c *Connection) Err() error {
 // and delta=-1 when it is removed. Used to populate the fitz.subscriptions.active metric.
 func (c *Connection) AddSubscriptions(delta int64) {
 	c.activeSubscriptions.Add(delta)
+}
+
+// ActiveSubscriptions returns the current active subscription count.
+func (c *Connection) ActiveSubscriptions() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.activeSubscriptions.Load()
 }

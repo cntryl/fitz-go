@@ -211,8 +211,8 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		return
 	}
 
-	// Check if this is a worker request (status byte for worker dispatch)
-	// or a call response. We use the pending RPC map to differentiate.
+	// RPC REQUEST worker deliveries are routed through message type 302.
+	// A 303 without a pending correlation is stale or unexpected and must be dropped.
 	c.mu.Lock()
 	stream, isCall := c.pendingRPCs[correlationID]
 	c.mu.Unlock()
@@ -257,9 +257,6 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		}
 		return
 	}
-
-	// This is a request dispatched to us as a worker
-	c.handleWorkerRequest(correlationID, payload)
 }
 
 // handleWorkerRequest processes an incoming request for a registered worker.
@@ -619,16 +616,45 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 
 	restoredRoutes := make([]string, 0, len(snapshot))
 
-	for route, handler := range snapshot {
-		if _, err := c.subscribeWorker(ctx, route, handler); err != nil {
+	for route := range snapshot {
+		if err := c.restoreSubscribeWorker(ctx, route); err != nil {
 			for idx := len(restoredRoutes) - 1; idx >= 0; idx-- {
-				c.unsubscribeWorker(restoredRoutes[idx])
+				c.rollbackRestoredWorker(restoredRoutes[idx])
 			}
 			return err
 		}
 		restoredRoutes = append(restoredRoutes, route)
 	}
+
+	c.mu.Lock()
+	for route, handler := range snapshot {
+		c.workers[route] = handler
+	}
+	c.mu.Unlock()
 	return nil
+}
+
+func (c *client) restoreSubscribeWorker(ctx context.Context, route string) error {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route))
+	if err != nil {
+		return fmt.Errorf("SUBSCRIBE_WORKER request failed: %w", err)
+	}
+
+	success, _, err := connection.ParseStandardResponse(resp)
+	if err != nil {
+		return fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err))
+	}
+	if !success {
+		return errors.New("SUBSCRIBE_WORKER failed: unexpected status")
+	}
+	return nil
+}
+
+func (c *client) rollbackRestoredWorker(route string) {
+	ctx := c.conn.LifecycleContext()
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcUnsubscribeWorker, rpcUnsubscribeWorkerPayloadWriter(route))
+	_ = resp
+	_ = err
 }
 
 func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCHandler) (*Subscription, error) {

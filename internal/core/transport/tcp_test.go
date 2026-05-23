@@ -3,6 +3,7 @@ package transport
 import (
 	"bufio"
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -161,6 +162,36 @@ func TestShouldTimeoutReadGivenShortDeadlineWhenReadCalled(t *testing.T) {
 	// Assert
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestShouldCancelReadGivenCanceledContextWithoutDeadlineWhenReadCalled(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+	transport := &TCPTransport{
+		conn:   clientConn,
+		addr:   "pipe",
+		reader: bufio.NewReader(clientConn),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := transport.Read(ctx)
+		result <- err
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-result:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("Read did not return after context cancellation")
+	}
 }
 
 // TestShouldCloseGracefullyGivenOpenTransportWhenCloseCalled tests TCP close behavior.

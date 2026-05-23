@@ -1,15 +1,102 @@
 package lease
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type scriptedLeaseRestoreTransport struct {
+	mu      sync.Mutex
+	written [][]byte
+	readCh  chan []byte
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newScriptedLeaseRestoreTransport() *scriptedLeaseRestoreTransport {
+	return &scriptedLeaseRestoreTransport{
+		readCh: make(chan []byte, 8),
+		closed: make(chan struct{}),
+	}
+}
+
+func (s *scriptedLeaseRestoreTransport) Write(ctx context.Context, frame []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.closed:
+		return connection.ErrConnectionClosed
+	default:
+	}
+	s.mu.Lock()
+	s.written = append(s.written, append([]byte(nil), frame...))
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *scriptedLeaseRestoreTransport) Read(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.closed:
+		return nil, connection.ErrConnectionClosed
+	case frame := <-s.readCh:
+		return append([]byte(nil), frame...), nil
+	}
+}
+
+func (s *scriptedLeaseRestoreTransport) Close() error {
+	s.once.Do(func() {
+		close(s.closed)
+	})
+	return nil
+}
+
+func (s *scriptedLeaseRestoreTransport) RemoteAddr() string {
+	return "scripted://lease"
+}
+
+func (s *scriptedLeaseRestoreTransport) enqueue(frame []byte) {
+	s.readCh <- append([]byte(nil), frame...)
+}
+
+func scriptedLeaseFrame(t *testing.T, msgType uint16, payload []byte) []byte {
+	t.Helper()
+	frame := protocol.EncodeFrameOwned(msgType, payload)
+	defer frame.Release()
+	return append([]byte(nil), frame.Bytes()...)
+}
+
+func leaseSubscribeResponsePayload(subID uint64) []byte {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	buf.WriteByte(0)
+	connection.WriteU64BE(buf, subID)
+	return append([]byte(nil), buf.Bytes()...)
+}
+
+func scriptedLeaseWriteCount(trans *scriptedLeaseRestoreTransport) int {
+	trans.mu.Lock()
+	defer trans.mu.Unlock()
+	return len(trans.written)
+}
+
+func waitForLeaseWrites(t *testing.T, trans *scriptedLeaseRestoreTransport, expected int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return scriptedLeaseWriteCount(trans) >= expected
+	}, time.Second, 10*time.Millisecond)
+}
 
 // TestShouldEncodeLeaseAcquireRequest tests ACQUIRE operation encoding.
 func TestShouldEncodeLeaseAcquireRequestGivenRouteAndTTLWhenPayloadWritten(t *testing.T) {
@@ -196,6 +283,51 @@ func TestShouldMapLeaseErrorsGivenBrokerMessageWhenMapLeaseErrorCalled(t *testin
 		assert.Error(t, mapped)
 		assert.Equal(t, errMsg, mapped)
 	})
+}
+
+func TestShouldPreserveLocalSubscriptionsGivenRestoreFailureWithReusedSubIDWhenRestoreSubscriptionsCalled(t *testing.T) {
+	trans := newScriptedLeaseRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+	baseWrites := scriptedLeaseWriteCount(trans)
+
+	handlerAlpha := func(context.Context, ChangeNotification) error { return nil }
+	handlerBravo := func(context.Context, ChangeNotification) error { return nil }
+	c := &client{
+		conn: conn,
+		subscriptions: map[uint64]*Subscription{
+			1: {subID: 1, pattern: "lease://realm/area/alpha", client: nil, handler: handlerAlpha},
+			2: {subID: 2, pattern: "lease://realm/area/bravo", client: nil, handler: handlerBravo},
+		},
+	}
+
+	go func() {
+		waitForLeaseWrites(t, trans, baseWrites+1)
+		trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, leaseSubscribeResponsePayload(1)))
+		waitForLeaseWrites(t, trans, baseWrites+2)
+		trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, []byte{}))
+		waitForLeaseWrites(t, trans, baseWrites+3)
+		trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseUnsubscribe, []byte{0}))
+	}()
+
+	err := c.RestoreSubscriptions(context.Background())
+	require.Error(t, err)
+	assert.Zero(t, conn.ActiveSubscriptions())
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	alpha, ok := c.subscriptions[1]
+	require.True(t, ok)
+	assert.Equal(t, "lease://realm/area/alpha", alpha.pattern)
+	assert.NotNil(t, alpha.handler)
+	bravo, ok := c.subscriptions[2]
+	require.True(t, ok)
+	assert.Equal(t, "lease://realm/area/bravo", bravo.pattern)
+	assert.NotNil(t, bravo.handler)
+	assert.Len(t, c.subscriptions, 2)
 }
 
 func TestShouldParseLeaseQueryResponseGivenCanonicalPayloadWhenParseLeaseQueryResponseCalled(t *testing.T) {

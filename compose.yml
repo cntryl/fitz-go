@@ -14,9 +14,7 @@
 
 services:
   fitz-auth:
-    build:
-      context: ../fitz
-      dockerfile: Dockerfile
+    image: ghcr.io/cntryl/fitz:latest
     container_name: fitz-auth
     ports:
       - "4090:4090"
@@ -32,9 +30,7 @@ services:
     healthcheck:
       disable: true
   fitz-anon:
-    build:
-      context: ../fitz
-      dockerfile: Dockerfile
+    image: ghcr.io/cntryl/fitz:latest
     container_name: fitz-anon
     ports:
       - "4190:4090"

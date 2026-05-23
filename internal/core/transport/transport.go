@@ -3,6 +3,8 @@ package transport
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 )
 
 // Transport abstracts WebSocket and TCP framing per CLIENT_SPEC.md.
@@ -41,3 +43,28 @@ var (
 // Prevents OOM attacks from malicious or buggy servers.
 // Per CLIENT_SPEC.md safety requirements.
 const MaxFrameSize = 16 * 1024 * 1024 // 16 MB
+
+func bindConnDeadlineToContext(ctx context.Context, setDeadline func(time.Time) error) (func() error, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := setDeadline(deadline); err != nil {
+			return nil, err
+		}
+	}
+
+	var mu sync.Mutex
+	stop := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = setDeadline(time.Now())
+	})
+
+	return func() error {
+		stop()
+		mu.Lock()
+		defer mu.Unlock()
+		return setDeadline(time.Time{})
+	}, nil
+}
