@@ -15,6 +15,7 @@ jobs:
   version:
     name: Compute SemVer
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       semver: ${{ steps.gitversion.outputs.semVer }}
     steps:
