@@ -29,6 +29,7 @@ services:
     restart: unless-stopped
     healthcheck:
       disable: true
+
   fitz-anon:
     image: ghcr.io/cntryl/fitz:latest
     container_name: fitz-anon
