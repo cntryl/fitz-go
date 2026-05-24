@@ -215,3 +215,83 @@ func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *te
 
 	t.Fatal("timed out waiting for schedule notification after retry")
 }
+
+func TestShouldRestoreScheduleSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	authMode := fixture.AuthModeForTestName(t.Name())
+	backendAddr, stop, err := fixture.StartBrokerIfNeeded(fixture.TransportTCP, authMode)
+	require.NoError(t, err)
+	t.Cleanup(stop)
+
+	proxy := fixture.NewDisconnectProxy(t, fixture.TransportTCP, backendAddr)
+
+	subscriber := fixture.NewTestFixture(t, fixture.TransportTCP)
+	subscriber.SetAuthMode(authMode)
+	subscriber.SetBrokerAddr(proxy.Addr())
+
+	actor := fixture.NewTestFixture(t, fixture.TransportTCP)
+	actor.SetAuthMode(authMode)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	require.NoError(t, subscriber.ConnectWithOptions(
+		ctx,
+		fitz.WithReadTimeout(2*time.Minute),
+		fitz.WithReconnect(true, 25*time.Millisecond, 20),
+		fitz.WithReconnectMaxDelay(50*time.Millisecond),
+	))
+	actor.ConnectOrFail(ctx)
+
+	route := subscriber.UniqueRoute("schedule")
+	payload := []byte("schedule-after-reconnect")
+	received := make(chan []byte, 1)
+	createdIDs := make([]string, 0, 2)
+
+	sub, err := subscriber.Client().Schedule().Subscribe(ctx, route, func(_ context.Context, n fitz.ScheduleNotification) error {
+		received <- append([]byte(nil), n.Payload...)
+		return nil
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+	defer func() {
+		for _, id := range createdIDs {
+			_ = actor.Client().Schedule().Cancel(context.Background(), id)
+		}
+	}()
+
+	require.Eventually(t, func() bool {
+		return proxy.AcceptedCount() >= 1
+	}, 5*time.Second, 20*time.Millisecond)
+
+	proxy.DropConnections()
+
+	require.Eventually(t, func() bool {
+		return proxy.AcceptedCount() >= 2
+	}, 10*time.Second, 20*time.Millisecond)
+
+	waitForNotification := func(wait time.Duration) ([]byte, bool) {
+		select {
+		case got := <-received:
+			return got, true
+		case <-time.After(wait):
+			return nil, false
+		}
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		id, createErr := actor.Client().Schedule().Create(ctx, route, "* * * * *", payload)
+		require.NoError(t, createErr)
+		createdIDs = append(createdIDs, id)
+
+		if got, ok := waitForNotification(95 * time.Second); ok {
+			assert.Equal(t, payload, got)
+			return
+		}
+
+		if attempt == 1 {
+			t.Log("no restored schedule notification in first window; recreating schedule and retrying once")
+		}
+	}
+
+	t.Fatal("timed out waiting for restored schedule notification after retry")
+}

@@ -34,6 +34,7 @@ import (
 
 	"github.com/cntryl/fitz-go/fitz"
 	"github.com/cntryl/fitz-go/test/fixture"
+	"github.com/stretchr/testify/require"
 )
 
 // ---------------------------------------------------------------------------
@@ -624,14 +625,25 @@ func TestConformanceSuite(t *testing.T) {
 	t.Run("CS-009_disconnect_during_request", func(t *testing.T) {
 		r := run("CS-009", "disconnect during request", "P1", func() (Verdict, []string, error) {
 			var ev []string
+			backendAddr, stop, err := fixture.StartBrokerIfNeeded(transportType(), authMode())
+			if err != nil {
+				return VerdictFail, ev, err
+			}
+			defer stop()
+
+			proxy := fixture.NewDisconnectProxy(t, transportType(), backendAddr)
 
 			fWorker := connectFixture(t)
-			fCaller := connectFixture(t)
+			fCaller := newFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
+			fCaller.SetBrokerAddr(proxy.Addr())
+			if err := fCaller.Connect(ctx); err != nil {
+				return VerdictFail, ev, fmt.Errorf("caller connect: %w", err)
+			}
 
 			route := uniqueRoute("rpc")
-			_, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+			_, err = fWorker.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 				select {
 				case <-workerCtx.Done():
 					return workerCtx.Err()
@@ -643,20 +655,16 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
 
-			callCtx, callCancel := context.WithCancel(ctx)
-			iter, err2 := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
-			if err2 != nil {
-				callCancel()
-				return VerdictFail, ev, fmt.Errorf("rpc call: %w", err2)
+			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("block"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("rpc call: %w", err)
 			}
 
-			// Close the caller client while the request is in-flight
-			time.Sleep(100 * time.Millisecond)
-			callCancel()
-			if closeErr := fCaller.Client().Close(); closeErr != nil {
-				// Close may fail if already closed â€” acceptable
-				ev = append(ev, fmt.Sprintf("close warning: %v", closeErr))
-			}
+			require.Eventually(t, func() bool {
+				return proxy.AcceptedCount() >= 1
+			}, 5*time.Second, 20*time.Millisecond)
+			proxy.DropConnections()
+			ev = append(ev, "caller transport dropped via proxy")
 
 			iter.Next()
 			iterErr := iter.Err()
