@@ -1,8 +1,9 @@
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
-// Covers all 21 scenarios: the 17 scenarios defined in the cross-language spec plus
-// 4 domain-lifecycle scenarios (CS-018 through CS-021) added in the Go client to close
-// coverage gaps for Queue, Lease, Notice, and Schedule domains:
+// Covers 21 scenarios: the 16 scenarios currently implemented from the
+// cross-language spec plus 5 Go-client scenarios (CS-018 through CS-022) added
+// to close coverage gaps for Queue, Lease, Notice, Schedule, and reconnect
+// restoration behavior:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
 //
@@ -1105,8 +1106,9 @@ func TestConformanceSuite(t *testing.T) {
 	})
 
 	// -------------------------------------------------------------------------
-	// CS-018 â€“ CS-021: domain lifecycle scenarios not in the cross-language spec
-	// but required to close coverage gaps for Queue, Lease, Notice, Schedule.
+	// CS-018 â€“ CS-022: Go-client scenarios not in the cross-language spec but
+	// required to close coverage gaps for Queue, Lease, Notice, Schedule, and
+	// reconnect restoration behavior.
 	// -------------------------------------------------------------------------
 
 	t.Run("CS-018_queue_enqueue_reserve_complete", func(t *testing.T) {
@@ -1314,6 +1316,91 @@ func TestConformanceSuite(t *testing.T) {
 		results.record(r)
 		if r.Verdict != VerdictPass {
 			t.Errorf("CS-021: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("CS-022_queue_reconnect_restore", func(t *testing.T) {
+		r := run("CS-022", "queue subscription restore after reconnect", "P1", func() (Verdict, []string, error) {
+			var ev []string
+			harness := fixture.NewProxyReconnectHarness(t, transportType(), authMode())
+			subscriber := harness.Proxied
+			producer := harness.Stable
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
+			ev = append(ev, "subscriber connected through disconnect proxy")
+
+			route := uniqueRoute("queue")
+			notifications := make(chan string, 4)
+			_, err := subscriber.Client().Queue().Subscribe(ctx, route, func(_ context.Context, n fitz.QueueAvailabilityNotification) error {
+				notifications <- n.Route
+				return nil
+			})
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("subscribe: %w", err)
+			}
+
+			_, err = producer.Client().Queue().Enqueue(ctx, route, []byte("before-disconnect"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("enqueue before disconnect: %w", err)
+			}
+			select {
+			case notifiedRoute := <-notifications:
+				if notifiedRoute != route {
+					return VerdictFail, ev, fmt.Errorf("unexpected route before disconnect: %q", notifiedRoute)
+				}
+			case <-time.After(5 * time.Second):
+				return VerdictFail, ev, errors.New("timed out waiting for pre-disconnect queue notification")
+			}
+			ev = append(ev, "queue availability notification delivered before disconnect")
+
+			items, err := subscriber.Client().Queue().Reserve(ctx, route, 30, 1)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("reserve before disconnect: %w", err)
+			}
+			if len(items) != 1 {
+				return VerdictFail, ev, fmt.Errorf("expected 1 reserved item before disconnect, got %d", len(items))
+			}
+			if err := items[0].Complete(ctx); err != nil {
+				return VerdictFail, ev, fmt.Errorf("complete before disconnect: %w", err)
+			}
+			ev = append(ev, "queue edge re-armed after initial notification")
+
+			harness.WaitForInitialConnection(5 * time.Second)
+			harness.DropAndWaitForReconnect(10 * time.Second)
+			ev = append(ev, "proxy dropped live connection and client reconnected")
+
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				_, err := producer.Client().Queue().Enqueue(ctx, route, []byte("after-disconnect"))
+				if err != nil {
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+
+				select {
+				case notifiedRoute := <-notifications:
+					if notifiedRoute == route {
+						ev = append(ev, "queue availability subscription restored after reconnect")
+						return VerdictPass, ev, nil
+					}
+				default:
+					items, reserveErr := producer.Client().Queue().Reserve(ctx, route, 30, 1)
+					if reserveErr == nil && len(items) == 1 {
+						_ = items[0].Complete(ctx)
+					}
+				}
+
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			return VerdictFail, ev, errors.New("queue availability subscription was not restored after reconnect")
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-022: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 }
