@@ -1,9 +1,10 @@
 package subscriptions
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
 )
 
@@ -15,6 +16,11 @@ type Registry[H any] struct {
 	pending       map[string]*pendingSubscribe
 	restoring     bool
 	nextHandlerID uint64
+
+	restoreEntriesScratch  []*entry[H]
+	restoreRollbackScratch []restoreEntry
+	restoreSubIDsScratch   []uint64
+	restoreBySubIDScratch  map[uint64]*entry[H]
 }
 
 type pendingSubscribe struct {
@@ -34,9 +40,10 @@ type restoreEntry struct {
 
 func NewRegistry[H any]() *Registry[H] {
 	r := &Registry[H]{
-		byPattern: make(map[string]*entry[H]),
-		bySubID:   make(map[uint64]*entry[H]),
-		pending:   make(map[string]*pendingSubscribe),
+		byPattern:             make(map[string]*entry[H]),
+		bySubID:               make(map[uint64]*entry[H]),
+		pending:               make(map[string]*pendingSubscribe),
+		restoreBySubIDScratch: make(map[uint64]*entry[H]),
 	}
 	r.cond = sync.NewCond(&r.mu)
 	return r
@@ -137,37 +144,53 @@ func (r *Registry[H]) Handlers(subID uint64) []H {
 
 func (r *Registry[H]) Restore(wireSubscribe func(string) (uint64, error), wireUnsubscribe func(string, uint64) error) error {
 	r.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			r.mu.Unlock()
+		}
+		r.finishRestore()
+	}()
 	for r.restoring || len(r.pending) > 0 {
 		r.cond.Wait()
 	}
 
 	if len(r.byPattern) == 0 {
-		r.mu.Unlock()
 		return nil
 	}
 	r.restoring = true
-	defer r.finishRestore()
 
-	patterns := make([]string, 0, len(r.byPattern))
-	handlersByPattern := make(map[string]map[uint64]H, len(r.byPattern))
-	for pattern := range r.byPattern {
-		patterns = append(patterns, pattern)
-		registered := r.byPattern[pattern]
-		handlers := make(map[uint64]H, len(registered.handlers))
-		for handlerID, handler := range registered.handlers {
-			handlers[handlerID] = handler
-		}
-		handlersByPattern[pattern] = handlers
+	entries := r.restoreEntriesScratch[:0]
+	if cap(entries) < len(r.byPattern) {
+		entries = make([]*entry[H], 0, len(r.byPattern))
 	}
-	sort.Strings(patterns)
+	for _, registered := range r.byPattern {
+		entries = append(entries, registered)
+	}
+	slices.SortFunc(entries, func(left, right *entry[H]) int {
+		return cmp.Compare(left.pattern, right.pattern)
+	})
+
+	restoredEntries := r.restoreRollbackScratch[:0]
+	if cap(restoredEntries) < len(entries) {
+		restoredEntries = make([]restoreEntry, 0, len(entries))
+	}
+	if cap(r.restoreSubIDsScratch) < len(entries) {
+		r.restoreSubIDsScratch = make([]uint64, len(entries))
+	}
+	restoredSubIDs := r.restoreSubIDsScratch[:len(entries)]
+	restoredBySubID := r.restoreBySubIDScratch
+	if restoredBySubID == nil {
+		restoredBySubID = make(map[uint64]*entry[H], len(entries))
+	}
+	for subID := range restoredBySubID {
+		delete(restoredBySubID, subID)
+	}
 	r.mu.Unlock()
+	locked = false
 
-	restoredByPattern := make(map[string]*entry[H], len(patterns))
-	restoredBySubID := make(map[uint64]*entry[H], len(patterns))
-	restoredEntries := make([]restoreEntry, 0, len(patterns))
-
-	for _, pattern := range patterns {
-		subID, err := wireSubscribe(pattern)
+	for idx, registered := range entries {
+		subID, err := wireSubscribe(registered.pattern)
 		if err != nil {
 			if rollbackErr := r.rollbackRestore(restoredEntries, wireUnsubscribe); rollbackErr != nil {
 				return errors.Join(err, rollbackErr)
@@ -175,27 +198,28 @@ func (r *Registry[H]) Restore(wireSubscribe func(string) (uint64, error), wireUn
 			return err
 		}
 		if _, exists := restoredBySubID[subID]; exists {
-			if rollbackErr := r.rollbackRestore(append(restoredEntries, restoreEntry{pattern: pattern, subID: subID}), wireUnsubscribe); rollbackErr != nil {
-				return errors.Join(fmt.Errorf("duplicate subscription_id %d while restoring pattern %q", subID, pattern), rollbackErr)
+			if rollbackErr := r.rollbackRestore(append(restoredEntries, restoreEntry{pattern: registered.pattern, subID: subID}), wireUnsubscribe); rollbackErr != nil {
+				return errors.Join(fmt.Errorf("duplicate subscription_id %d while restoring pattern %q", subID, registered.pattern), rollbackErr)
 			}
-			return fmt.Errorf("duplicate subscription_id %d while restoring pattern %q", subID, pattern)
+			return fmt.Errorf("duplicate subscription_id %d while restoring pattern %q", subID, registered.pattern)
 		}
 
-		restoredEntries = append(restoredEntries, restoreEntry{pattern: pattern, subID: subID})
-		restored := &entry[H]{
-			pattern:  pattern,
-			subID:    subID,
-			handlers: handlersByPattern[pattern],
-		}
-		restoredByPattern[pattern] = restored
-		restoredBySubID[subID] = restored
+		restoredEntries = append(restoredEntries, restoreEntry{pattern: registered.pattern, subID: subID})
+		restoredSubIDs[idx] = subID
+		restoredBySubID[subID] = registered
 	}
 
 	r.mu.Lock()
-	r.byPattern = restoredByPattern
+	locked = true
+	for idx, registered := range entries {
+		registered.subID = restoredSubIDs[idx]
+	}
+	oldBySubID := r.bySubID
 	r.bySubID = restoredBySubID
-	r.cond.Broadcast()
-	r.mu.Unlock()
+	r.restoreEntriesScratch = entries[:0]
+	r.restoreRollbackScratch = restoredEntries[:0]
+	r.restoreSubIDsScratch = restoredSubIDs[:0]
+	r.restoreBySubIDScratch = oldBySubID
 	return nil
 }
 

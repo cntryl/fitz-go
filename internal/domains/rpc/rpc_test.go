@@ -464,3 +464,27 @@ func BenchmarkHandleRPCResponseHotPath(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkResponseStreamSingleFrameRoundTrip(b *testing.B) {
+	ctx := context.Background()
+	frame := ResponseFrame{Sequence: 1, Body: []byte("payload")}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		stream := newResponseStream()
+		if !stream.enqueue(frame) {
+			b.Fatal("enqueue failed")
+		}
+		got, ok, err := stream.next(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if !ok {
+			b.Fatal("expected frame")
+		}
+		if got.Sequence != frame.Sequence || !bytes.Equal(got.Body, frame.Body) {
+			b.Fatalf("unexpected frame: sequence=%d body=%q", got.Sequence, got.Body)
+		}
+	}
+}

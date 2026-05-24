@@ -580,7 +580,13 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 	}
 	defer frame.Release()
 
-	responseChan := make(chan []byte, 1)
+	waiter := acquireRequestWaiter()
+	releaseWaiter := false
+	defer func() {
+		if releaseWaiter {
+			releaseRequestWaiter(waiter)
+		}
+	}()
 	if c.logger != nil {
 		c.logger.DebugContext(ctx, "request sent", "msg_type", msgType)
 	}
@@ -593,8 +599,12 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 	}
 
 	c.writeMu.Lock()
-	c.mux.RegisterRequest(msgType, responseChan, nil)
-	defer c.mux.UnregisterRequest(msgType, responseChan)
+	c.mux.RegisterRequestWaiter(msgType, waiter, nil)
+	defer func() {
+		if c.mux.UnregisterRequestWaiter(msgType, waiter) {
+			releaseWaiter = true
+		}
+	}()
 	err := c.transport.Write(writeCtx, frame.Bytes())
 	c.writeMu.Unlock()
 	if err != nil {
@@ -605,8 +615,9 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 	}
 
 	select {
-	case resp, ok := <-responseChan:
-		if !ok {
+	case <-waiter.ready:
+		releaseWaiter = true
+		if waiter.closed {
 			if err := c.getConnError(); err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
@@ -615,16 +626,17 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 			span.SetStatus(codes.Error, ErrConnectionClosed.Error())
 			return nil, ErrConnectionClosed
 		}
-		return resp, nil
+		return waiter.response, nil
 	case <-ctx.Done():
 		span.RecordError(ctx.Err())
 		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()
 	case <-c.done:
 		select {
-		case resp, ok := <-responseChan:
-			if ok {
-				return resp, nil
+		case <-waiter.ready:
+			releaseWaiter = true
+			if !waiter.closed {
+				return waiter.response, nil
 			}
 		default:
 		}
@@ -690,7 +702,13 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 	}
 	defer frame.Release()
 
-	responseChan := make(chan []byte, 1)
+	waiter := acquireRequestWaiter()
+	releaseWaiter := false
+	defer func() {
+		if releaseWaiter {
+			releaseRequestWaiter(waiter)
+		}
+	}()
 	if c.logger != nil {
 		c.logger.DebugContext(ctx, "request sent", "msg_type", msgType)
 	}
@@ -703,8 +721,12 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 	}
 
 	c.writeMu.Lock()
-	c.mux.RegisterRequest(msgType, responseChan, nil)
-	defer c.mux.UnregisterRequest(msgType, responseChan)
+	c.mux.RegisterRequestWaiter(msgType, waiter, nil)
+	defer func() {
+		if c.mux.UnregisterRequestWaiter(msgType, waiter) {
+			releaseWaiter = true
+		}
+	}()
 	err = c.transport.Write(writeCtx, frame.Bytes())
 	c.writeMu.Unlock()
 	if err != nil {
@@ -715,8 +737,9 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 	}
 
 	select {
-	case resp, ok := <-responseChan:
-		if !ok {
+	case <-waiter.ready:
+		releaseWaiter = true
+		if waiter.closed {
 			if err := c.getConnError(); err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
@@ -725,16 +748,17 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 			span.SetStatus(codes.Error, ErrConnectionClosed.Error())
 			return nil, ErrConnectionClosed
 		}
-		return resp, nil
+		return waiter.response, nil
 	case <-ctx.Done():
 		span.RecordError(ctx.Err())
 		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()
 	case <-c.done:
 		select {
-		case resp, ok := <-responseChan:
-			if ok {
-				return resp, nil
+		case <-waiter.ready:
+			releaseWaiter = true
+			if !waiter.closed {
+				return waiter.response, nil
 			}
 		default:
 		}

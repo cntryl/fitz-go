@@ -25,3 +25,4 @@ artifacts/
 .DS_Store
 Thumbs.db
 test/conformance/conformance-results.json
+*.exe

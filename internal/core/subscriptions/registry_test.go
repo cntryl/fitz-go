@@ -206,3 +206,33 @@ func TestShouldRollbackRestoredSubscriptionsGivenRestoreFailureWhenWireSubscribe
 	assert.ElementsMatch(t, []string{"second"}, registry.Handlers(11))
 	assert.ElementsMatch(t, []string{"third"}, registry.Handlers(12))
 }
+
+func BenchmarkRestoreHighFanout(b *testing.B) {
+	registry := NewRegistry[string]()
+	for patternIdx := range 8 {
+		pattern := fmt.Sprintf("notice://bench/%02d/resource", patternIdx)
+		for handlerIdx := range 8 {
+			handler := fmt.Sprintf("handler-%02d-%02d", patternIdx, handlerIdx)
+			_, _, err := registry.Subscribe(pattern, handler, func(string) (uint64, error) {
+				return uint64(patternIdx + 1), nil
+			})
+			if err != nil {
+				b.Fatalf("seed subscription: %v", err)
+			}
+		}
+	}
+
+	var nextID atomic.Uint64
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if err := registry.Restore(
+			func(string) (uint64, error) {
+				return nextID.Add(1), nil
+			},
+			func(string, uint64) error { return nil },
+		); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

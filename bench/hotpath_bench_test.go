@@ -79,16 +79,20 @@ func (t *echoTransport) RemoteAddr() string {
 	return "bench://echo"
 }
 
+func benchmarkConnectionConfig() connection.Config {
+	return connection.Config{
+		AuthSettleDelay: 1 * time.Millisecond,
+		ReadTimeout:     -1,
+		WriteTimeout:    -1,
+	}
+}
+
 func benchmarkSendRequestHotPath(b *testing.B, msgType uint16, payload []byte) {
 	b.Helper()
 
 	ctx := context.Background()
 	trans := newEchoTransport(1024)
-	conn := connection.New(trans, connection.Config{
-		AuthSettleDelay: 1 * time.Millisecond,
-		ReadTimeout:     0,
-		WriteTimeout:    0,
-	})
+	conn := connection.New(trans, benchmarkConnectionConfig())
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
@@ -195,7 +199,7 @@ func BenchmarkQueueCompleteHotPath(b *testing.B) {
 func BenchmarkKVGetHotPath(b *testing.B) {
 	ctx := context.Background()
 	trans := newEchoTransport(1024)
-	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	conn := connection.New(trans, benchmarkConnectionConfig())
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
@@ -214,7 +218,7 @@ func BenchmarkKVGetHotPath(b *testing.B) {
 func BenchmarkKVPutHotPath(b *testing.B) {
 	ctx := context.Background()
 	trans := newEchoTransport(1024)
-	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	conn := connection.New(trans, benchmarkConnectionConfig())
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
@@ -233,7 +237,7 @@ func BenchmarkKVPutHotPath(b *testing.B) {
 func BenchmarkLeaseAcquireHotPath(b *testing.B) {
 	ctx := context.Background()
 	trans := newEchoTransport(1024)
-	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	conn := connection.New(trans, benchmarkConnectionConfig())
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
@@ -295,7 +299,7 @@ func BenchmarkSubscriptionRegistryRestore(b *testing.B) {
 func BenchmarkNoticePublishHotPath(b *testing.B) {
 	ctx := context.Background()
 	trans := newEchoTransport(1024)
-	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	conn := connection.New(trans, benchmarkConnectionConfig())
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
@@ -314,7 +318,7 @@ func BenchmarkNoticePublishHotPath(b *testing.B) {
 func BenchmarkRPCCallHotPath(b *testing.B) {
 	ctx := context.Background()
 	trans := newEchoTransport(1024)
-	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	conn := connection.New(trans, benchmarkConnectionConfig())
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}
@@ -356,7 +360,7 @@ func BenchmarkRPCCorrelation1KInFlight(b *testing.B) {
 func BenchmarkKVTransactionLoopback(b *testing.B) {
 	ctx := context.Background()
 	trans := newEchoTransport(2048)
-	conn := connection.New(trans, connection.Config{AuthSettleDelay: 1 * time.Millisecond})
+	conn := connection.New(trans, benchmarkConnectionConfig())
 	if err := conn.Start(ctx); err != nil {
 		b.Fatalf("start connection: %v", err)
 	}

@@ -144,10 +144,10 @@ Treat this report as the quality baseline for this repository.
 | REQ-PERF-001 | T1 | **PASS** | Benchmark gate thresholds are now explicit in `docs/PERF_RESULTS.md` for KV loopback, frame encode, RPC correlation, and Notice publish throughput. |
 | REQ-PERF-002 | T1 | **PASS** | Benchmarks track allocations with `-benchmem`, and zero-copy steady-state parsing is intentionally out of scope for this release bar. The report only claims the measured throughput and allocation evidence that the suite actually provides. |
 | REQ-PERF-003 | T1 | **PASS** | `writeMu sync.Mutex` (write serialization) and the multiplexer `mu sync.Mutex` (response dispatch) are independent. Read dispatch never holds the write lock. |
-| REQ-PERF-004 | T2 | **PASS** | `BenchmarkKVTransactionLoopback` reports ~13-14 µs/op on loopback benchmark harness (`docs/PERF_RESULTS.md`), well below the < 500 µs target. |
-| REQ-PERF-005 | T2 | **PASS** | `BenchmarkFrameEncode` reports ~29-51 ns/op (`docs/PERF_RESULTS.md`), well below the < 500 ns target. |
-| REQ-PERF-006 | T2 | **PASS** | `BenchmarkRPCCorrelation1KInFlight` (1024 in-flight) reports ~596-629 ns/op (`docs/PERF_RESULTS.md`), below the < 2 µs target. |
-| REQ-PERF-007 | T2 | **PASS** | `BenchmarkNoticePublishHotPath` reports ~1652-2048 ns/op (~488k-605k ops/sec) (`docs/PERF_RESULTS.md`), exceeding > 50k ops/sec target. |
+| REQ-PERF-004 | T2 | **PASS** | `BenchmarkKVTransactionLoopback` reports ~6.8-7.3 µs/op on the loopback benchmark harness (`docs/PERF_RESULTS.md`), well below the < 500 µs target. |
+| REQ-PERF-005 | T2 | **PASS** | `BenchmarkFrameEncode` reports ~44-47 ns/op (`docs/PERF_RESULTS.md`), well below the < 500 ns target. |
+| REQ-PERF-006 | T2 | **PASS** | `BenchmarkRPCCorrelation1KInFlight` (1024 in-flight) reports ~389-401 ns/op (`docs/PERF_RESULTS.md`), below the < 2 µs target. |
+| REQ-PERF-007 | T2 | **PASS** | `BenchmarkNoticePublishHotPath` reports ~845-882 ns/op (~1.13M-1.18M ops/sec) (`docs/PERF_RESULTS.md`), exceeding > 50k ops/sec target. |
 | REQ-PERF-008 | T2 | **PASS** | Benchmark suite now exists in `bench/hotpath_bench_test.go` with hot-path coverage. |
 
 ### Test Coverage

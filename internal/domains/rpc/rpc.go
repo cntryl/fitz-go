@@ -43,30 +43,29 @@ type ResponseFrame struct {
 }
 
 type responseStream struct {
-	mu       sync.Mutex
-	notify   chan struct{}
-	frames   []ResponseFrame
-	closed   bool
-	signaled bool
-	err      error
+	mu     sync.Mutex
+	notify chan struct{}
+	frames []ResponseFrame
+	closed bool
+	err    error
 }
 
 func newResponseStream() *responseStream {
-	return &responseStream{notify: make(chan struct{})}
+	return &responseStream{
+		notify: make(chan struct{}, 1),
+		frames: make([]ResponseFrame, 0, 1),
+	}
 }
 
 func (s *responseStream) enqueue(frame ResponseFrame) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return false
 	}
-	wasEmpty := len(s.frames) == 0
 	s.frames = append(s.frames, frame)
-	if wasEmpty && !s.signaled {
-		close(s.notify)
-		s.signaled = true
-	}
+	s.mu.Unlock()
+	s.signal()
 	return true
 }
 
@@ -83,12 +82,9 @@ func (s *responseStream) closeWithError(err error) {
 	if !s.closed {
 		s.closed = true
 		s.err = err
-		if !s.signaled {
-			close(s.notify)
-			s.signaled = true
-		}
 	}
 	s.mu.Unlock()
+	s.signal()
 }
 
 func (s *responseStream) next(ctx context.Context) (ResponseFrame, bool, error) {
@@ -96,12 +92,10 @@ func (s *responseStream) next(ctx context.Context) (ResponseFrame, bool, error) 
 		s.mu.Lock()
 		if len(s.frames) > 0 {
 			frame := s.frames[0]
-			s.frames[0] = ResponseFrame{}
-			s.frames = s.frames[1:]
-			if len(s.frames) == 0 && !s.closed {
-				s.notify = make(chan struct{})
-				s.signaled = false
-			}
+			copy(s.frames, s.frames[1:])
+			last := len(s.frames) - 1
+			s.frames[last] = ResponseFrame{}
+			s.frames = s.frames[:last]
 			s.mu.Unlock()
 			return frame, true, nil
 		}
@@ -118,6 +112,13 @@ func (s *responseStream) next(ctx context.Context) (ResponseFrame, bool, error) 
 		case <-ctx.Done():
 			return ResponseFrame{}, false, ctx.Err()
 		}
+	}
+}
+
+func (s *responseStream) signal() {
+	select {
+	case s.notify <- struct{}{}:
+	default:
 	}
 }
 
@@ -237,8 +238,7 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		if offset+int(bodyLen) > len(payload) {
 			return
 		}
-		body := make([]byte, bodyLen)
-		copy(body, payload[offset:offset+int(bodyLen)])
+		body := payload[offset : offset+int(bodyLen)]
 		offset += int(bodyLen)
 
 		streamEnd := false
