@@ -217,30 +217,15 @@ func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *te
 }
 
 func TestShouldRestoreScheduleSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
-	authMode := fixture.AuthModeForTestName(t.Name())
-	backendAddr, stop, err := fixture.StartBrokerIfNeeded(fixture.TransportTCP, authMode)
-	require.NoError(t, err)
-	t.Cleanup(stop)
-
-	proxy := fixture.NewDisconnectProxy(t, fixture.TransportTCP, backendAddr)
-
-	subscriber := fixture.NewTestFixture(t, fixture.TransportTCP)
-	subscriber.SetAuthMode(authMode)
-	subscriber.SetBrokerAddr(proxy.Addr())
-
-	actor := fixture.NewTestFixture(t, fixture.TransportTCP)
-	actor.SetAuthMode(authMode)
+	harness := fixture.NewProxyReconnectHarness(t, fixture.TransportTCP, fixture.AuthModeForTestName(t.Name()))
+	subscriber := harness.Proxied
+	actor := harness.Stable
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
-	require.NoError(t, subscriber.ConnectWithOptions(
-		ctx,
-		fitz.WithReadTimeout(2*time.Minute),
-		fitz.WithReconnect(true, 25*time.Millisecond, 20),
-		fitz.WithReconnectMaxDelay(50*time.Millisecond),
-	))
-	actor.ConnectOrFail(ctx)
+	reconnectOpts := append([]fitz.Option{fitz.WithReadTimeout(2 * time.Minute)}, fixture.DefaultReconnectOptions()...)
+	harness.Connect(ctx, reconnectOpts...)
 
 	route := subscriber.UniqueRoute("schedule")
 	payload := []byte("schedule-after-reconnect")
@@ -259,15 +244,8 @@ func TestShouldRestoreScheduleSubscriptionGivenLiveDisconnectWhenReconnectEnable
 		}
 	}()
 
-	require.Eventually(t, func() bool {
-		return proxy.AcceptedCount() >= 1
-	}, 5*time.Second, 20*time.Millisecond)
-
-	proxy.DropConnections()
-
-	require.Eventually(t, func() bool {
-		return proxy.AcceptedCount() >= 2
-	}, 10*time.Second, 20*time.Millisecond)
+	harness.WaitForInitialConnection(5 * time.Second)
+	harness.DropAndWaitForReconnect(10 * time.Second)
 
 	waitForNotification := func(wait time.Duration) ([]byte, bool) {
 		select {

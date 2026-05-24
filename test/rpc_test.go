@@ -40,31 +40,17 @@ func TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled(t *tes
 
 func TestShouldRestoreWorkerRegistrationGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		authMode := fixture.AuthModeForTestName(t.Name())
-		backendAddr, stop, err := fixture.StartBrokerIfNeeded(transport, authMode)
-		require.NoError(t, err)
-		t.Cleanup(stop)
-
-		proxy := fixture.NewDisconnectProxy(t, transport, backendAddr)
-
-		worker := fixture.NewTestFixture(t, transport)
-		worker.SetAuthMode(authMode)
-		worker.SetBrokerAddr(proxy.Addr())
-
-		caller := fixture.NewTestFixture(t, transport)
-		caller.SetAuthMode(authMode)
+		harness := fixture.NewProxyReconnectHarness(t, transport, fixture.AuthModeForTestName(t.Name()))
+		worker := harness.Proxied
+		caller := harness.Stable
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		require.NoError(t, worker.ConnectWithOptions(
-			ctx,
-			fitz.WithReconnect(true, 25*time.Millisecond, 20),
-			fitz.WithReconnectMaxDelay(50*time.Millisecond),
-		))
-		require.NoError(t, caller.Connect(ctx))
+		harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
 
 		route := worker.UniqueRoute("rpc")
+		var err error
 		_, err = worker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 			return w.Send(req.Body)
 		})
@@ -82,15 +68,8 @@ func TestShouldRestoreWorkerRegistrationGivenLiveDisconnectWhenReconnectEnabled(
 
 		callAndExpect("before-disconnect")
 
-		require.Eventually(t, func() bool {
-			return proxy.AcceptedCount() >= 1
-		}, 5*time.Second, 20*time.Millisecond)
-
-		proxy.DropConnections()
-
-		require.Eventually(t, func() bool {
-			return proxy.AcceptedCount() >= 2
-		}, 10*time.Second, 20*time.Millisecond)
+		harness.WaitForInitialConnection(5 * time.Second)
+		harness.DropAndWaitForReconnect(10 * time.Second)
 
 		require.Eventually(t, func() bool {
 			iter, err := caller.Client().RPC().Call(ctx, route, []byte("after-disconnect"))

@@ -182,31 +182,17 @@ func TestShouldNotifyGivenSubscriptionWhenLeaseReleased(t *testing.T) {
 
 func TestShouldRestoreLeaseSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		authMode := fixture.AuthModeForTestName(t.Name())
-		backendAddr, stop, err := fixture.StartBrokerIfNeeded(transport, authMode)
-		require.NoError(t, err)
-		t.Cleanup(stop)
-
-		proxy := fixture.NewDisconnectProxy(t, transport, backendAddr)
-
-		subscriber := fixture.NewTestFixture(t, transport)
-		subscriber.SetAuthMode(authMode)
-		subscriber.SetBrokerAddr(proxy.Addr())
-
-		actor := fixture.NewTestFixture(t, transport)
-		actor.SetAuthMode(authMode)
+		harness := fixture.NewProxyReconnectHarness(t, transport, fixture.AuthModeForTestName(t.Name()))
+		subscriber := harness.Proxied
+		actor := harness.Stable
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		require.NoError(t, subscriber.ConnectWithOptions(
-			ctx,
-			fitz.WithReconnect(true, 25*time.Millisecond, 20),
-			fitz.WithReconnectMaxDelay(50*time.Millisecond),
-		))
-		require.NoError(t, actor.Connect(ctx))
+		harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
 
 		route := subscriber.UniqueRoute("lease")
+		var err error
 		notifications := make(chan string, 4)
 		_, err = subscriber.Client().Lease().Subscribe(ctx, route, func(_ context.Context, notif fitz.LeaseChangeNotification) error {
 			notifications <- notif.Route
@@ -229,15 +215,8 @@ func TestShouldRestoreLeaseSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t
 			t.Fatal("timed out waiting for initial lease change notification")
 		}
 
-		require.Eventually(t, func() bool {
-			return proxy.AcceptedCount() >= 1
-		}, 5*time.Second, 20*time.Millisecond)
-
-		proxy.DropConnections()
-
-		require.Eventually(t, func() bool {
-			return proxy.AcceptedCount() >= 2
-		}, 10*time.Second, 20*time.Millisecond)
+		harness.WaitForInitialConnection(5 * time.Second)
+		harness.DropAndWaitForReconnect(10 * time.Second)
 
 		require.Eventually(t, func() bool {
 			triggerChange()

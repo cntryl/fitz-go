@@ -82,6 +82,8 @@ Reconnect guarantees:
 - RPC worker registrations are restored after reconnect.
 - `Close()` is idempotent and permanently ends reconnect activity.
 
+The broker-backed test suite verifies those guarantees through a live disconnect proxy rather than by closing one client and creating another.
+
 RPC timeout pattern:
 
 ```go
@@ -182,6 +184,16 @@ go test ./...
 ```
 
 Error-path coverage in the broker-backed suite includes unauthorized operations across all 7 domains, plus invalid KV range and invalid cron cases.
+
+Focused reconnect validation is usually more useful than a blanket `go test ./test/...` run in this repo. The high-signal reconnect slices are:
+
+```bash
+go test ./test -run "TestShould(RestoreNoticeSubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreWorkerRegistrationGivenLiveDisconnectWhenReconnectEnabled|RestoreAvailabilitySubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreCommitSubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreLeaseSubscriptionGivenLiveDisconnectWhenReconnectEnabled)"
+go test ./test -run "TestShouldRestoreScheduleSubscriptionGivenLiveDisconnectWhenReconnectEnabled"
+go test ./test/conformance/... -run "TestConformanceSuite/(CS-009_disconnect_during_request|CS-010_reconnect_behavior)"
+```
+
+Those tests use the shared live-disconnect seam in `test/fixture/proxy.go` to exercise real disconnect, reconnect, and restore behavior against a running broker.
 
 Benchmark thresholds and evidence policy are documented in [docs/PERF_RESULTS.md](docs/PERF_RESULTS.md); treat that report as the source of truth for hot-path gates.
 

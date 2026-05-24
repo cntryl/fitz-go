@@ -1,9 +1,9 @@
 # fitz-go Grading Report
 
 **Assessed against:** [client-requirements.md](../../fitz/docs/clients/client-requirements.md)  
-**Assessment date:** March 24, 2026  
+**Assessment date:** May 24, 2026  
 **Assessed commit:** main  
-**Conformance results:** `test/conformance/conformance-results.json` (tcp/anonymous, run 2026-03-24)
+**Conformance results:** `test/conformance/conformance-results.json` (tcp/anonymous, run 2026-05-23)
 
 ---
 
@@ -162,7 +162,7 @@ Treat this report as the quality baseline for this repository.
 | REQ-TEST-006 | T1 | **PASS** | Every integration test function uses `context.WithTimeout(context.Background(), 10*time.Second)`. |
 | REQ-TEST-007 | T1 | **PASS** | `fixture.TestFixture.UniqueRoute(scheme)` generates nanosecond-stamped unique routes. All integration tests use it. |
 | REQ-TEST-008 | T1 | **PASS** | Error-path integration coverage is now systematic across all 7 domains via `test/authorization_test.go`, plus the KV inverted-range and schedule invalid-cron tests. |
-| REQ-TEST-009 | T1 | **PASS** | `test/transport_test.go` + CS-010 (reconnect and retry behavior — pass) confirms reconnect + re-subscription is covered. |
+| REQ-TEST-009 | T1 | **PASS** | Broker-backed reconnect coverage now includes live-disconnect restore tests for Notice, Queue, Stream, Lease, Schedule, and RPC worker registration in `test/transport_test.go`, `test/queue_test.go`, `test/stream_test.go`, `test/lease_test.go`, `test/schedule_test.go`, and `test/rpc_test.go`. Conformance CS-010 also now uses a real disconnect proxy instead of a close-and-recreate approximation. |
 | REQ-TEST-010 | T1 | **PASS** | Conformance run is passing and P0 requirements are now at 100%. |
 | REQ-TEST-011 | T2 | **PASS** | `go test ./... -race` exits 0 (confirmed in terminal session). |
 | REQ-TEST-012 | T2 | **PASS** | P1 conformance requirements are now passing at 100%. |

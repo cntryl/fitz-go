@@ -34,7 +34,6 @@ import (
 
 	"github.com/cntryl/fitz-go/fitz"
 	"github.com/cntryl/fitz-go/test/fixture"
-	"github.com/stretchr/testify/require"
 )
 
 // ---------------------------------------------------------------------------
@@ -625,24 +624,15 @@ func TestConformanceSuite(t *testing.T) {
 	t.Run("CS-009_disconnect_during_request", func(t *testing.T) {
 		r := run("CS-009", "disconnect during request", "P1", func() (Verdict, []string, error) {
 			var ev []string
-			backendAddr, stop, err := fixture.StartBrokerIfNeeded(transportType(), authMode())
-			if err != nil {
-				return VerdictFail, ev, err
-			}
-			defer stop()
-
-			proxy := fixture.NewDisconnectProxy(t, transportType(), backendAddr)
-
-			fWorker := connectFixture(t)
-			fCaller := newFixture(t)
+			harness := fixture.NewProxyReconnectHarness(t, transportType(), authMode())
+			fWorker := harness.Stable
+			fCaller := harness.Proxied
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			fCaller.SetBrokerAddr(proxy.Addr())
-			if err := fCaller.Connect(ctx); err != nil {
-				return VerdictFail, ev, fmt.Errorf("caller connect: %w", err)
-			}
+			harness.Connect(ctx)
 
 			route := uniqueRoute("rpc")
+			var err error
 			_, err = fWorker.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 				select {
 				case <-workerCtx.Done():
@@ -660,10 +650,8 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("rpc call: %w", err)
 			}
 
-			require.Eventually(t, func() bool {
-				return proxy.AcceptedCount() >= 1
-			}, 5*time.Second, 20*time.Millisecond)
-			proxy.DropConnections()
+			harness.WaitForInitialConnection(5 * time.Second)
+			harness.Proxy.DropConnections()
 			ev = append(ev, "caller transport dropped via proxy")
 
 			iter.Next()
@@ -687,30 +675,17 @@ func TestConformanceSuite(t *testing.T) {
 	t.Run("CS-010_reconnect_behavior", func(t *testing.T) {
 		r := run("CS-010", "reconnect and retry behavior", "P1", func() (Verdict, []string, error) {
 			var ev []string
-			backendAddr, stop, err := fixture.StartBrokerIfNeeded(transportType(), authMode())
-			if err != nil {
-				return VerdictFail, ev, err
-			}
-			defer stop()
-
-			proxy := fixture.NewDisconnectProxy(t, transportType(), backendAddr)
-
-			subscriber := newFixture(t)
-			subscriber.SetBrokerAddr(proxy.Addr())
-			publisher := connectFixture(t)
+			harness := fixture.NewProxyReconnectHarness(t, transportType(), authMode())
+			subscriber := harness.Proxied
+			publisher := harness.Stable
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			if err := subscriber.ConnectWithOptions(
-				ctx,
-				fitz.WithReconnect(true, 25*time.Millisecond, 20),
-				fitz.WithReconnectMaxDelay(50*time.Millisecond),
-			); err != nil {
-				return VerdictFail, ev, fmt.Errorf("subscriber connect: %w", err)
-			}
+			harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
 			ev = append(ev, "subscriber connected through disconnect proxy")
 
 			route := uniqueRoute("notice")
+			var err error
 			received := make(chan string, 4)
 			_, err = subscriber.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg fitz.NoticeMsg) error {
 				received <- string(msg.Body)
@@ -733,17 +708,18 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, "subscription delivered before disconnect")
 
-			proxy.DropConnections()
+			harness.WaitForInitialConnection(5 * time.Second)
+			harness.Proxy.DropConnections()
 			ev = append(ev, "proxy dropped live connection")
 
 			deadline := time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
-				if proxy.AcceptedCount() >= 2 {
+				if harness.Proxy.AcceptedCount() >= 2 {
 					break
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
-			if proxy.AcceptedCount() < 2 {
+			if harness.Proxy.AcceptedCount() < 2 {
 				return VerdictFail, ev, errors.New("client did not reconnect through proxy")
 			}
 			ev = append(ev, "client established a new transport connection")
@@ -768,7 +744,6 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, errors.New("publisher could not publish after reconnect")
 			}
 			return VerdictFail, ev, errors.New("subscription was not restored after reconnect")
-			return VerdictPass, ev, nil
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {

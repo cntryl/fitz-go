@@ -1,6 +1,7 @@
 package fixture
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/url"
@@ -32,7 +33,8 @@ type proxyConnPair struct {
 func NewDisconnectProxy(t *testing.T, transport TransportType, backendAddr string) *DisconnectProxy {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen disconnect proxy: %v", err)
 	}
@@ -103,7 +105,8 @@ func (p *DisconnectProxy) acceptLoop() {
 			}
 		}
 
-		backendConn, err := net.Dial("tcp", p.backendHost)
+		var dialer net.Dialer
+		backendConn, err := dialer.DialContext(context.Background(), "tcp", p.backendHost)
 		if err != nil {
 			_ = clientConn.Close()
 			continue
