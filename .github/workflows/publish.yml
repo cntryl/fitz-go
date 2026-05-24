@@ -10,11 +10,9 @@ permissions:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
-    timeout-minutes: 5
 
   version:
     uses: ./.github/workflows/version.yml
-    timeout-minutes: 5
 
   tag:
     name: Create and push tag
