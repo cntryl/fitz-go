@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   ci:
-    name: Build, lint, and test
+    name: Release Gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -32,11 +32,11 @@ jobs:
         with:
           version: v2.12
 
+      - name: Start broker stack
+        run: docker compose up -d
+
       - name: Run build
         run: go build ./...
-
-      - name: Start broker stack
-        run: docker compose up -d --wait
 
       - name: Run tests
         run: go test ./...
