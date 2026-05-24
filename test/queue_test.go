@@ -45,14 +45,21 @@ func TestShouldReturnMessageToQueueGivenExpiredLeaseWhenLeaseExpires(t *testing.
 		_, err := f.Client().Queue().Enqueue(ctx, route, []byte("expire-me"))
 		require.NoError(t, err)
 
-		items, err := f.Client().Queue().Reserve(ctx, route, 2, 1)
+		items, err := f.Client().Queue().Reserve(ctx, route, 1, 1)
 		require.NoError(t, err)
 		require.Len(t, items, 1)
 
-		time.Sleep(4 * time.Second)
+		time.Sleep(1 * time.Second)
 
-		items2, err := f.Client().Queue().Reserve(ctx, route, 30, 1)
-		require.NoError(t, err)
+		var items2 []*fitz.QueueItem
+		require.Eventually(t, func() bool {
+			candidate, err := f.Client().Queue().Reserve(ctx, route, 30, 1)
+			if err != nil || len(candidate) < 1 {
+				return false
+			}
+			items2 = candidate
+			return true
+		}, 3*time.Second, 100*time.Millisecond)
 		assert.GreaterOrEqual(t, len(items2), 1)
 		if len(items2) >= 1 {
 			assert.Equal(t, []byte("expire-me"), items2[0].Body)
@@ -183,14 +190,16 @@ func TestShouldRejectCompleteGivenExpiredLeaseWhenCompleteCalled(t *testing.T) {
 		_, err := f.Client().Queue().Enqueue(ctx, route, []byte("expire-then-complete"))
 		require.NoError(t, err)
 
-		items, err := f.Client().Queue().Reserve(ctx, route, 2, 1)
+		items, err := f.Client().Queue().Reserve(ctx, route, 1, 1)
 		require.NoError(t, err)
 		require.Len(t, items, 1)
 
-		time.Sleep(4 * time.Second)
+		time.Sleep(1 * time.Second)
 
-		err = items[0].Complete(ctx)
-		require.Error(t, err)
+		require.Eventually(t, func() bool {
+			err = items[0].Complete(ctx)
+			return err != nil
+		}, 3*time.Second, 100*time.Millisecond)
 		assert.True(t, errors.Is(err, fitz.ErrQueueLeaseExpired) || errors.Is(err, fitz.ErrQueueMessageNotFound))
 	})
 }

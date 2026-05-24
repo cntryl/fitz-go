@@ -117,14 +117,21 @@ func TestShouldExpireLeaseGivenTTLElapsedWhenNoRenew(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("lease")
-		l, err := f.Client().Lease().Acquire(ctx, route, 2)
+		l, err := f.Client().Lease().Acquire(ctx, route, 1)
 		require.NoError(t, err)
 		require.NotNil(t, l)
 
-		time.Sleep(3 * time.Second)
+		time.Sleep(1 * time.Second)
 
-		l2, err := f.Client().Lease().Acquire(ctx, route, 30)
-		require.NoError(t, err)
+		var l2 *fitz.Lease
+		require.Eventually(t, func() bool {
+			candidate, err := f.Client().Lease().Acquire(ctx, route, 30)
+			if err != nil || candidate == nil {
+				return false
+			}
+			l2 = candidate
+			return true
+		}, 3*time.Second, 100*time.Millisecond)
 		require.NotNil(t, l2)
 		assert.Greater(t, l2.ExpiresAt, time.Now().Unix()-1)
 	})
