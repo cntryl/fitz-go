@@ -322,6 +322,9 @@ func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
 	}
 }
 
+// ListBySelector retrieves schedules matching a canonical schedule selector.
+// It still filters client-side over paged List results, so cost scales with
+// the number of schedules scanned from the server.
 func (c *client) ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
 	if err := types.ValidateScheduleSelector(selector); err != nil {
 		return nil, 0, fmt.Errorf("invalid selector: %w", err)

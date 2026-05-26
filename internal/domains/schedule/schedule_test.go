@@ -3,6 +3,7 @@ package schedule
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
@@ -10,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var benchmarkScheduleEntriesSink []ScheduleEntry
 
 // TestShouldMapScheduleError tests error message mapping.
 func TestShouldMapScheduleErrorGivenBrokerMessageWhenMapScheduleErrorCalled(t *testing.T) {
@@ -253,5 +256,47 @@ func BenchmarkParseScheduleSubscribeResponse(b *testing.B) {
 		if success && len(remaining) >= 9 && remaining[0] == 1 {
 			_, _, _ = connection.ReadU64BE(remaining, 1)
 		}
+	}
+}
+
+func BenchmarkFilterScheduleEntriesSelectivity(b *testing.B) {
+	const totalEntries = 1000
+	const selectedSelector = "schedule://acme/match/*"
+
+	buildEntries := func(matchCount int) []ScheduleEntry {
+		entries := make([]ScheduleEntry, totalEntries)
+		for idx := range entries {
+			group := "other"
+			if idx < matchCount {
+				group = "match"
+			}
+			entries[idx] = ScheduleEntry{
+				ID:      fmt.Sprintf("%s-%04d", group, idx),
+				Route:   fmt.Sprintf("schedule://acme/%s/resource-%04d", group, idx),
+				Cron:    "0 0 * * *",
+				Payload: []byte("payload"),
+			}
+		}
+		return entries
+	}
+
+	cases := []struct {
+		name       string
+		matchCount int
+	}{
+		{name: "10pct", matchCount: totalEntries / 10},
+		{name: "50pct", matchCount: totalEntries / 2},
+		{name: "100pct", matchCount: totalEntries},
+	}
+
+	for _, tc := range cases {
+		entries := buildEntries(tc.matchCount)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				benchmarkScheduleEntriesSink = filterScheduleEntries(entries, selectedSelector)
+			}
+		})
 	}
 }

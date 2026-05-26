@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // pendingRequest represents one in-flight request awaiting response.
 type pendingRequest struct {
-	responseChan chan []byte
-	waiter       *requestWaiter
-	cancelFunc   context.CancelFunc
+	waiter     *requestWaiter
+	cancelFunc context.CancelFunc
 }
 
 type requestWaiter struct {
@@ -80,86 +78,134 @@ func (w *requestWaiter) fail() {
 }
 
 type requestQueue struct {
-	items []pendingRequest
-	head  int
+	items       []pendingRequest
+	head        int
+	live        int
+	removed     int
+	waiterIndex map[*requestWaiter]int
 }
 
 func (q *requestQueue) push(req pendingRequest) {
 	q.items = append(q.items, req)
+	q.live++
+	if req.waiter != nil {
+		if q.waiterIndex == nil {
+			q.waiterIndex = make(map[*requestWaiter]int, 4)
+		}
+		q.waiterIndex[req.waiter] = len(q.items) - 1
+	}
 }
 
 func (q *requestQueue) pop() (pendingRequest, bool) {
+	q.trimHead()
 	if q.head >= len(q.items) {
+		q.reset()
 		return pendingRequest{}, false
 	}
 	req := q.items[q.head]
 	q.items[q.head] = pendingRequest{}
 	q.head++
-	q.compact()
+	if req.waiter != nil {
+		if q.waiterIndex != nil {
+			delete(q.waiterIndex, req.waiter)
+		}
+		q.live--
+	}
+	q.trimHead()
+	q.compactIfNeeded()
 	return req, true
 }
 
-func (q *requestQueue) remove(responseChan chan []byte) (pendingRequest, bool) {
-	for idx := q.head; idx < len(q.items); idx++ {
-		if q.items[idx].responseChan != responseChan {
-			continue
-		}
-		req := q.items[idx]
-		copy(q.items[idx:], q.items[idx+1:])
-		q.items[len(q.items)-1] = pendingRequest{}
-		q.items = q.items[:len(q.items)-1]
-		if q.head > len(q.items) {
-			q.head = len(q.items)
-		}
-		q.compact()
-		return req, true
-	}
-	return pendingRequest{}, false
-}
-
 func (q *requestQueue) removeWaiter(waiter *requestWaiter) (pendingRequest, bool) {
-	for idx := q.head; idx < len(q.items); idx++ {
-		if q.items[idx].waiter != waiter {
-			continue
-		}
-		req := q.items[idx]
-		copy(q.items[idx:], q.items[idx+1:])
-		q.items[len(q.items)-1] = pendingRequest{}
-		q.items = q.items[:len(q.items)-1]
-		if q.head > len(q.items) {
-			q.head = len(q.items)
-		}
-		q.compact()
-		return req, true
+	if q.waiterIndex == nil {
+		return pendingRequest{}, false
 	}
-	return pendingRequest{}, false
+	idx, ok := q.waiterIndex[waiter]
+	if !ok || idx < q.head || idx >= len(q.items) {
+		delete(q.waiterIndex, waiter)
+		return pendingRequest{}, false
+	}
+	req := q.items[idx]
+	if req.waiter != waiter {
+		delete(q.waiterIndex, waiter)
+		return pendingRequest{}, false
+	}
+
+	q.items[idx] = pendingRequest{}
+	delete(q.waiterIndex, waiter)
+	q.live--
+	q.removed++
+	if idx == q.head {
+		q.trimHead()
+	}
+	q.compactIfNeeded()
+	return req, true
 }
 
 func (q *requestQueue) len() int {
-	if q.head >= len(q.items) {
-		return 0
+	return q.live
+}
+
+func (q *requestQueue) trimHead() {
+	for q.head < len(q.items) && q.items[q.head].waiter == nil {
+		q.head++
+		if q.removed > 0 {
+			q.removed--
+		}
 	}
-	return len(q.items) - q.head
+	if q.head >= len(q.items) {
+		q.reset()
+		return
+	}
+}
+
+func (q *requestQueue) compactIfNeeded() {
+	if q.live == 0 {
+		q.reset()
+		return
+	}
+	if q.head < 32 && q.removed < 32 {
+		return
+	}
+	if q.head*2 < len(q.items) && q.removed*2 < len(q.items) {
+		return
+	}
+	q.compact()
 }
 
 func (q *requestQueue) compact() {
-	if q.head == 0 {
+	if q.live == 0 {
+		q.reset()
 		return
 	}
-	if q.head >= len(q.items) {
-		q.items = q.items[:0]
-		q.head = 0
-		return
+	items := make([]pendingRequest, 0, q.live)
+	waiterIndex := make(map[*requestWaiter]int, q.live)
+	for idx := q.head; idx < len(q.items); idx++ {
+		req := q.items[idx]
+		if req.waiter == nil {
+			continue
+		}
+		waiterIndex[req.waiter] = len(items)
+		items = append(items, req)
 	}
-	if q.head < 32 || q.head*2 < len(q.items) {
-		return
-	}
-	copy(q.items, q.items[q.head:])
-	for idx := len(q.items) - q.head; idx < len(q.items); idx++ {
+	for idx := range q.items {
 		q.items[idx] = pendingRequest{}
 	}
-	q.items = q.items[:len(q.items)-q.head]
+	q.items = items
 	q.head = 0
+	q.removed = 0
+	q.waiterIndex = waiterIndex
+}
+
+func (q *requestQueue) reset() {
+	for idx := range q.items {
+		q.items[idx] = pendingRequest{}
+	}
+	q.items = q.items[:0]
+	q.head = 0
+	q.live = 0
+	q.removed = 0
+	q.waiterIndex = nil
 }
 
 // Multiplexer routes responses to pending requests using FIFO ordering.
@@ -201,30 +247,22 @@ func NewMultiplexer() *Multiplexer {
 // The responseChan will receive the response payload when it arrives.
 // The cancelFunc is called if the request needs to be cleaned up.
 func (m *Multiplexer) RegisterRequest(msgType uint16, responseChan chan []byte, cancelFunc context.CancelFunc) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	waiter := acquireRequestWaiter()
+	m.RegisterRequestWaiter(msgType, waiter, cancelFunc)
+	go func() {
+		defer releaseRequestWaiter(waiter)
+		if responseChan == nil {
+			<-waiter.ready
+			return
+		}
 
-	if m.closed.Load() {
-		close(responseChan)
-		return
-	}
-
-	// Get or create FIFO queue for this MessageType
-	queue, exists := m.pending[msgType]
-	if !exists {
-		queue = &requestQueue{}
-		m.pending[msgType] = queue
-	}
-
-	// Add to back of queue (FIFO)
-	req := pendingRequest{
-		responseChan: responseChan,
-		cancelFunc:   cancelFunc,
-	}
-	queue.push(req)
-
-	m.requestsInFlight.Add(1)
-	m.requestsTotal.Add(1)
+		<-waiter.ready
+		if waiter.closed {
+			close(responseChan)
+			return
+		}
+		responseChan <- append([]byte(nil), waiter.response...)
+	}()
 }
 
 func (m *Multiplexer) RegisterRequestWaiter(msgType uint16, waiter *requestWaiter, cancelFunc context.CancelFunc) {
@@ -246,24 +284,6 @@ func (m *Multiplexer) RegisterRequestWaiter(msgType uint16, waiter *requestWaite
 
 	m.requestsInFlight.Add(1)
 	m.requestsTotal.Add(1)
-}
-
-// UnregisterRequest removes a pending request from the queue.
-// Called when context is canceled before response arrives.
-func (m *Multiplexer) UnregisterRequest(msgType uint16, responseChan chan []byte) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	queue, exists := m.pending[msgType]
-	if !exists {
-		return
-	}
-
-	// Find and remove matching request.
-	if _, ok := queue.remove(responseChan); ok {
-		m.requestsInFlight.Add(-1)
-		return
-	}
 }
 
 func (m *Multiplexer) UnregisterRequestWaiter(msgType uint16, waiter *requestWaiter) bool {
@@ -345,36 +365,7 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	m.requestsInFlight.Add(-1)
 	m.responsesTotal.Add(1)
 
-	// Deliver on a fast path first; if the consumer is slow, wait off the
-	// dispatch loop so response routing stays responsive under backpressure.
-	if req.waiter != nil {
-		req.waiter.deliver(payload)
-		return
-	}
-
-	select {
-	case req.responseChan <- payload:
-		// Success - response delivered immediately.
-	default:
-		go m.deliverResponse(req.responseChan, append([]byte(nil), payload...))
-	}
-}
-
-func (m *Multiplexer) deliverResponse(responseChan chan []byte, payload []byte) {
-	timer := time.NewTimer(100 * time.Millisecond)
-	defer timer.Stop()
-	defer func() {
-		if recover() != nil {
-			m.responsesDropped.Add(1)
-		}
-	}()
-
-	select {
-	case responseChan <- payload:
-	case <-timer.C:
-		close(responseChan)
-		m.responsesDropped.Add(1)
-	}
+	req.waiter.deliver(payload)
 }
 
 // handleNotify processes NOTIFY messages (209 Queue, 409 Lease, 504 Notice, 609 Stream).
@@ -576,19 +567,18 @@ func (m *Multiplexer) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Close all pending request channels (signals error to waiters)
+	// Fail all pending waiters so callers unblock on shutdown.
 	for _, queue := range m.pending {
 		for idx := queue.head; idx < len(queue.items); idx++ {
 			req := queue.items[idx]
+			if req.waiter == nil {
+				continue
+			}
 			if req.cancelFunc != nil {
 				req.cancelFunc()
 			}
 			m.requestsInFlight.Add(-1)
-			if req.waiter != nil {
-				req.waiter.fail()
-				continue
-			}
-			close(req.responseChan)
+			req.waiter.fail()
 		}
 	}
 
