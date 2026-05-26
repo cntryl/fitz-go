@@ -32,10 +32,63 @@ func TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled(t *tes
 
 		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("ping"))
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		require.True(t, iter.Next())
 		assert.Equal(t, []byte("ping"), iter.Value().Body)
+	})
+}
+
+func TestShouldRestoreWorkerRegistrationGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		harness := fixture.NewProxyReconnectHarness(t, transport, fixture.AuthModeForTestName(t.Name()))
+		worker := harness.Proxied
+		caller := harness.Stable
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
+
+		route := worker.UniqueRoute("rpc")
+		var err error
+		_, err = worker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+			return w.Send(req.Body)
+		})
+		require.NoError(t, err)
+
+		callAndExpect := func(payload string) {
+			iter, err := caller.Client().RPC().Call(ctx, route, []byte(payload))
+			require.NoError(t, err)
+			defer closeQuietly(iter)
+
+			require.True(t, iter.Next())
+			assert.Equal(t, payload, string(iter.Value().Body))
+			require.NoError(t, iter.Err())
+		}
+
+		callAndExpect("before-disconnect")
+
+		harness.WaitForInitialConnection(5 * time.Second)
+		harness.DropAndWaitForReconnect(10 * time.Second)
+
+		require.Eventually(t, func() bool {
+			iter, err := caller.Client().RPC().Call(ctx, route, []byte("after-disconnect"))
+			if err != nil {
+				return false
+			}
+			defer closeQuietly(iter)
+
+			if !iter.Next() {
+				return false
+			}
+
+			if string(iter.Value().Body) != "after-disconnect" {
+				return false
+			}
+
+			return iter.Err() == nil
+		}, 10*time.Second, 100*time.Millisecond)
 	})
 }
 
@@ -51,7 +104,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 		route := fWorker.UniqueRoute("rpc")
 
 		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				if err := w.Send([]byte{byte(i)}); err != nil {
 					return err
 				}
@@ -63,7 +116,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 
 		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("stream-me"))
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var seqs []uint64
 		for iter.Next() {
@@ -120,7 +173,7 @@ func TestShouldLoadBalanceGivenMultipleWorkersWhenConcurrentRequests(t *testing.
 		require.NoError(t, err)
 		defer sub2.Deregister()
 
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("req"))
 			require.NoError(t, err)
 			for iter.Next() {

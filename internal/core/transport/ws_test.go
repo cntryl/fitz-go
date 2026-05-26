@@ -4,7 +4,7 @@ package transport
 import (
 	"bufio"
 	"context"
-	"errors"
+	"net"
 	"net/url"
 	"testing"
 	"time"
@@ -236,11 +236,11 @@ func TestShouldParseWSURLGivenURLStringWhenURLParsed(t *testing.T) {
 		assert.Equal(t, "wss", u.Scheme)
 	})
 
-	t.Run("invalid url", func(t *testing.T) {
+	t.Run("non-websocket scheme", func(t *testing.T) {
 		// Arrange
 
 		// Act
-		_, err := url.Parse("ht!tp://invalid")
+		_, err := DialWebSocket(context.Background(), "http://localhost:4090/ws")
 
 		// Assert
 		require.Error(t, err)
@@ -263,7 +263,37 @@ func TestShouldTimeoutReadGivenShortDeadlineWhenWSReadCalled(t *testing.T) {
 
 	// Assert
 	assert.Error(t, err)
-	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestShouldCancelReadGivenCanceledContextWithoutDeadlineWhenWSReadCalled(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+	transport := &WebSocketTransport{
+		conn:   clientConn,
+		reader: bufio.NewReader(clientConn),
+		addr:   "ws://pipe",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := transport.Read(ctx)
+		result <- err
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-result:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("Read did not return after context cancellation")
+	}
 }
 
 // TestShouldCloseGracefullyGivenOpenWSTransportWhenCloseCalled tests WebSocket close behavior.
@@ -309,7 +339,7 @@ func TestShouldRejectWriteGivenCanceledContextWhenWSWriteCalled(t *testing.T) {
 
 	// Assert
 	assert.Error(t, err)
-	assert.True(t, errors.Is(err, context.Canceled))
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 // Mock WebSocket connection is now provided by testkit.MockWSConn from internal/testkit package
@@ -325,7 +355,7 @@ func BenchmarkWriteWSFrame(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = transport.Write(context.Background(), payload)
 		}
 	})
@@ -339,7 +369,7 @@ func BenchmarkWriteWSFrame(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = transport.Write(context.Background(), payload)
 		}
 	})
@@ -355,7 +385,7 @@ func BenchmarkReadWSFrame(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = transport.Read(context.Background())
 	}
 }

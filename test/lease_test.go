@@ -117,14 +117,21 @@ func TestShouldExpireLeaseGivenTTLElapsedWhenNoRenew(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("lease")
-		l, err := f.Client().Lease().Acquire(ctx, route, 2)
+		l, err := f.Client().Lease().Acquire(ctx, route, 1)
 		require.NoError(t, err)
 		require.NotNil(t, l)
 
-		time.Sleep(3 * time.Second)
+		time.Sleep(1 * time.Second)
 
-		l2, err := f.Client().Lease().Acquire(ctx, route, 30)
-		require.NoError(t, err)
+		var l2 *fitz.Lease
+		require.Eventually(t, func() bool {
+			candidate, err := f.Client().Lease().Acquire(ctx, route, 30)
+			if err != nil || candidate == nil {
+				return false
+			}
+			l2 = candidate
+			return true
+		}, 3*time.Second, 100*time.Millisecond)
 		require.NotNil(t, l2)
 		assert.Greater(t, l2.ExpiresAt, time.Now().Unix()-1)
 	})
@@ -177,5 +184,56 @@ func TestShouldNotifyGivenSubscriptionWhenLeaseReleased(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for lease change notification")
 		}
+	})
+}
+
+func TestShouldRestoreLeaseSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		harness := fixture.NewProxyReconnectHarness(t, transport, fixture.AuthModeForTestName(t.Name()))
+		subscriber := harness.Proxied
+		actor := harness.Stable
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
+
+		route := subscriber.UniqueRoute("lease")
+		var err error
+		notifications := make(chan string, 4)
+		_, err = subscriber.Client().Lease().Subscribe(ctx, route, func(_ context.Context, notif fitz.LeaseChangeNotification) error {
+			notifications <- notif.Route
+			return nil
+		})
+		require.NoError(t, err)
+
+		triggerChange := func() {
+			lease, err := actor.Client().Lease().Acquire(ctx, route, 30)
+			require.NoError(t, err)
+			require.NoError(t, lease.Release(ctx))
+		}
+
+		triggerChange()
+
+		select {
+		case notifiedRoute := <-notifications:
+			require.Equal(t, route, notifiedRoute)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for initial lease change notification")
+		}
+
+		harness.WaitForInitialConnection(5 * time.Second)
+		harness.DropAndWaitForReconnect(10 * time.Second)
+
+		require.Eventually(t, func() bool {
+			triggerChange()
+
+			select {
+			case notifiedRoute := <-notifications:
+				return notifiedRoute == route
+			default:
+				return false
+			}
+		}, 10*time.Second, 100*time.Millisecond)
 	})
 }

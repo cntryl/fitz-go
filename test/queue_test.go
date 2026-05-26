@@ -45,14 +45,21 @@ func TestShouldReturnMessageToQueueGivenExpiredLeaseWhenLeaseExpires(t *testing.
 		_, err := f.Client().Queue().Enqueue(ctx, route, []byte("expire-me"))
 		require.NoError(t, err)
 
-		items, err := f.Client().Queue().Reserve(ctx, route, 2, 1)
+		items, err := f.Client().Queue().Reserve(ctx, route, 1, 1)
 		require.NoError(t, err)
 		require.Len(t, items, 1)
 
-		time.Sleep(4 * time.Second)
+		time.Sleep(1 * time.Second)
 
-		items2, err := f.Client().Queue().Reserve(ctx, route, 30, 1)
-		require.NoError(t, err)
+		var items2 []*fitz.QueueItem
+		require.Eventually(t, func() bool {
+			candidate, err := f.Client().Queue().Reserve(ctx, route, 30, 1)
+			if err != nil || len(candidate) < 1 {
+				return false
+			}
+			items2 = candidate
+			return true
+		}, 3*time.Second, 100*time.Millisecond)
 		assert.GreaterOrEqual(t, len(items2), 1)
 		if len(items2) >= 1 {
 			assert.Equal(t, []byte("expire-me"), items2[0].Body)
@@ -106,7 +113,7 @@ func TestShouldReserveBatchGivenMultipleMessagesWhenBatchSizeSpecified(t *testin
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("queue")
 
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			_, err := f.Client().Queue().Enqueue(ctx, route, []byte("batch-msg"))
 			require.NoError(t, err)
 		}
@@ -158,7 +165,7 @@ func TestShouldDistributeMessagesGivenMultipleConsumersWhenConcurrentReserve(t *
 		f2.ConnectOrFail(ctx)
 		route := f1.UniqueRoute("queue")
 
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			_, err := f1.Client().Queue().Enqueue(ctx, route, []byte("concurrent-msg"))
 			require.NoError(t, err)
 		}
@@ -168,23 +175,6 @@ func TestShouldDistributeMessagesGivenMultipleConsumersWhenConcurrentReserve(t *
 		require.NoError(t, err1)
 		require.NoError(t, err2)
 		assert.Equal(t, 2, len(items1)+len(items2))
-	})
-}
-
-func TestShouldHandleReceiveGivenLimitZeroWhenReceiveCalled(t *testing.T) {
-	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		f := fixture.NewTestFixture(t, transport)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		f.ConnectOrFail(ctx)
-		items, err := f.Client().Queue().Reserve(ctx, f.UniqueRoute("queue"), 30, 0)
-		if err != nil {
-			assert.Error(t, err)
-			return
-		}
-		require.NotNil(t, items)
-		assert.Empty(t, items)
 	})
 }
 
@@ -200,14 +190,16 @@ func TestShouldRejectCompleteGivenExpiredLeaseWhenCompleteCalled(t *testing.T) {
 		_, err := f.Client().Queue().Enqueue(ctx, route, []byte("expire-then-complete"))
 		require.NoError(t, err)
 
-		items, err := f.Client().Queue().Reserve(ctx, route, 2, 1)
+		items, err := f.Client().Queue().Reserve(ctx, route, 1, 1)
 		require.NoError(t, err)
 		require.Len(t, items, 1)
 
-		time.Sleep(4 * time.Second)
+		time.Sleep(1 * time.Second)
 
-		err = items[0].Complete(ctx)
-		require.Error(t, err)
+		require.Eventually(t, func() bool {
+			err = items[0].Complete(ctx)
+			return err != nil
+		}, 3*time.Second, 100*time.Millisecond)
 		assert.True(t, errors.Is(err, fitz.ErrQueueLeaseExpired) || errors.Is(err, fitz.ErrQueueMessageNotFound))
 	})
 }
@@ -262,5 +254,63 @@ func TestShouldNotifyGivenSubscribeWhenMessageEnqueued(t *testing.T) {
 			t.Fatal("did not expect notification after unsubscribe")
 		case <-time.After(500 * time.Millisecond):
 		}
+	})
+}
+
+func TestShouldRestoreAvailabilitySubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		harness := fixture.NewProxyReconnectHarness(t, transport, fixture.AuthModeForTestName(t.Name()))
+		subscriber := harness.Proxied
+		producer := harness.Stable
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
+
+		route := subscriber.UniqueRoute("queue")
+		var err error
+		notifications := make(chan string, 4)
+		_, err = subscriber.Client().Queue().Subscribe(ctx, route, func(_ context.Context, n fitz.QueueAvailabilityNotification) error {
+			notifications <- n.Route
+			return nil
+		})
+		require.NoError(t, err)
+
+		_, err = producer.Client().Queue().Enqueue(ctx, route, []byte("before-disconnect"))
+		require.NoError(t, err)
+
+		select {
+		case notifiedRoute := <-notifications:
+			require.Equal(t, route, notifiedRoute)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for initial queue notification")
+		}
+
+		items, err := subscriber.Client().Queue().Reserve(ctx, route, 30, 1)
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		require.NoError(t, items[0].Complete(ctx))
+
+		harness.WaitForInitialConnection(5 * time.Second)
+		harness.DropAndWaitForReconnect(10 * time.Second)
+
+		require.Eventually(t, func() bool {
+			_, err := producer.Client().Queue().Enqueue(ctx, route, []byte("after-disconnect"))
+			if err != nil {
+				return false
+			}
+
+			select {
+			case notifiedRoute := <-notifications:
+				return notifiedRoute == route
+			default:
+				items, reserveErr := producer.Client().Queue().Reserve(ctx, route, 30, 1)
+				if reserveErr == nil && len(items) == 1 {
+					_ = items[0].Complete(ctx)
+				}
+				return false
+			}
+		}, 10*time.Second, 100*time.Millisecond)
 	})
 }

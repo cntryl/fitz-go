@@ -4,6 +4,7 @@ package kv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -72,7 +73,7 @@ func (c *client) Begin(ctx context.Context, route string, durability uint8, opts
 	ctx, span := conn.Tracer().Start(ctx, "fitz.kv.Begin", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := conn.Logger(); log != nil {
-		log.Debug("kv.Begin", "route", route)
+		log.DebugContext(ctx, "kv.Begin", "route", route)
 	}
 
 	// Validate route format
@@ -107,7 +108,7 @@ func (c *client) Begin(ctx context.Context, route string, durability uint8, opts
 		return nil, fmt.Errorf("BEGIN failed: %w", mapKVError(err))
 	}
 	if !success {
-		recordErr := fmt.Errorf("BEGIN failed: unexpected status")
+		recordErr := errors.New("BEGIN failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr

@@ -1,4 +1,3 @@
-//nolint:errcheck,unparam
 package client
 
 import (
@@ -12,10 +11,13 @@ import (
 	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/iter"
 	"github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/domains/kv"
 	"github.com/cntryl/fitz-go/internal/domains/notice"
+	"github.com/cntryl/fitz-go/internal/domains/rpc"
 	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
@@ -23,6 +25,27 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
+
+type cleanupRPCClient struct {
+	once     sync.Once
+	called   chan struct{}
+	callErr  error
+	callIter iter.Iterator[rpc.ResponseFrame]
+}
+
+func (c *cleanupRPCClient) RegisterWorker(context.Context, string, rpc.RPCHandler) (*rpc.Subscription, error) {
+	return nil, nil
+}
+
+func (c *cleanupRPCClient) Call(context.Context, string, []byte) (iter.Iterator[rpc.ResponseFrame], error) {
+	return c.callIter, c.callErr
+}
+
+func (c *cleanupRPCClient) ClosePendingRPCs() {
+	c.once.Do(func() {
+		close(c.called)
+	})
+}
 
 func TestShouldCreateClientGivenAddressWhenNewClientCalled(t *testing.T) {
 	// Arrange
@@ -114,6 +137,172 @@ func TestShouldReturnNilGivenNoConnectionWhenCloseCalledTwice(t *testing.T) {
 	require.NoError(t, err2)
 }
 
+func TestShouldClosePendingRPCsGivenConnectionLossWhenMonitorConnectionEnds(t *testing.T) {
+	transport := testkit.NewMockTransport()
+	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	called := make(chan struct{})
+	c := &Client{
+		config:    &Config{ReconnectEnabled: false},
+		rpcClient: &cleanupRPCClient{called: called},
+	}
+	c.conn.Store(conn)
+
+	done := make(chan struct{})
+	go func() {
+		c.monitorConnection(conn)
+		close(done)
+	}()
+
+	require.NoError(t, conn.Close())
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("expected pending RPC cleanup on connection loss")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("monitorConnection did not return")
+	}
+}
+
+func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t *testing.T) {
+	oldTransport := testkit.NewMockTransport()
+	oldConn := connection.New(oldTransport, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, oldConn.Start(context.Background()))
+	t.Cleanup(func() {
+		_ = oldConn.Close()
+	})
+
+	newTransport := testkit.NewMockTransport()
+	newConn := connection.New(newTransport, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, newConn.Start(context.Background()))
+	t.Cleanup(func() {
+		_ = newConn.Close()
+	})
+
+	called := make(chan struct{})
+	c := &Client{
+		config:    &Config{ReconnectEnabled: true},
+		rpcClient: &cleanupRPCClient{called: called},
+	}
+	c.conn.Store(newConn)
+
+	done := make(chan struct{})
+	go func() {
+		c.monitorConnection(oldConn)
+		close(done)
+	}()
+
+	require.NoError(t, oldConn.Close())
+
+	select {
+	case <-called:
+		t.Fatal("stale connection unexpectedly triggered pending RPC cleanup")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("monitorConnection did not return for stale connection")
+	}
+}
+
+func TestShouldClosePendingRPCsGivenClientShutdownWhenMonitorConnectionEnds(t *testing.T) {
+	transport := testkit.NewMockTransport()
+	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+
+	called := make(chan struct{})
+	c := &Client{
+		config:    &Config{ReconnectEnabled: true},
+		rpcClient: &cleanupRPCClient{called: called},
+	}
+	c.conn.Store(conn)
+
+	done := make(chan struct{})
+	go func() {
+		c.monitorConnection(conn)
+		close(done)
+	}()
+
+	require.NoError(t, c.Close())
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("expected pending RPC cleanup during client shutdown")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("monitorConnection did not return during client shutdown")
+	}
+}
+
+func TestShouldAllowManualReconnectGivenConnectionLossWhenReconnectDisabled(t *testing.T) {
+	firstTransport := newScriptedTransport()
+	secondTransport := newScriptedTransport()
+
+	originalDialTCP := dialTCPTransport
+	originalDialWS := dialWebSocketTransport
+	defer func() {
+		dialTCPTransport = originalDialTCP
+		dialWebSocketTransport = originalDialWS
+	}()
+
+	transports := []transport.Transport{firstTransport, secondTransport}
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		if len(transports) == 0 {
+			return nil, errors.New("no transports remaining")
+		}
+		next := transports[0]
+		transports = transports[1:]
+		return next, nil
+	}
+
+	c := NewClient("localhost:4091", func(context.Context) (string, error) {
+		return "token-1", nil
+	})
+	c.config.AuthSettleDelay = 20 * time.Millisecond
+	c.config.ReconnectEnabled = false
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, c.Connect(ctx))
+	t.Cleanup(func() {
+		_ = c.Close()
+	})
+
+	initialConn := c.currentConnection()
+	require.NotNil(t, initialConn)
+
+	require.NoError(t, initialConn.Close())
+	require.Eventually(t, func() bool {
+		return c.currentConnection() == nil
+	}, time.Second, 20*time.Millisecond)
+
+	require.NoError(t, c.Connect(ctx))
+	require.NotNil(t, c.currentConnection())
+	assert.NotEqual(t, initialConn, c.currentConnection())
+
+	writtenFrames := secondTransport.WrittenFrames()
+	require.Len(t, writtenFrames, 1)
+	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
+	require.NoError(t, err)
+	assert.Equal(t, protocol.MessageTypeConnect, connectType)
+	assert.Equal(t, []byte("token-1"), connectPayload)
+}
+
 func TestShouldRejectSecondConnectGivenExistingConnectionWhenConnectCalled(t *testing.T) {
 	originalDialTCP := dialTCPTransport
 	defer func() {
@@ -132,7 +321,7 @@ func TestShouldRejectSecondConnectGivenExistingConnectionWhenConnectCalled(t *te
 	defer cancel()
 
 	require.NoError(t, c.Connect(ctx))
-	defer c.Close()
+	defer closeQuietly(c)
 
 	err := c.Connect(ctx)
 	require.ErrorIs(t, err, ErrClientAlreadyConnected)
@@ -176,6 +365,15 @@ func TestShouldUseDefaultAsyncHandlerMaxConcurrencyGivenNoOptionWhenNewClientCre
 	assert.Equal(t, 256, c.config.AsyncHandlerMaxConcurrency)
 }
 
+func TestShouldUseDefaultMaxInFlightRequestsGivenNoOptionWhenNewClientCreated(t *testing.T) {
+	// Act
+	c := NewClient("localhost:4091", nil)
+
+	// Assert
+	require.NotNil(t, c.config)
+	assert.Equal(t, 256, c.config.MaxInFlightRequests)
+}
+
 func TestShouldApplyAsyncHandlerMaxConcurrencyOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {
 	// Arrange
 	customMax := 64
@@ -186,6 +384,18 @@ func TestShouldApplyAsyncHandlerMaxConcurrencyOptionGivenOverrideWhenNewClientWi
 	// Assert
 	require.NotNil(t, c.config)
 	assert.Equal(t, customMax, c.config.AsyncHandlerMaxConcurrency)
+}
+
+func TestShouldApplyMaxInFlightRequestsOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {
+	// Arrange
+	customMax := 7
+
+	// Act
+	c := NewClientWithOptions("localhost:4091", nil, WithMaxInFlightRequests(customMax))
+
+	// Assert
+	require.NotNil(t, c.config)
+	assert.Equal(t, customMax, c.config.MaxInFlightRequests)
 }
 
 func TestShouldApplyMeterOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {

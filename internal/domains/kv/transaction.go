@@ -1,8 +1,8 @@
-//nolint:gosec,dupl
 package kv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 
@@ -92,12 +92,12 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 		return nil, false, fmt.Errorf("get failed: %w", mapKVError(err))
 	}
 	if !success {
-		return nil, false, fmt.Errorf("get failed: unexpected status")
+		return nil, false, errors.New("get failed: unexpected status")
 	}
 
 	// Parse GET-specific response: [found][value_len?][value?]
 	if len(remaining) < 1 {
-		return nil, false, fmt.Errorf("invalid get response: expected at least 1 byte for found flag")
+		return nil, false, errors.New("invalid get response: expected at least 1 byte for found flag")
 	}
 
 	found := remaining[0] == 1
@@ -108,7 +108,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 
 	// Extract value
 	if len(remaining) < 5 { // found(1) + value_len(4)
-		return nil, false, fmt.Errorf("invalid get response: missing value length")
+		return nil, false, errors.New("invalid get response: missing value length")
 	}
 
 	valueLen, offset, err := connection.ReadU32BE(remaining, 1)
@@ -117,7 +117,7 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 	}
 
 	if len(remaining) < offset+int(valueLen) {
-		return nil, false, fmt.Errorf("invalid get response: truncated value")
+		return nil, false, errors.New("invalid get response: truncated value")
 	}
 
 	value := make([]byte, valueLen)
@@ -167,7 +167,7 @@ func (t *transaction) Put(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("put failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("put failed: unexpected status")
+		return errors.New("put failed: unexpected status")
 	}
 
 	return nil
@@ -214,7 +214,7 @@ func (t *transaction) Insert(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("insert failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("insert failed: unexpected status")
+		return errors.New("insert failed: unexpected status")
 	}
 
 	return nil
@@ -258,7 +258,7 @@ func (t *transaction) Delete(ctx context.Context, key []byte) error {
 		return fmt.Errorf("delete failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("delete failed: unexpected status")
+		return errors.New("delete failed: unexpected status")
 	}
 
 	return nil
@@ -305,7 +305,7 @@ func (t *transaction) DeleteRange(ctx context.Context, startKey, endKey []byte) 
 		return fmt.Errorf("delete_range failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("delete_range failed: unexpected status")
+		return errors.New("delete_range failed: unexpected status")
 	}
 
 	return nil
@@ -345,7 +345,7 @@ func (t *transaction) Scan(ctx context.Context, query ScanQuery) (iter.Iterator[
 		return nil, false, fmt.Errorf("scan failed: %w", mapKVError(err))
 	}
 	if !success {
-		return nil, false, fmt.Errorf("scan failed: unexpected status")
+		return nil, false, errors.New("scan failed: unexpected status")
 	}
 
 	// Parse SCAN response: [item_count][items...][has_more]
@@ -362,7 +362,7 @@ func (t *transaction) Scan(ctx context.Context, query ScanQuery) (iter.Iterator[
 // Response: [item_count][key_len][key][value_len][value]...[has_more]
 func parseScanResponse(remaining []byte) ([]KVPair, bool, error) {
 	if len(remaining) < 4 { // item_count(4)
-		return nil, false, fmt.Errorf("invalid scan response: too short")
+		return nil, false, errors.New("invalid scan response: too short")
 	}
 
 	itemCount, offset, err := connection.ReadU32BE(remaining, 0)
@@ -372,7 +372,7 @@ func parseScanResponse(remaining []byte) ([]KVPair, bool, error) {
 
 	pairs := make([]KVPair, 0, itemCount)
 
-	for i := uint32(0); i < itemCount; i++ {
+	for i := range itemCount {
 		// Parse key
 		if offset+4 > len(remaining) {
 			return nil, false, fmt.Errorf("truncated key length at item %d", i)
@@ -412,7 +412,7 @@ func parseScanResponse(remaining []byte) ([]KVPair, bool, error) {
 
 	// Parse has_more flag
 	if offset+1 > len(remaining) {
-		return nil, false, fmt.Errorf("missing has_more flag")
+		return nil, false, errors.New("missing has_more flag")
 	}
 	var hasMore bool
 	switch remaining[offset] {
@@ -459,7 +459,7 @@ func (t *transaction) Commit(ctx context.Context) error {
 		return fmt.Errorf("commit failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("commit failed: unexpected status")
+		return errors.New("commit failed: unexpected status")
 	}
 
 	// Mark transaction as committed
@@ -477,7 +477,7 @@ func (t *transaction) Rollback(ctx context.Context) error {
 	defer span.End()
 	// Validate state (allow rollback even if committed)
 	if t.rolledback.Load() {
-		return fmt.Errorf("transaction already rolled back")
+		return errors.New("transaction already rolled back")
 	}
 
 	// Encode request
@@ -493,7 +493,7 @@ func (t *transaction) Rollback(ctx context.Context) error {
 		return fmt.Errorf("rollback failed: %w", mapKVError(err))
 	}
 	if !success {
-		return fmt.Errorf("rollback failed: unexpected status")
+		return errors.New("rollback failed: unexpected status")
 	}
 
 	// Mark transaction as rolled back
@@ -505,10 +505,10 @@ func (t *transaction) Rollback(ctx context.Context) error {
 // checkState validates transaction state before operations.
 func (t *transaction) checkState() error {
 	if t.committed.Load() {
-		return fmt.Errorf("transaction already committed")
+		return errors.New("transaction already committed")
 	}
 	if t.rolledback.Load() {
-		return fmt.Errorf("transaction already rolled back")
+		return errors.New("transaction already rolled back")
 	}
 	return nil
 }

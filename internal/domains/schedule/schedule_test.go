@@ -33,7 +33,7 @@ func TestShouldMapScheduleErrorGivenBrokerMessageWhenMapScheduleErrorCalled(t *t
 
 		// Assert
 		var domainErr *coreerrors.DomainError
-		assert.True(t, errors.As(mapped, &domainErr))
+		assert.ErrorAs(t, mapped, &domainErr)
 		assert.Equal(t, uint32(coreerrors.ScheduleInvalidCron), uint32(domainErr.Code))
 	})
 
@@ -45,7 +45,7 @@ func TestShouldMapScheduleErrorGivenBrokerMessageWhenMapScheduleErrorCalled(t *t
 		mapped := mapScheduleError(errMsg)
 
 		// Assert
-		assert.NotNil(t, mapped)
+		assert.Error(t, mapped)
 		assert.Equal(t, errMsg, mapped)
 	})
 
@@ -57,7 +57,7 @@ func TestShouldMapScheduleErrorGivenBrokerMessageWhenMapScheduleErrorCalled(t *t
 		mapped := mapScheduleError(errMsg)
 
 		// Assert
-		assert.NotNil(t, mapped)
+		assert.Error(t, mapped)
 		assert.Equal(t, errMsg, mapped)
 	})
 }
@@ -105,7 +105,7 @@ func TestShouldDefineScheduleOpcodesGivenConstantsWhenRead(t *testing.T) {
 // TestShouldDefineScheduleErrors tests that Schedule error variables are defined.
 func TestShouldDefineScheduleErrorsGivenSentinelValuesWhenRead(t *testing.T) {
 	t.Run("schedule not found error", func(t *testing.T) {
-		assert.NotNil(t, ErrScheduleNotFound)
+		assert.Error(t, ErrScheduleNotFound)
 		assert.Equal(t, "schedule not found", ErrScheduleNotFound.Error())
 	})
 }
@@ -173,7 +173,7 @@ func BenchmarkEncodeScheduleCreate(b *testing.B) {
 	defer connection.PutBuffer(buf)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		w(buf)
 	}
@@ -186,7 +186,7 @@ func BenchmarkEncodeScheduleCancel(b *testing.B) {
 	defer connection.PutBuffer(buf)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		w(buf)
 	}
@@ -198,7 +198,7 @@ func BenchmarkEncodeScheduleList(b *testing.B) {
 	defer connection.PutBuffer(buf)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		w(buf)
 	}
@@ -211,7 +211,7 @@ func BenchmarkEncodeScheduleSubscribe(b *testing.B) {
 	defer connection.PutBuffer(buf)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		w(buf)
 	}
@@ -224,7 +224,7 @@ func BenchmarkEncodeScheduleUnsubscribe(b *testing.B) {
 	defer connection.PutBuffer(buf)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		w(buf)
 	}
@@ -235,7 +235,7 @@ func BenchmarkParseScheduleCreateResponse(b *testing.B) {
 	payload := []byte{0}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _, _ = connection.ParseStandardResponse(payload)
 	}
 }
@@ -248,7 +248,7 @@ func BenchmarkParseScheduleSubscribeResponse(b *testing.B) {
 	binary.BigEndian.PutUint64(payload[2:10], 1)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		success, remaining, _ := connection.ParseStandardResponse(payload)
 		if success && len(remaining) >= 9 && remaining[0] == 1 {
 			_, _, _ = connection.ReadU64BE(remaining, 1)

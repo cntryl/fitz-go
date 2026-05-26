@@ -50,12 +50,18 @@ type Iterator[T any] interface {
 //	    fmt.Printf("%s: %s\n", kv.Key, kv.Value)
 //	    return nil
 //	})
-func ForEach[T any](it Iterator[T], fn func(T) error) error {
-	defer it.Close()
+func ForEach[T any](it Iterator[T], fn func(T) error) (retErr error) {
+	defer func() {
+		if closeErr := it.Close(); retErr == nil && closeErr != nil {
+			retErr = closeErr
+		}
+	}()
+
 	for it.Next() {
 		if err := fn(it.Value()); err != nil {
 			return err
 		}
 	}
+
 	return it.Err()
 }

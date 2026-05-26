@@ -3,6 +3,8 @@ package transport
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 )
 
 // Transport abstracts WebSocket and TCP framing per CLIENT_SPEC.md.
@@ -11,11 +13,11 @@ import (
 type Transport interface {
 	// Write sends a complete TLV frame to the server.
 	// The frame must be fully encoded before calling Write.
-	// Returns error if connection is broken or context is cancelled.
+	// Returns error if connection is broken or context is canceled.
 	Write(ctx context.Context, frame []byte) error
 
 	// Read blocks until the next complete frame arrives.
-	// MUST return immediately when ctx is cancelled (not wait for next frame).
+	// MUST return immediately when ctx is canceled (not wait for next frame).
 	// Returns io.EOF when connection is closed gracefully.
 	// Returns ErrFrameTooLarge if frame exceeds MaxFrameSize.
 	Read(ctx context.Context) ([]byte, error)
@@ -41,3 +43,28 @@ var (
 // Prevents OOM attacks from malicious or buggy servers.
 // Per CLIENT_SPEC.md safety requirements.
 const MaxFrameSize = 16 * 1024 * 1024 // 16 MB
+
+func bindConnDeadlineToContext(ctx context.Context, setDeadline func(time.Time) error) (func() error, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := setDeadline(deadline); err != nil {
+			return nil, err
+		}
+	}
+
+	var mu sync.Mutex
+	stop := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = setDeadline(time.Now())
+	})
+
+	return func() error {
+		stop()
+		mu.Lock()
+		defer mu.Unlock()
+		return setDeadline(time.Time{})
+	}, nil
+}

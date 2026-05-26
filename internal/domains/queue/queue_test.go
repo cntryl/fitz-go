@@ -1,15 +1,104 @@
-//nolint:gosec
 package queue
 
 import (
+	"context"
 	"encoding/binary"
 	"io"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/subscriptions"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type scriptedRestoreTransport struct {
+	mu      sync.Mutex
+	written [][]byte
+	readCh  chan []byte
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newScriptedRestoreTransport() *scriptedRestoreTransport {
+	return &scriptedRestoreTransport{
+		readCh: make(chan []byte, 8),
+		closed: make(chan struct{}),
+	}
+}
+
+func (s *scriptedRestoreTransport) Write(ctx context.Context, frame []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.closed:
+		return connection.ErrConnectionClosed
+	default:
+	}
+	s.mu.Lock()
+	s.written = append(s.written, append([]byte(nil), frame...))
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *scriptedRestoreTransport) Read(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.closed:
+		return nil, connection.ErrConnectionClosed
+	case frame := <-s.readCh:
+		return append([]byte(nil), frame...), nil
+	}
+}
+
+func (s *scriptedRestoreTransport) Close() error {
+	s.once.Do(func() {
+		close(s.closed)
+	})
+	return nil
+}
+
+func (s *scriptedRestoreTransport) RemoteAddr() string {
+	return "scripted://queue"
+}
+
+func (s *scriptedRestoreTransport) enqueue(frame []byte) {
+	s.readCh <- append([]byte(nil), frame...)
+}
+
+func queueRestoreFrame(t *testing.T, msgType uint16, payload []byte) []byte {
+	t.Helper()
+	frame := protocol.EncodeFrameOwned(msgType, payload)
+	defer frame.Release()
+	return append([]byte(nil), frame.Bytes()...)
+}
+
+func queueSubscribeResponsePayload(subID uint64) []byte {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	buf.WriteByte(0)
+	connection.WriteU64BE(buf, subID)
+	return append([]byte(nil), buf.Bytes()...)
+}
+
+func waitForRestoreWrites(t *testing.T, trans *scriptedRestoreTransport, expected int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		trans.mu.Lock()
+		defer trans.mu.Unlock()
+		return len(trans.written) >= expected
+	}, time.Second, 10*time.Millisecond)
+}
+
+func restoreWriteCount(trans *scriptedRestoreTransport) int {
+	trans.mu.Lock()
+	defer trans.mu.Unlock()
+	return len(trans.written)
+}
 
 // TestShouldEncodeEnqueueWithoutDelay tests ENQUEUE encoding without delay.
 func TestShouldEncodeEnqueueWithoutDelayGivenImmediateMessageWhenEncodeEnqueueCalled(t *testing.T) {
@@ -126,7 +215,7 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 
 		// Assert
 		require.NotNil(t, payload)
-		require.Greater(t, len(payload), 0)
+		require.NotEmpty(t, payload)
 
 		// Verify it contains all required fields
 		offset := 0
@@ -271,6 +360,46 @@ func TestShouldParseQueueResponseGivenBrokerPayloadWhenParseQueueResponseCalled(
 	})
 }
 
+func TestShouldRollbackActiveSubscriptionsGivenRestoreFailureWhenRestoreSubscriptionsCalled(t *testing.T) {
+	trans := newScriptedRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+	baseWrites := restoreWriteCount(trans)
+
+	c := &client{conn: conn, subscriptions: subscriptions.NewRegistry[AvailabilityHandler]()}
+	_, _, err := c.subscriptions.Subscribe("queue://realm/area/alpha", func(context.Context, AvailabilityNotification) error { return nil }, func(string) (uint64, error) {
+		return 21, nil
+	})
+	require.NoError(t, err)
+	_, _, err = c.subscriptions.Subscribe("queue://realm/area/bravo", func(context.Context, AvailabilityNotification) error { return nil }, func(string) (uint64, error) {
+		return 22, nil
+	})
+	require.NoError(t, err)
+
+	go func() {
+		waitForRestoreWrites(t, trans, baseWrites+1)
+		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueSubscribe, queueSubscribeResponsePayload(201)))
+		waitForRestoreWrites(t, trans, baseWrites+2)
+		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueSubscribe, []byte{0x01, queueErrCodeQueueNotFound}))
+		waitForRestoreWrites(t, trans, baseWrites+3)
+		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueUnsubscribe, []byte{0x00}))
+	}()
+
+	err = c.RestoreSubscriptions(context.Background())
+	require.Error(t, err)
+	assert.Zero(t, conn.ActiveSubscriptions())
+	assert.Len(t, c.subscriptions.Handlers(21), 1)
+	assert.Len(t, c.subscriptions.Handlers(22), 1)
+	assert.Empty(t, c.subscriptions.Handlers(201))
+	waitForRestoreWrites(t, trans, baseWrites+3)
+	trans.mu.Lock()
+	defer trans.mu.Unlock()
+	assert.Len(t, trans.written, baseWrites+3)
+}
+
 // TestShouldParseQueueSubscriptionID tests queue subscription response parsing.
 func TestShouldParseQueueSubscriptionIDGivenBrokerPayloadWhenParseSubscriptionIDCalled(t *testing.T) {
 	t.Run("raw subscription id", func(t *testing.T) {
@@ -409,7 +538,7 @@ func TestShouldMapQueueErrorGivenBrokerMessageWhenMapQueueErrorCalled(t *testing
 		mapped := mapQueueError(errMsg)
 
 		// Assert
-		require.NotNil(t, mapped)
+		require.Error(t, mapped)
 		assert.Equal(t, errMsg, mapped.Error())
 	})
 }
@@ -423,7 +552,7 @@ func BenchmarkEncodeEnqueue(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeEnqueue(route, body, 0)
 		}
 	})
@@ -434,7 +563,7 @@ func BenchmarkEncodeEnqueue(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeEnqueue(route, body, 0)
 		}
 	})
@@ -445,7 +574,7 @@ func BenchmarkEncodeEnqueue(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeEnqueue(route, body, 3600)
 		}
 	})
@@ -457,7 +586,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeReserve(route, 30, 10)
 		}
 	})
@@ -467,7 +596,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_ = EncodeReserve(route, 30, 0)
 		}
 	})
@@ -480,7 +609,7 @@ func BenchmarkParseQueueResponse(b *testing.B) {
 	b.Run("success response", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _, _ = parseQueueResponse(successPayload)
 		}
 	})
@@ -488,7 +617,7 @@ func BenchmarkParseQueueResponse(b *testing.B) {
 	b.Run("error response", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _, _ = parseQueueResponse(errorPayload)
 		}
 	})
@@ -579,7 +708,7 @@ func BenchmarkEncodeExtend(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeExtend(route, messageID, token, 30)
 		}
 	})
@@ -593,7 +722,7 @@ func BenchmarkEncodeComplete(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodeComplete(route, messageID, token)
 		}
 	})

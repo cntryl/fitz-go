@@ -1,8 +1,9 @@
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
-// Covers all 19 scenarios: the 15 scenarios defined in the cross-language spec plus
-// 4 domain-lifecycle scenarios (CS-016 through CS-019) added in the Go client to close
-// coverage gaps for Queue, Lease, Notice, and Schedule domains:
+// Covers 21 scenarios: the 16 scenarios currently implemented from the
+// cross-language spec plus 5 Go-client scenarios (CS-018 through CS-022) added
+// to close coverage gaps for Queue, Lease, Notice, Schedule, and reconnect
+// restoration behavior:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
 //
@@ -19,13 +20,12 @@
 //	go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
 //	CONFORMANCE_TRANSPORT=ws CONFORMANCE_AUTH_MODE=valid_jwt \
 //	  go test -v -timeout 120s ./test/conformance/... -run TestConformanceSuite
-//
-//nolint:gosec,errcheck
 package conformance
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -364,7 +364,7 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("get: %w", err)
 			}
 			if !result.Found {
-				return VerdictFail, ev, fmt.Errorf("expected Found=true, got false")
+				return VerdictFail, ev, errors.New("expected Found=true, got false")
 			}
 			if string(result.Value) != "Alice" {
 				return VerdictFail, ev, fmt.Errorf("expected 'Alice', got %q", result.Value)
@@ -392,7 +392,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				ev = append(ev, fmt.Sprintf("call to unregistered route returned error: %v", err))
 			} else {
-				defer iter.Close()
+				defer closeQuietly(iter)
 				iter.Next()
 				if iterErr := iter.Err(); iterErr != nil {
 					ev = append(ev, fmt.Sprintf("iterator error on unregistered route: %v", iterErr))
@@ -448,7 +448,7 @@ func TestConformanceSuite(t *testing.T) {
 			_ = tx2.Rollback(ctx)
 
 			if insertErr == nil {
-				return VerdictFail, ev, fmt.Errorf("expected error on duplicate insert, got nil")
+				return VerdictFail, ev, errors.New("expected error on duplicate insert, got nil")
 			}
 			ev = append(ev, fmt.Sprintf("duplicate insert returned error: %v", insertErr))
 
@@ -461,7 +461,7 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, err
 			}
 			if !res.Found {
-				return VerdictFail, ev, fmt.Errorf("expected dup key to still exist")
+				return VerdictFail, ev, errors.New("expected dup key to still exist")
 			}
 			ev = append(ev, "client remains usable after server-rejected operation")
 			return VerdictPass, ev, nil
@@ -487,7 +487,7 @@ func TestConformanceSuite(t *testing.T) {
 				ev = append(ev, fmt.Sprintf("rpc call error type: %T", err))
 				ev = append(ev, fmt.Sprintf("rpc call error: %v", err))
 			} else {
-				defer iter.Close()
+				defer closeQuietly(iter)
 				iter.Next()
 				err = iter.Err()
 				ev = append(ev, fmt.Sprintf("rpc iterator error type: %T", err))
@@ -534,13 +534,13 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				timeoutErr = err
 			} else {
-				defer iter.Close()
+				defer closeQuietly(iter)
 				iter.Next()
 				timeoutErr = iter.Err()
 			}
 
 			if timeoutErr == nil {
-				return VerdictFail, ev, fmt.Errorf("expected timeout error, got success")
+				return VerdictFail, ev, errors.New("expected timeout error, got success")
 			}
 			ev = append(ev, fmt.Sprintf("rpc timed out after ~%dms (error: %v)", elapsed.Milliseconds(), timeoutErr))
 
@@ -596,7 +596,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			iter.Next()
 			iterErr := iter.Err()
-			iter.Close()
+			closeQuietly(iter)
 
 			if iterErr == nil {
 				ev = append(ev, "expected cancellation error, got nil (race: call may have completed)")
@@ -625,14 +625,16 @@ func TestConformanceSuite(t *testing.T) {
 	t.Run("CS-009_disconnect_during_request", func(t *testing.T) {
 		r := run("CS-009", "disconnect during request", "P1", func() (Verdict, []string, error) {
 			var ev []string
-
-			fWorker := connectFixture(t)
-			fCaller := connectFixture(t)
+			harness := fixture.NewProxyReconnectHarness(t, transportType(), authMode())
+			fWorker := harness.Stable
+			fCaller := harness.Proxied
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
+			harness.Connect(ctx)
 
 			route := uniqueRoute("rpc")
-			_, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+			var err error
+			_, err = fWorker.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 				select {
 				case <-workerCtx.Done():
 					return workerCtx.Err()
@@ -644,24 +646,18 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
 
-			callCtx, callCancel := context.WithCancel(ctx)
-			iter, err2 := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
-			if err2 != nil {
-				callCancel()
-				return VerdictFail, ev, fmt.Errorf("rpc call: %w", err2)
+			iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("block"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("rpc call: %w", err)
 			}
 
-			// Close the caller client while the request is in-flight
-			time.Sleep(100 * time.Millisecond)
-			callCancel()
-			if closeErr := fCaller.Client().Close(); closeErr != nil {
-				// Close may fail if already closed â€” acceptable
-				ev = append(ev, fmt.Sprintf("close warning: %v", closeErr))
-			}
+			harness.WaitForInitialConnection(5 * time.Second)
+			harness.Proxy.DropConnections()
+			ev = append(ev, "caller transport dropped via proxy")
 
 			iter.Next()
 			iterErr := iter.Err()
-			iter.Close()
+			closeQuietly(iter)
 
 			if iterErr == nil {
 				ev = append(ev, "WARNING: in-flight request succeeded despite disconnect (race â€” acceptable)")
@@ -680,30 +676,75 @@ func TestConformanceSuite(t *testing.T) {
 	t.Run("CS-010_reconnect_behavior", func(t *testing.T) {
 		r := run("CS-010", "reconnect and retry behavior", "P1", func() (Verdict, []string, error) {
 			var ev []string
-
-			// Verify: create a client, close it, create a new one, confirm requests succeed.
-			// Full auto-reconnect loop requires network control not available in a unit test.
-			f1 := connectFixture(t)
+			harness := fixture.NewProxyReconnectHarness(t, transportType(), authMode())
+			subscriber := harness.Proxied
+			publisher := harness.Stable
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			ev = append(ev, "first client connected")
-			if err := f1.Client().Close(); err != nil {
-				ev = append(ev, fmt.Sprintf("close: %v", err))
-			}
-			ev = append(ev, "first client closed")
+			harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
+			ev = append(ev, "subscriber connected through disconnect proxy")
 
-			f2 := connectFixture(t)
-			route := uniqueRoute("kv")
-			tx, err := f2.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+			route := uniqueRoute("notice")
+			var err error
+			received := make(chan string, 4)
+			_, err = subscriber.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg fitz.NoticeMsg) error {
+				received <- string(msg.Body)
+				return nil
+			})
 			if err != nil {
-				return VerdictFail, ev, fmt.Errorf("new requests failed after reconnect: %w", err)
+				return VerdictFail, ev, fmt.Errorf("subscribe: %w", err)
 			}
-			_ = tx.Put(ctx, []byte("after-reconnect"), []byte("ok"))
-			_ = tx.Commit(ctx)
-			ev = append(ev, "new requests succeed after reconnect (new client)")
-			ev = append(ev, "NOTE: full auto-reconnect loop requires network-level disconnection not provided here")
-			return VerdictPass, ev, nil
+
+			if err := publisher.Client().Notice().Publish(ctx, route, []byte("before-disconnect")); err != nil {
+				return VerdictFail, ev, fmt.Errorf("publish before disconnect: %w", err)
+			}
+			select {
+			case body := <-received:
+				if body != "before-disconnect" {
+					return VerdictFail, ev, fmt.Errorf("unexpected pre-disconnect body: %q", body)
+				}
+			case <-time.After(5 * time.Second):
+				return VerdictFail, ev, errors.New("timed out waiting for pre-disconnect delivery")
+			}
+			ev = append(ev, "subscription delivered before disconnect")
+
+			harness.WaitForInitialConnection(5 * time.Second)
+			harness.Proxy.DropConnections()
+			ev = append(ev, "proxy dropped live connection")
+
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				if harness.Proxy.AcceptedCount() >= 2 {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if harness.Proxy.AcceptedCount() < 2 {
+				return VerdictFail, ev, errors.New("client did not reconnect through proxy")
+			}
+			ev = append(ev, "client established a new transport connection")
+
+			published := false
+			for time.Now().Before(deadline) {
+				if err := publisher.Client().Notice().Publish(ctx, route, []byte("after-disconnect")); err == nil {
+					published = true
+				}
+				select {
+				case body := <-received:
+					if body == "after-disconnect" {
+						ev = append(ev, "subscription restored after reconnect")
+						return VerdictPass, ev, nil
+					}
+				default:
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			if !published {
+				return VerdictFail, ev, errors.New("publisher could not publish after reconnect")
+			}
+			return VerdictFail, ev, errors.New("subscription was not restored after reconnect")
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
@@ -739,7 +780,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("stream read: %w", err)
 			}
-			defer iter.Close()
+			defer closeQuietly(iter)
 
 			var offsets []uint64
 			for iter.Next() {
@@ -795,7 +836,7 @@ func TestConformanceSuite(t *testing.T) {
 			for iter.Next() {
 				count++
 			}
-			iter.Close()
+			closeQuietly(iter)
 
 			if count < 2 {
 				ev = append(ev, fmt.Sprintf("expected >=2 records, got %d", count))
@@ -835,7 +876,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			_, appendErr := wrongSession.Append(ctx, 0, []byte("record-2"))
 			if appendErr == nil {
-				return VerdictFail, ev, fmt.Errorf("expected error on wrong expected offset, got nil")
+				return VerdictFail, ev, errors.New("expected error on wrong expected offset, got nil")
 			}
 			ev = append(ev, fmt.Sprintf("append with wrong offset errored: %v", appendErr))
 
@@ -975,25 +1016,115 @@ func TestConformanceSuite(t *testing.T) {
 		}
 	})
 
+	t.Run("CS-017_bounded_concurrency_under_burst_load", func(t *testing.T) {
+		r := run("CS-017", "bounded concurrency under burst load", "P1", func() (Verdict, []string, error) {
+			var ev []string
+
+			f := newFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if err := f.ConnectWithOptions(ctx, fitz.WithMaxInFlightRequests(1)); err != nil {
+				return VerdictFail, ev, fmt.Errorf("connect: %w", err)
+			}
+
+			route := uniqueRoute("rpc")
+			sub, err := f.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+				select {
+				case <-workerCtx.Done():
+					return workerCtx.Err()
+				case <-time.After(500 * time.Millisecond):
+					return w.Send([]byte("delayed"))
+				}
+			})
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
+			}
+			defer sub.Deregister()
+
+			callCtx, callCancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+			defer callCancel()
+
+			ev = append(ev, "registered delayed RPC worker")
+			firstIter, err := f.Client().RPC().Call(callCtx, route, []byte("first"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("first rpc call: %w", err)
+			}
+			defer closeQuietly(firstIter)
+
+			secondIter, err := f.Client().RPC().Call(callCtx, route, []byte("second"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("second rpc call: %w", err)
+			}
+			defer closeQuietly(secondIter)
+
+			firstDoneCh := make(chan error, 1)
+			secondDoneCh := make(chan error, 1)
+
+			go func() {
+				if !firstIter.Next() {
+					firstDoneCh <- firstIter.Err()
+					return
+				}
+				firstDoneCh <- nil
+			}()
+
+			go func() {
+				if !secondIter.Next() {
+					secondDoneCh <- secondIter.Err()
+					return
+				}
+				secondDoneCh <- nil
+			}()
+
+			time.Sleep(100 * time.Millisecond)
+			select {
+			case err := <-secondDoneCh:
+				return VerdictFail, ev, fmt.Errorf("expected second RPC call to remain pending behind the first, got %w", err)
+			default:
+			}
+
+			ev = append(ev, "second RPC call remained pending while first was in flight")
+			ev = append(ev, "configured maxInFlightRequests=1 and burst size=2")
+
+			callCancel()
+			firstErr := <-firstDoneCh
+			secondErr := <-secondDoneCh
+			if firstErr != nil {
+				ev = append(ev, fmt.Sprintf("first RPC call ended with %v", firstErr))
+			}
+			if secondErr != nil {
+				ev = append(ev, fmt.Sprintf("second RPC call ended with %v", secondErr))
+			}
+
+			return VerdictPass, ev, nil
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
 	// -------------------------------------------------------------------------
-	// CS-016 â€“ CS-019: domain lifecycle scenarios not in the cross-language spec
-	// but required to close coverage gaps for Queue, Lease, Notice, Schedule.
+	// CS-018 â€“ CS-022: Go-client scenarios not in the cross-language spec but
+	// required to close coverage gaps for Queue, Lease, Notice, Schedule, and
+	// reconnect restoration behavior.
 	// -------------------------------------------------------------------------
 
-	t.Run("CS-016_queue_enqueue_reserve_complete", func(t *testing.T) {
-		r := run("CS-016", "queue enqueue/reserve/complete lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-018_queue_enqueue_reserve_complete", func(t *testing.T) {
+		r := run("CS-018", "queue enqueue/reserve/complete lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			route := uniqueRoute("queue")
-			msgID, err := f.Client().Queue().Enqueue(ctx, route, []byte("cs016-payload"))
+			msgID, err := f.Client().Queue().Enqueue(ctx, route, []byte("cs018-payload"))
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("enqueue: %w", err)
 			}
 			if msgID == 0 {
-				return VerdictFail, ev, fmt.Errorf("expected non-zero message ID, got 0")
+				return VerdictFail, ev, errors.New("expected non-zero message ID, got 0")
 			}
 			ev = append(ev, fmt.Sprintf("enqueued message ID=%d", msgID))
 
@@ -1004,8 +1135,8 @@ func TestConformanceSuite(t *testing.T) {
 			if len(items) != 1 {
 				return VerdictFail, ev, fmt.Errorf("expected 1 reserved item, got %d", len(items))
 			}
-			if string(items[0].Body) != "cs016-payload" {
-				return VerdictFail, ev, fmt.Errorf("expected 'cs016-payload', got %q", items[0].Body)
+			if string(items[0].Body) != "cs018-payload" {
+				return VerdictFail, ev, fmt.Errorf("expected 'cs018-payload', got %q", items[0].Body)
 			}
 			ev = append(ev, fmt.Sprintf("reserved item body=%q", items[0].Body))
 
@@ -1028,12 +1159,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
-			t.Errorf("CS-016: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("CS-018: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-017_lease_acquire_contention_release", func(t *testing.T) {
-		r := run("CS-017", "lease acquire/contention/release lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-019_lease_acquire_contention_release", func(t *testing.T) {
+		r := run("CS-019", "lease acquire/contention/release lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 
 			f1 := connectFixture(t)
@@ -1047,14 +1178,14 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("acquire: %w", err)
 			}
 			if l1 == nil || l1.ExpiresAt == 0 {
-				return VerdictFail, ev, fmt.Errorf("expected non-nil lease with expiry")
+				return VerdictFail, ev, errors.New("expected non-nil lease with expiry")
 			}
 			ev = append(ev, fmt.Sprintf("client1 acquired lease expiresAt=%d", l1.ExpiresAt))
 
 			// Contention: second client must be rejected
 			l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
 			if err2 == nil && l2 != nil {
-				return VerdictFail, ev, fmt.Errorf("expected contention error but acquire succeeded")
+				return VerdictFail, ev, errors.New("expected contention error but acquire succeeded")
 			}
 			ev = append(ev, fmt.Sprintf("client2 rejected on held lease: %v (correct)", err2))
 
@@ -1069,19 +1200,19 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("acquire after release: %w", err3)
 			}
 			if l3 == nil || l3.ExpiresAt == 0 {
-				return VerdictFail, ev, fmt.Errorf("expected lease after release, got nil")
+				return VerdictFail, ev, errors.New("expected lease after release, got nil")
 			}
 			ev = append(ev, "client2 acquired lease after release (correct)")
 			return VerdictPass, ev, nil
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("CS-019: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-018_notice_subscribe_publish_deliver", func(t *testing.T) {
-		r := run("CS-018", "notice subscribe/publish/deliver lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-020_notice_subscribe_publish_deliver", func(t *testing.T) {
+		r := run("CS-020", "notice subscribe/publish/deliver lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1099,7 +1230,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, "subscribed to route")
 
-			if err := f.Client().Notice().Publish(ctx, route, []byte("cs018-msg")); err != nil {
+			if err := f.Client().Notice().Publish(ctx, route, []byte("cs020-msg")); err != nil {
 				sub.Unsubscribe()
 				return VerdictFail, ev, fmt.Errorf("publish: %w", err)
 			}
@@ -1107,14 +1238,14 @@ func TestConformanceSuite(t *testing.T) {
 
 			select {
 			case body := <-received:
-				if body != "cs018-msg" {
+				if body != "cs020-msg" {
 					sub.Unsubscribe()
-					return VerdictFail, ev, fmt.Errorf("expected 'cs018-msg', got %q", body)
+					return VerdictFail, ev, fmt.Errorf("expected 'cs020-msg', got %q", body)
 				}
 				ev = append(ev, fmt.Sprintf("handler received message body=%q (correct)", body))
 			case <-time.After(5 * time.Second):
 				sub.Unsubscribe()
-				return VerdictFail, ev, fmt.Errorf("timed out waiting for notification delivery")
+				return VerdictFail, ev, errors.New("timed out waiting for notification delivery")
 			}
 
 			// Unsubscribe and verify no further delivery
@@ -1135,12 +1266,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
-			t.Errorf("CS-018: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("CS-020: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-019_schedule_create_subscribe_cancel", func(t *testing.T) {
-		r := run("CS-019", "schedule create/subscribe/cancel lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-021_schedule_create_subscribe_cancel", func(t *testing.T) {
+		r := run("CS-021", "schedule create/subscribe/cancel lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1158,14 +1289,14 @@ func TestConformanceSuite(t *testing.T) {
 			ev = append(ev, "subscribed to schedule route")
 
 			// Create a schedule
-			scheduleID, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("cs019-payload"))
+			scheduleID, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("cs021-payload"))
 			if err != nil {
 				sub.Unsubscribe()
 				return VerdictFail, ev, fmt.Errorf("create: %w", err)
 			}
 			if scheduleID == "" {
 				sub.Unsubscribe()
-				return VerdictFail, ev, fmt.Errorf("expected non-empty schedule ID")
+				return VerdictFail, ev, errors.New("expected non-empty schedule ID")
 			}
 			ev = append(ev, fmt.Sprintf("schedule created id=%q", scheduleID))
 
@@ -1174,7 +1305,7 @@ func TestConformanceSuite(t *testing.T) {
 				sub.Unsubscribe()
 				return VerdictFail, ev, fmt.Errorf("cancel: %w", err)
 			}
-			ev = append(ev, "schedule cancelled")
+			ev = append(ev, "schedule canceled")
 
 			sub.Unsubscribe()
 			ev = append(ev, "unsubscribed")
@@ -1184,7 +1315,92 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-019: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("CS-021: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("CS-022_queue_reconnect_restore", func(t *testing.T) {
+		r := run("CS-022", "queue subscription restore after reconnect", "P1", func() (Verdict, []string, error) {
+			var ev []string
+			harness := fixture.NewProxyReconnectHarness(t, transportType(), authMode())
+			subscriber := harness.Proxied
+			producer := harness.Stable
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
+			ev = append(ev, "subscriber connected through disconnect proxy")
+
+			route := uniqueRoute("queue")
+			notifications := make(chan string, 4)
+			_, err := subscriber.Client().Queue().Subscribe(ctx, route, func(_ context.Context, n fitz.QueueAvailabilityNotification) error {
+				notifications <- n.Route
+				return nil
+			})
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("subscribe: %w", err)
+			}
+
+			_, err = producer.Client().Queue().Enqueue(ctx, route, []byte("before-disconnect"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("enqueue before disconnect: %w", err)
+			}
+			select {
+			case notifiedRoute := <-notifications:
+				if notifiedRoute != route {
+					return VerdictFail, ev, fmt.Errorf("unexpected route before disconnect: %q", notifiedRoute)
+				}
+			case <-time.After(5 * time.Second):
+				return VerdictFail, ev, errors.New("timed out waiting for pre-disconnect queue notification")
+			}
+			ev = append(ev, "queue availability notification delivered before disconnect")
+
+			items, err := subscriber.Client().Queue().Reserve(ctx, route, 30, 1)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("reserve before disconnect: %w", err)
+			}
+			if len(items) != 1 {
+				return VerdictFail, ev, fmt.Errorf("expected 1 reserved item before disconnect, got %d", len(items))
+			}
+			if err := items[0].Complete(ctx); err != nil {
+				return VerdictFail, ev, fmt.Errorf("complete before disconnect: %w", err)
+			}
+			ev = append(ev, "queue edge re-armed after initial notification")
+
+			harness.WaitForInitialConnection(5 * time.Second)
+			harness.DropAndWaitForReconnect(10 * time.Second)
+			ev = append(ev, "proxy dropped live connection and client reconnected")
+
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				_, err := producer.Client().Queue().Enqueue(ctx, route, []byte("after-disconnect"))
+				if err != nil {
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+
+				select {
+				case notifiedRoute := <-notifications:
+					if notifiedRoute == route {
+						ev = append(ev, "queue availability subscription restored after reconnect")
+						return VerdictPass, ev, nil
+					}
+				default:
+					items, reserveErr := producer.Client().Queue().Reserve(ctx, route, 30, 1)
+					if reserveErr == nil && len(items) == 1 {
+						_ = items[0].Complete(ctx)
+					}
+				}
+
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			return VerdictFail, ev, errors.New("queue availability subscription was not restored after reconnect")
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-022: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 }

@@ -176,7 +176,7 @@ func BenchmarkWriteU64(b *testing.B) {
 	buf := bytes.NewBuffer(make([]byte, 0, 32))
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		WriteU64(buf, 0x0102030405060708)
 	}
@@ -186,7 +186,7 @@ func BenchmarkWriteU32(b *testing.B) {
 	buf := bytes.NewBuffer(make([]byte, 0, 16))
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		WriteU32(buf, 0x01020304)
 	}
@@ -197,7 +197,7 @@ func BenchmarkWriteString(b *testing.B) {
 	s := "route://acme/app/example"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		WriteString(buf, s)
 	}
@@ -210,7 +210,7 @@ func BenchmarkWriteBytes(b *testing.B) {
 		buf := bytes.NewBuffer(make([]byte, 0, 64))
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			buf.Reset()
 			WriteBytes(buf, small)
 		}
@@ -219,7 +219,7 @@ func BenchmarkWriteBytes(b *testing.B) {
 		buf := bytes.NewBuffer(make([]byte, 0, 4100))
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			buf.Reset()
 			WriteBytes(buf, large)
 		}
@@ -231,7 +231,7 @@ func BenchmarkWriteRoute(b *testing.B) {
 	route := "schedule://acme/jobs/backup"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf.Reset()
 		WriteRoute(buf, route)
 	}
@@ -242,7 +242,7 @@ func BenchmarkEncodeWithBuffer(b *testing.B) {
 	key := []byte("user:123")
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = EncodeWithBuffer(func(buf *bytes.Buffer) {
 			WriteU64(buf, 12345)
 			WriteRoute(buf, route)
@@ -256,7 +256,7 @@ func BenchmarkEncodeWithBufferOwned(b *testing.B) {
 	key := []byte("user:123")
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		owned := EncodeWithBufferOwned(func(buf *bytes.Buffer) {
 			WriteU64(buf, 12345)
 			WriteRoute(buf, route)

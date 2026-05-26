@@ -1,11 +1,10 @@
 // Package notice implements the Fitz Notice domain client.
 // Per CLIENT_SPEC.md: Pub/sub with wildcard pattern matching.
-//
-//nolint:errcheck,gosec
 package notice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -13,7 +12,6 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/internal/core/subscriptions"
-	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -100,31 +98,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 			Route: route,
 			Body:  append([]byte(nil), body...),
 		}
-
-		go func() {
-			handlerCtx, cancel, span := coretracing.StartDetachedSpan(
-				lifecycleCtx,
-				c.conn.Tracer(),
-				"fitz.notice.handler",
-				c.conn.AsyncHandlerTimeout(),
-				trace.WithAttributes(
-					attribute.Int64("fitz.subscription_id", int64(subID)),
-					attribute.String("fitz.route", route),
-				),
-			)
-			defer cancel()
-			defer span.End()
-
-			release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
-			if !ok {
-				if err := handlerCtx.Err(); err != nil {
-					span.RecordError(err)
-					span.SetStatus(codes.Error, err.Error())
-				}
-				return
-			}
-			defer release()
-
+		if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.notice.handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 			if err := handler(handlerCtx, msg); err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
@@ -132,7 +106,14 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 					log.Warn("notice handler failed", "route", route, "error", err)
 				}
 			}
-		}()
+		}, trace.WithAttributes(
+			attribute.Int64("fitz.subscription_id", int64(subID)),
+			attribute.String("fitz.route", route),
+		)) {
+			if log := c.conn.Logger(); log != nil {
+				log.Warn("notice handler dropped", "route", route, "sub_id", subID, "reason", "async handler queue full")
+			}
+		}
 	}
 }
 
@@ -143,7 +124,7 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.notice.Publish", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("notice.Publish", "route", route)
+		log.DebugContext(ctx, "notice.Publish", "route", route)
 	}
 
 	// Validate route format (exact route for publish, not pattern)
@@ -165,7 +146,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHa
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.notice.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("notice.Subscribe", "pattern", pattern)
+		log.DebugContext(ctx, "notice.Subscribe", "pattern", pattern)
 	}
 	if err := types.ValidateSelectorRoute(pattern, "notice", 3, true); err != nil {
 		span.RecordError(err)
@@ -202,7 +183,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	connection.ParseStandardResponse(resp)
+	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+		return
+	}
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {
@@ -215,9 +198,22 @@ func (c *client) ReplaceConnection(conn *connection.Connection) {
 }
 
 func (c *client) RestoreSubscriptions(ctx context.Context) error {
-	return c.subscriptions.Restore(func(pattern string) (uint64, error) {
-		return c.subscribeWire(ctx, pattern)
-	})
+	return c.subscriptions.Restore(
+		func(pattern string) (uint64, error) {
+			return c.subscribeWire(ctx, pattern)
+		},
+		func(_ string, subID uint64) error {
+			resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeNoticeUnsubscribe, unsubscribePayloadWriter(subID))
+			if err != nil {
+				return err
+			}
+			if _, _, err = connection.ParseStandardResponse(resp); err != nil {
+				return err
+			}
+			c.conn.AddSubscriptions(-1)
+			return nil
+		},
+	)
 }
 
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
@@ -231,14 +227,14 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("subscribe failed: %w", mapNoticeError(err))
 	}
 	if !success {
-		return 0, fmt.Errorf("subscribe failed: unexpected status")
+		return 0, errors.New("subscribe failed: unexpected status")
 	}
 
 	if len(remaining) < 1 {
 		return 0, fmt.Errorf("subscribe response too short: got %d bytes", len(remaining))
 	}
 	if remaining[0] != 1 {
-		return 0, fmt.Errorf("subscribe response missing subscription_id")
+		return 0, errors.New("subscribe response missing subscription_id")
 	}
 	if len(remaining) < 9 {
 		return 0, fmt.Errorf("subscribe response too short for subscription_id: got %d bytes", len(remaining))

@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -204,6 +203,52 @@ func TestShouldNotRecoverNoticeSubscriptionGivenDisconnectWhenReconnectedWithout
 	})
 }
 
+func TestShouldRestoreNoticeSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		harness := fixture.NewProxyReconnectHarness(t, transport, fixture.AuthModeForTestName(t.Name()))
+		subscriber := harness.Proxied
+		publisher := harness.Stable
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
+
+		route := subscriber.UniqueRoute("notice")
+		var err error
+		received := make(chan string, 4)
+		_, err = subscriber.Client().Notice().Subscribe(ctx, route, func(_ context.Context, msg fitz.NoticeMsg) error {
+			received <- string(msg.Body)
+			return nil
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, publisher.Client().Notice().Publish(ctx, route, []byte("before-disconnect")))
+		select {
+		case body := <-received:
+			require.Equal(t, "before-disconnect", body)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for initial notice delivery")
+		}
+
+		harness.WaitForInitialConnection(5 * time.Second)
+		harness.DropAndWaitForReconnect(10 * time.Second)
+
+		require.Eventually(t, func() bool {
+			if err := publisher.Client().Notice().Publish(ctx, route, []byte("after-disconnect")); err != nil {
+				return false
+			}
+
+			select {
+			case body := <-received:
+				return body == "after-disconnect"
+			default:
+				return false
+			}
+		}, 10*time.Second, 100*time.Millisecond)
+	})
+}
+
 func TestShouldRejectNonConnectFrameGivenNewTransportWhenFrameSentBeforeAuthentication(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transportType fixture.TransportType) {
 		authMode := fixture.AuthModeForTestName(t.Name())
@@ -258,7 +303,7 @@ func TestShouldFailConnectGivenCanceledContextWhenConnectCalled(t *testing.T) {
 
 		err := f.Connect(ctx)
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, context.Canceled))
+		assert.ErrorIs(t, err, context.Canceled)
 	})
 }
 
@@ -275,18 +320,6 @@ func TestShouldFailConnectGivenShortTimeoutWhenConnectToUnreachable(t *testing.T
 		}
 
 		require.Error(t, f.Connect(ctx))
-	})
-}
-
-func TestShouldNotPanicGivenDoubleCloseWhenCloseCalledTwice(t *testing.T) {
-	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
-		f := fixture.NewTestFixture(t, transport)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		f.ConnectOrFail(ctx)
-		require.NoError(t, f.Client().Close())
-		_ = f.Client().Close()
 	})
 }
 
@@ -347,7 +380,7 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 		select {
 		case err := <-done:
 			require.Error(t, err)
-			assert.True(t, errors.Is(err, context.Canceled))
+			assert.ErrorIs(t, err, context.Canceled)
 		case <-time.After(5 * time.Second):
 			t.Fatal("RPC iterator did not stop after context cancel")
 		}

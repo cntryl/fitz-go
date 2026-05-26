@@ -7,6 +7,13 @@ coverage/
 .cover*
 *.prof
 debug.test
+
+# Generated local reports and snapshots
+lint_output.txt
+lint_report.json
+lint_report_current.json
+artifacts/
+
 .env
 .env.local
 .env.*.local
@@ -18,3 +25,4 @@ debug.test
 .DS_Store
 Thumbs.db
 test/conformance/conformance-results.json
+*.exe

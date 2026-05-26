@@ -1,4 +1,3 @@
-//nolint:gosec,errcheck
 package integration
 
 import (
@@ -41,7 +40,7 @@ func TestShouldReadRecordsInOrderGivenOffsetRangeWhenReadCalled(t *testing.T) {
 		sess, err := f.Client().Stream().Begin(ctx, route)
 		require.NoError(t, err)
 		expectedOffset := uint64(0)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			_, err := sess.Append(ctx, expectedOffset, []byte{byte(i)})
 			require.NoError(t, err)
 			expectedOffset++
@@ -50,7 +49,7 @@ func TestShouldReadRecordsInOrderGivenOffsetRangeWhenReadCalled(t *testing.T) {
 
 		iter, err := f.Client().Stream().Read(ctx, route, 0, 10)
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var offsets []uint64
 		for iter.Next() {
@@ -85,7 +84,7 @@ func TestShouldReadMatchingDiscriminatorRecordsGivenFilterWhenReadCalled(t *test
 		filter := &fitz.StreamFilterSet{Clauses: []fitz.StreamFilterClause{{Kind: fitz.StreamFilterEquals, Value: "proj.alpha"}}}
 		iter, err := f.Client().Stream().Read(ctx, route, 0, 10, &fitz.StreamReadOptions{Filter: filter})
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var bodies [][]byte
 		for iter.Next() {
@@ -148,7 +147,7 @@ func TestShouldRollbackUncommittedAppendsGivenActiveSessionWhenRollbackCalled(t 
 
 		iter, err := f.Client().Stream().Read(ctx, route, 0, 10)
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		count := 0
 		for iter.Next() {
@@ -221,7 +220,7 @@ func TestShouldRejectReadGivenOffsetBeyondWatermarkWhenConsumeCalled(t *testing.
 			assert.Error(t, err)
 			return
 		}
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		for iter.Next() {
 		}
@@ -265,5 +264,65 @@ func TestShouldNotifyGivenSubscriptionWhenCommitAppends(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for stream commit notification")
 		}
+	})
+}
+
+func TestShouldRestoreCommitSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		harness := fixture.NewProxyReconnectHarness(t, transport, fixture.AuthModeForTestName(t.Name()))
+		subscriber := harness.Proxied
+		producer := harness.Stable
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		harness.Connect(ctx, fixture.DefaultReconnectOptions()...)
+
+		route := subscriber.UniqueRoute("stream")
+		var err error
+		notifications := make(chan string, 4)
+		_, err = subscriber.Client().Stream().Subscribe(ctx, route, func(_ context.Context, n fitz.StreamCommitNotification) error {
+			notifications <- n.Route
+			return nil
+		})
+		require.NoError(t, err)
+
+		commitRecord := func(body string) {
+			nextOffset := uint64(0)
+			rec, err := producer.Client().Stream().Peek(ctx, route)
+			require.NoError(t, err)
+			if rec != nil {
+				nextOffset = rec.Offset + 1
+			}
+
+			sess, err := producer.Client().Stream().Begin(ctx, route)
+			require.NoError(t, err)
+			_, err = sess.Append(ctx, nextOffset, []byte(body))
+			require.NoError(t, err)
+			require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
+		}
+
+		commitRecord("before-disconnect")
+
+		select {
+		case notifiedRoute := <-notifications:
+			require.Equal(t, route, notifiedRoute)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for initial stream notification")
+		}
+
+		harness.WaitForInitialConnection(5 * time.Second)
+		harness.DropAndWaitForReconnect(10 * time.Second)
+
+		require.Eventually(t, func() bool {
+			commitRecord("after-disconnect")
+
+			select {
+			case notifiedRoute := <-notifications:
+				return notifiedRoute == route
+			default:
+				return false
+			}
+		}, 10*time.Second, 100*time.Millisecond)
 	})
 }

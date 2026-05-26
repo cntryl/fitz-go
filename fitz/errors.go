@@ -87,7 +87,7 @@ type DomainError = coreerrors.DomainError
 type TransportError = transport.TransportError
 
 // IsRetryable reports whether err indicates a transient, retryable condition.
-// The following server-signalled situations are considered retryable:
+// The following server-signaled situations are considered retryable:
 //   - KV isolation conflict (concurrent transaction collision)      [1004]
 //   - Stream read beyond watermark (catchup not yet available)      [2004]
 //   - Queue full (backpressure)                                     [4005]

@@ -34,8 +34,8 @@ func TestShouldEncodeBeginGivenValidRouteWhenBeginPayloadWritten(t *testing.T) {
 	require.Equal(t, route, actualRoute)
 
 	offset += int(routeLen)
-	require.Equal(t, uint8(TxModeReadOnly), payload[offset])
-	require.Equal(t, uint8(DurabilityBuffered), payload[offset+1])
+	require.Equal(t, TxModeReadOnly, payload[offset])
+	require.Equal(t, DurabilityBuffered, payload[offset+1])
 }
 
 // TestShouldEncodeBeginGivenReadWriteMode tests BEGIN encoding with ReadWrite mode.
@@ -56,8 +56,8 @@ func TestShouldEncodeBeginGivenReadWriteModeWhenBeginPayloadWritten(t *testing.T
 	require.NoError(t, err)
 	offset := 4 + int(routeLen)
 
-	require.Equal(t, uint8(TxModeReadWrite), payload[offset])
-	require.Equal(t, uint8(DurabilitySync), payload[offset+1])
+	require.Equal(t, TxModeReadWrite, payload[offset])
+	require.Equal(t, DurabilitySync, payload[offset+1])
 }
 
 // TestShouldEncodeGetGivenValidKeyAndTxID tests GET request encoding.
@@ -290,7 +290,7 @@ func TestShouldEncodeCommitGivenValidTxIDWhenCommitPayloadWritten(t *testing.T) 
 	offset = newOffset
 	routeLen, newOffset, err := connection.ReadU32BE(payload, offset)
 	require.NoError(t, err)
-	require.Greater(t, routeLen, uint32(0))
+	require.Positive(t, routeLen)
 
 	offset = newOffset
 	actualRoute := string(payload[offset : offset+int(routeLen)])
@@ -466,7 +466,7 @@ func BenchmarkEncodeBegin(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeBegin(route, mode, durability)
 	}
 }
@@ -478,7 +478,7 @@ func BenchmarkEncodeGet(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeGet(txID, route, key)
 	}
 }
@@ -492,7 +492,7 @@ func BenchmarkEncodePut(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodePut(txID, route, key, value)
 		}
 	})
@@ -505,7 +505,7 @@ func BenchmarkEncodePut(b *testing.B) {
 
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = EncodePut(txID, route, key, value)
 		}
 	})
@@ -518,7 +518,7 @@ func BenchmarkEncodeDelete(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeDelete(txID, route, key)
 	}
 }
@@ -535,7 +535,7 @@ func BenchmarkEncodeScan(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeScan(txID, route, query)
 	}
 }
@@ -546,7 +546,7 @@ func BenchmarkEncodeCommit(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeCommit(txID, route)
 	}
 }
@@ -557,7 +557,7 @@ func BenchmarkEncodeRollback(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = EncodeRollback(txID, route)
 	}
 }
@@ -569,7 +569,7 @@ func BenchmarkParseBeginResponse(b *testing.B) {
 	binary.BigEndian.PutUint64(payload[1:9], 12345)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		success, remaining, _ := connection.ParseStandardResponse(payload)
 		if success && len(remaining) >= 8 {
 			_, _, _ = connection.ReadU64BE(remaining, 0)
@@ -589,7 +589,7 @@ func BenchmarkParseScanResponse(b *testing.B) {
 	copy(payload, buf.Bytes())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _, _ = parseScanResponse(payload)
 	}
 }

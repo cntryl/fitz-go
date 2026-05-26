@@ -1,9 +1,9 @@
 # fitz-go Grading Report
 
 **Assessed against:** [client-requirements.md](../../fitz/docs/clients/client-requirements.md)  
-**Assessment date:** March 24, 2026  
+**Assessment date:** May 24, 2026  
 **Assessed commit:** main  
-**Conformance results:** `test/conformance/conformance-results.json` (tcp/anonymous, run 2026-03-24)
+**Conformance results:** `test/conformance/conformance-results.json` (tcp/anonymous, run 2026-05-23)
 
 ---
 
@@ -16,7 +16,9 @@
 | **T2 — World Class** | 26 | 0 | 0 | 26 | **YES** |
 | **Overall** | **107** | **0** | **0** | **107** | — |
 
-**Verdict: Production-grade complete; T0, T1, and T2 are green.** The remaining design choices are documented and non-blocking, and the audit now has matching tests or explicit release-gate policy for every item.
+**Verdict: Production-grade complete.** T0, T1, and T2 are green, and every remaining design choice has matching tests or an explicit release gate.
+
+Treat this report as the quality baseline for this repository.
 
 ---
 
@@ -105,6 +107,7 @@
 | REQ-CONC-005 | T1 | **PASS** | `asyncHandlerSem chan struct{}` (buffered to `AsyncHandlerMaxConcurrency`, default 256) caps the number of concurrently running NOTIFY handlers. |
 | REQ-CONC-006 | T1 | **PASS** | `Close()` blocks on `<-c.done` before returning, ensuring the dispatch goroutine has fully exited. All in-flight pending channels are closed by `mux.close()` in the dispatch loop's defer. |
 | REQ-CONC-007 | T1 | **PASS** | `WithAsyncHandlerMaxConcurrency(int)` (default 256) + `WithAsyncHandlerTimeout(time.Duration)` (default 30s) are both exposed as public options and applied to all NOTIFY handler goroutines. |
+| REQ-CONC-010 | T1 | **PASS** | `MaxInFlightRequests` is exposed on both the core connection config and the public `fitz` option surface; `SendRequest`, `SendRequestWithWriter`, `SendFireAndForget`, and `SendFireAndForgetWithWriter` acquire a bounded outbound slot before admitting work, and `internal/core/connection/connection_test.go` proves the second request blocks at admission when the limit is 1. |
 | REQ-CONC-008 | T2 | **PASS** | Same-tx sequencing constraint is explicitly documented on `ReadTx` and `Tx` in `internal/domains/kv/transaction.go`, satisfying the "enforce or document" requirement. |
 | REQ-CONC-009 | T2 | **PASS** | RPC correlation IDs are matched via a `map[correlationID]chan` in the multiplexer. Multiple in-flight `Call` invocations are fully concurrent. |
 
@@ -141,10 +144,10 @@
 | REQ-PERF-001 | T1 | **PASS** | Benchmark gate thresholds are now explicit in `docs/PERF_RESULTS.md` for KV loopback, frame encode, RPC correlation, and Notice publish throughput. |
 | REQ-PERF-002 | T1 | **PASS** | Benchmarks track allocations with `-benchmem`, and zero-copy steady-state parsing is intentionally out of scope for this release bar. The report only claims the measured throughput and allocation evidence that the suite actually provides. |
 | REQ-PERF-003 | T1 | **PASS** | `writeMu sync.Mutex` (write serialization) and the multiplexer `mu sync.Mutex` (response dispatch) are independent. Read dispatch never holds the write lock. |
-| REQ-PERF-004 | T2 | **PASS** | `BenchmarkKVTransactionLoopback` reports ~13-14 µs/op on loopback benchmark harness (`docs/PERF_RESULTS.md`), well below the < 500 µs target. |
-| REQ-PERF-005 | T2 | **PASS** | `BenchmarkFrameEncode` reports ~29-51 ns/op (`docs/PERF_RESULTS.md`), well below the < 500 ns target. |
-| REQ-PERF-006 | T2 | **PASS** | `BenchmarkRPCCorrelation1KInFlight` (1024 in-flight) reports ~596-629 ns/op (`docs/PERF_RESULTS.md`), below the < 2 µs target. |
-| REQ-PERF-007 | T2 | **PASS** | `BenchmarkNoticePublishHotPath` reports ~1652-2048 ns/op (~488k-605k ops/sec) (`docs/PERF_RESULTS.md`), exceeding > 50k ops/sec target. |
+| REQ-PERF-004 | T2 | **PASS** | `BenchmarkKVTransactionLoopback` reports ~6.8-7.3 µs/op on the loopback benchmark harness (`docs/PERF_RESULTS.md`), well below the < 500 µs target. |
+| REQ-PERF-005 | T2 | **PASS** | `BenchmarkFrameEncode` reports ~44-47 ns/op (`docs/PERF_RESULTS.md`), well below the < 500 ns target. |
+| REQ-PERF-006 | T2 | **PASS** | `BenchmarkRPCCorrelation1KInFlight` (1024 in-flight) reports ~389-401 ns/op (`docs/PERF_RESULTS.md`), below the < 2 µs target. |
+| REQ-PERF-007 | T2 | **PASS** | `BenchmarkNoticePublishHotPath` reports ~845-882 ns/op (~1.13M-1.18M ops/sec) (`docs/PERF_RESULTS.md`), exceeding > 50k ops/sec target. |
 | REQ-PERF-008 | T2 | **PASS** | Benchmark suite now exists in `bench/hotpath_bench_test.go` with hot-path coverage. |
 
 ### Test Coverage
@@ -159,7 +162,7 @@
 | REQ-TEST-006 | T1 | **PASS** | Every integration test function uses `context.WithTimeout(context.Background(), 10*time.Second)`. |
 | REQ-TEST-007 | T1 | **PASS** | `fixture.TestFixture.UniqueRoute(scheme)` generates nanosecond-stamped unique routes. All integration tests use it. |
 | REQ-TEST-008 | T1 | **PASS** | Error-path integration coverage is now systematic across all 7 domains via `test/authorization_test.go`, plus the KV inverted-range and schedule invalid-cron tests. |
-| REQ-TEST-009 | T1 | **PASS** | `test/transport_test.go` + CS-010 (reconnect and retry behavior — pass) confirms reconnect + re-subscription is covered. |
+| REQ-TEST-009 | T1 | **PASS** | Broker-backed reconnect coverage now includes live-disconnect restore tests for Notice, Queue, Stream, Lease, Schedule, and RPC worker registration in `test/transport_test.go`, `test/queue_test.go`, `test/stream_test.go`, `test/lease_test.go`, `test/schedule_test.go`, and `test/rpc_test.go`. Conformance CS-010 also now uses a real disconnect proxy instead of a close-and-recreate approximation. |
 | REQ-TEST-010 | T1 | **PASS** | Conformance run is passing and P0 requirements are now at 100%. |
 | REQ-TEST-011 | T2 | **PASS** | `go test ./... -race` exits 0 (confirmed in terminal session). |
 | REQ-TEST-012 | T2 | **PASS** | P1 conformance requirements are now passing at 100%. |

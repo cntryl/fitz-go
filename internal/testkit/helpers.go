@@ -27,7 +27,7 @@ func GenerateRoute(domain string) string {
 // GenerateKey creates a key of specified size for testing.
 func GenerateKey(size int) []byte {
 	key := make([]byte, size)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		key[i] = byte((i + 42) % 256)
 	}
 	return key
@@ -36,7 +36,7 @@ func GenerateKey(size int) []byte {
 // GenerateValue creates a value of specified size for testing.
 func GenerateValue(size int) []byte {
 	value := make([]byte, size)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		value[i] = byte((i + 84) % 256)
 	}
 	return value
@@ -64,7 +64,7 @@ func GenerateFrame(msgType uint16, payloadSize int) []byte {
 // PrecomputeFrames creates precomputed test frames for benchmarking.
 func PrecomputeFrames(count int, avgSize int) [][]byte {
 	frames := make([][]byte, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		frames[i] = GenerateFrame(uint16(100+i%10), avgSize)
 	}
 	return frames
@@ -77,7 +77,9 @@ func BrokerConnectable(addr string) bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		return false
+	}
 	return true
 }
 
@@ -142,11 +144,11 @@ func AssertRouteValid(t *testing.T, route string) {
 // Assumes format: [route_len (4)][route][...]
 func ExtractRouteFromPayload(payload []byte) (string, error) {
 	if len(payload) < 4 {
-		return "", fmt.Errorf("payload too short for route length")
+		return "", errors.New("payload too short for route length")
 	}
 	routeLen := binary.BigEndian.Uint32(payload[0:4])
 	if int(routeLen)+4 > len(payload) {
-		return "", fmt.Errorf("payload too short for route data")
+		return "", errors.New("payload too short for route data")
 	}
 	return string(payload[4 : 4+routeLen]), nil
 }
@@ -156,25 +158,25 @@ func ExtractRouteFromPayload(payload []byte) (string, error) {
 // startOffset is the byte position where key_len begins.
 func ExtractKeyValueFromPayload(payload []byte, startOffset int) (key []byte, value []byte, err error) {
 	if len(payload) < startOffset+4 {
-		return nil, nil, fmt.Errorf("payload too short for key length")
+		return nil, nil, errors.New("payload too short for key length")
 	}
 	keyLen := binary.BigEndian.Uint32(payload[startOffset : startOffset+4])
 	offset := startOffset + 4
 
 	if int(keyLen)+offset > len(payload) {
-		return nil, nil, fmt.Errorf("payload too short for key data")
+		return nil, nil, errors.New("payload too short for key data")
 	}
 	key = payload[offset : offset+int(keyLen)]
 	offset += int(keyLen)
 
 	if len(payload) < offset+4 {
-		return nil, nil, fmt.Errorf("payload too short for value length")
+		return nil, nil, errors.New("payload too short for value length")
 	}
 	valueLen := binary.BigEndian.Uint32(payload[offset : offset+4])
 	offset += 4
 
 	if int(valueLen)+offset > len(payload) {
-		return nil, nil, fmt.Errorf("payload too short for value data")
+		return nil, nil, errors.New("payload too short for value data")
 	}
 	value = payload[offset : offset+int(valueLen)]
 
@@ -268,6 +270,6 @@ func AssertDomainErrorCode(t testing.TB, err error, code coreerrors.ErrorCode) {
 	t.Helper()
 	require.Error(t, err, "expected a non-nil error")
 	var domainErr *coreerrors.DomainError
-	require.True(t, errors.As(err, &domainErr), "expected error to be *errors.DomainError, got: %T", err)
+	require.ErrorAs(t, err, &domainErr, "expected error to be *errors.DomainError, got: %T", err)
 	assert.Equal(t, code, domainErr.Code, "domain error code mismatch: message=%q", domainErr.Message)
 }

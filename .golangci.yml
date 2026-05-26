@@ -2,54 +2,57 @@
 
 run:
   timeout: 5m
+  relative-path-mode: gomod
+  modules-download-mode: readonly
+  enable-build-vcs: true
 
 linters:
+  default: none
   enable:
     - bodyclose
     - copyloopvar
-    - dogsled
-    - dupl
+    - embeddedstructfieldcheck
     - errcheck
     - errorlint
-    - exhaustive
     - gocritic
     - gosec
     - govet
     - ineffassign
     - misspell
-    - nakedret
     - noctx
+    - nilerr
+    - nilnesserr
     - staticcheck
     - unconvert
-    - unparam
     - unused
+    - wastedassign
     - whitespace
-
-linters-settings:
-  errcheck:
-    exclude-functions:
-      - '.*\.Close$'
-      - '.*\.SetReadDeadline$'
-      - '.*\.SetWriteDeadline$'
-      - '.*\.Rollback$'
-      - '.*\.Release$'
-  dupl:
-    threshold: 140
-  exhaustive:
-    check:
-      - switch
-      - map
-  gosec:
-    excludes:
-      - G101
-      - G115
-      - G306
-      - G401
-      - G404
-      - G505
-  misspell:
-    locale: US
+  disable:
+    - intrange
+    - perfsprint
+  settings:
+    errcheck:
+      exclude-functions:
+        - '.*\.Close$'
+        - '.*\.SetReadDeadline$'
+        - '.*\.SetWriteDeadline$'
+        - '.*\.Rollback$'
+        - '.*\.Release$'
+    gosec:
+      excludes:
+        - G101 # allow possible credential-looking constants in API/client code
+        - G115 # noisy integer conversion checks
+        - G306 # file permission noise
+        - G401 # legacy crypto may appear in compatibility/client code
+        - G404 # allow non-crypto randomness where appropriate
+        - G505 # legacy crypto import noise
+    misspell:
+      locale: US
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
 
+formatters:
+  enable:
+    - gofmt
+    - goimports

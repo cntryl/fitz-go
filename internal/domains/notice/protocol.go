@@ -1,10 +1,10 @@
-//nolint:gosec,unconvert
 package notice
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
@@ -124,7 +124,7 @@ func decodeFirstRoute(body []byte) (int, string, bool) {
 	idx := 0
 	routeLen := readU32(body[idx:])
 	idx += 4
-	if int(idx+int(routeLen)) > len(body) {
+	if idx+int(routeLen) > len(body) {
 		return 0, "", false
 	}
 	route := string(body[idx : idx+int(routeLen)])
@@ -139,7 +139,7 @@ func decodePayload(body []byte) ([]byte, bool) {
 	}
 	plen := readU32(body[idx:])
 	idx += 4
-	if int(idx+int(plen)) > len(body) {
+	if idx+int(plen) > len(body) {
 		return nil, false
 	}
 	if idx+int(plen) != len(body) {
@@ -186,7 +186,7 @@ func DecodeNoticeResponseKey(op uint16, body []byte) (string, error) {
 }
 
 func NoticeWaitKey(op uint16) string {
-	return fmt.Sprintf("%d", op)
+	return strconv.FormatUint(uint64(op), 10)
 }
 
 func appendU32(buf []byte, v uint32) []byte {
@@ -211,7 +211,7 @@ func stripNoticeScheme(route string) string {
 
 func ValidateNoticeRoute(route string, allowWildcards bool) error {
 	if len(route) < 9 || route[:9] != "notice://" {
-		return fmt.Errorf("notice route must start with notice://")
+		return errors.New("notice route must start with notice://")
 	}
 	path := stripNoticeScheme(route)
 	segs := splitSlash(path)
@@ -219,19 +219,19 @@ func ValidateNoticeRoute(route string, allowWildcards bool) error {
 		if allowWildcards && len(segs) == 2 && segs[1] == "**" {
 			return nil
 		}
-		return fmt.Errorf("notice route must have realm/area/resource")
+		return errors.New("notice route must have realm/area/resource")
 	}
 	if segs[0] == "" || segs[1] == "" || segs[2] == "" {
-		return fmt.Errorf("notice route segments must be non-empty")
+		return errors.New("notice route segments must be non-empty")
 	}
 	if !allowWildcards {
 		if containsWildcard(segs[1]) || containsWildcard(segs[2]) {
-			return fmt.Errorf("notice publish route cannot contain wildcards")
+			return errors.New("notice publish route cannot contain wildcards")
 		}
 		return nil
 	}
 	if segs[0] == "*" || segs[0] == "**" {
-		return fmt.Errorf("notice realm cannot be wildcard")
+		return errors.New("notice realm cannot be wildcard")
 	}
 	return nil
 }
@@ -285,7 +285,7 @@ func NoticeMatchRoute(pattern, route string) bool {
 func splitSlash(s string) []string {
 	var parts []string
 	start := 0
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] == '/' {
 			parts = append(parts, s[start:i])
 			start = i + 1
@@ -296,7 +296,7 @@ func splitSlash(s string) []string {
 }
 
 func containsWildcard(s string) bool {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] == '*' {
 			return true
 		}

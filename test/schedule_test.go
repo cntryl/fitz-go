@@ -3,8 +3,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"os"
-	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -169,23 +167,11 @@ func TestShouldRejectWildcardSubscribeGivenClientValidationWhenSubscribeCalled(t
 }
 
 func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *testing.T) {
-	if os.Getenv("FITZ_RUN_LIVE_SCHEDULE_TEST") != "1" {
-		t.Skip("skipping slow live schedule notification test; set FITZ_RUN_LIVE_SCHEDULE_TEST=1 to enable")
-	}
-
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range bi.Settings {
-			if s.Key == "-race" && s.Value == "true" {
-				t.Skip("skipping live schedule notification test under -race")
-			}
-		}
-	}
-
 	f := fixture.NewTestFixture(t, fixture.TransportTCP)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	f.ConnectOrFail(ctx)
+	require.NoError(t, f.ConnectWithOptions(ctx, fitz.WithReadTimeout(2*time.Minute)))
 	route := f.UniqueRoute("schedule")
 	payload := []byte("live-schedule-payload")
 	received := make(chan []byte, 1)
@@ -228,4 +214,62 @@ func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *te
 	}
 
 	t.Fatal("timed out waiting for schedule notification after retry")
+}
+
+func TestShouldRestoreScheduleSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t *testing.T) {
+	harness := fixture.NewProxyReconnectHarness(t, fixture.TransportTCP, fixture.AuthModeForTestName(t.Name()))
+	subscriber := harness.Proxied
+	actor := harness.Stable
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	reconnectOpts := append([]fitz.Option{fitz.WithReadTimeout(2 * time.Minute)}, fixture.DefaultReconnectOptions()...)
+	harness.Connect(ctx, reconnectOpts...)
+
+	route := subscriber.UniqueRoute("schedule")
+	payload := []byte("schedule-after-reconnect")
+	received := make(chan []byte, 1)
+	createdIDs := make([]string, 0, 2)
+
+	sub, err := subscriber.Client().Schedule().Subscribe(ctx, route, func(_ context.Context, n fitz.ScheduleNotification) error {
+		received <- append([]byte(nil), n.Payload...)
+		return nil
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+	defer func() {
+		for _, id := range createdIDs {
+			_ = actor.Client().Schedule().Cancel(context.Background(), id)
+		}
+	}()
+
+	harness.WaitForInitialConnection(5 * time.Second)
+	harness.DropAndWaitForReconnect(10 * time.Second)
+
+	waitForNotification := func(wait time.Duration) ([]byte, bool) {
+		select {
+		case got := <-received:
+			return got, true
+		case <-time.After(wait):
+			return nil, false
+		}
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		id, createErr := actor.Client().Schedule().Create(ctx, route, "* * * * *", payload)
+		require.NoError(t, createErr)
+		createdIDs = append(createdIDs, id)
+
+		if got, ok := waitForNotification(95 * time.Second); ok {
+			assert.Equal(t, payload, got)
+			return
+		}
+
+		if attempt == 1 {
+			t.Log("no restored schedule notification in first window; recreating schedule and retrying once")
+		}
+	}
+
+	t.Fatal("timed out waiting for restored schedule notification after retry")
 }

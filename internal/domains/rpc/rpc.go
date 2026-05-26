@@ -6,13 +6,13 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/iter"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
-	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -40,6 +40,86 @@ type RPCHandler func(ctx context.Context, req InboundRequest, w ResponseWriter) 
 type ResponseFrame struct {
 	Body     []byte
 	Sequence uint64
+}
+
+type responseStream struct {
+	mu     sync.Mutex
+	notify chan struct{}
+	frames []ResponseFrame
+	closed bool
+	err    error
+}
+
+func newResponseStream() *responseStream {
+	return &responseStream{
+		notify: make(chan struct{}, 1),
+		frames: make([]ResponseFrame, 0, 1),
+	}
+}
+
+func (s *responseStream) enqueue(frame ResponseFrame) bool {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return false
+	}
+	s.frames = append(s.frames, frame)
+	s.mu.Unlock()
+	s.signal()
+	return true
+}
+
+func (s *responseStream) close() {
+	s.closeWithError(nil)
+}
+
+func (s *responseStream) fail(err error) {
+	s.closeWithError(err)
+}
+
+func (s *responseStream) closeWithError(err error) {
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		s.err = err
+	}
+	s.mu.Unlock()
+	s.signal()
+}
+
+func (s *responseStream) next(ctx context.Context) (ResponseFrame, bool, error) {
+	for {
+		s.mu.Lock()
+		if len(s.frames) > 0 {
+			frame := s.frames[0]
+			copy(s.frames, s.frames[1:])
+			last := len(s.frames) - 1
+			s.frames[last] = ResponseFrame{}
+			s.frames = s.frames[:last]
+			s.mu.Unlock()
+			return frame, true, nil
+		}
+		if s.closed {
+			err := s.err
+			s.mu.Unlock()
+			return ResponseFrame{}, false, err
+		}
+		notify := s.notify
+		s.mu.Unlock()
+
+		select {
+		case <-notify:
+		case <-ctx.Done():
+			return ResponseFrame{}, false, ctx.Err()
+		}
+	}
+}
+
+func (s *responseStream) signal() {
+	select {
+	case s.notify <- struct{}{}:
+	default:
+	}
 }
 
 var readRandom = crand.Read
@@ -81,7 +161,7 @@ type client struct {
 
 	mu          sync.Mutex
 	workers     map[string]RPCHandler // route -> handler
-	pendingRPCs map[[16]byte]chan ResponseFrame
+	pendingRPCs map[[16]byte]*responseStream
 	initialized bool
 }
 
@@ -90,7 +170,7 @@ func NewClient(conn *connection.Connection) Client {
 	c := &client{
 		conn:        conn,
 		workers:     make(map[string]RPCHandler),
-		pendingRPCs: make(map[[16]byte]chan ResponseFrame),
+		pendingRPCs: make(map[[16]byte]*responseStream),
 	}
 	return c
 }
@@ -132,10 +212,10 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		return
 	}
 
-	// Check if this is a worker request (status byte for worker dispatch)
-	// or a call response. We use the pending RPC map to differentiate.
+	// RPC REQUEST worker deliveries are routed through message type 302.
+	// A 303 without a pending correlation is stale or unexpected and must be dropped.
 	c.mu.Lock()
-	ch, isCall := c.pendingRPCs[correlationID]
+	stream, isCall := c.pendingRPCs[correlationID]
 	c.mu.Unlock()
 
 	if isCall {
@@ -158,8 +238,7 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		if offset+int(bodyLen) > len(payload) {
 			return
 		}
-		body := make([]byte, bodyLen)
-		copy(body, payload[offset:offset+int(bodyLen)])
+		body := payload[offset : offset+int(bodyLen)]
 		offset += int(bodyLen)
 
 		streamEnd := false
@@ -168,22 +247,16 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		}
 
 		if !streamEnd || len(body) > 0 {
-			select {
-			case ch <- ResponseFrame{Body: body, Sequence: seq}:
-			case <-c.conn.LifecycleContext().Done():
-			}
+			_ = stream.enqueue(ResponseFrame{Body: body, Sequence: seq})
 		}
 		if streamEnd {
 			c.mu.Lock()
 			delete(c.pendingRPCs, correlationID)
 			c.mu.Unlock()
-			close(ch)
+			stream.close()
 		}
 		return
 	}
-
-	// This is a request dispatched to us as a worker
-	c.handleWorkerRequest(correlationID, payload)
 }
 
 // handleWorkerRequest processes an incoming request for a registered worker.
@@ -252,30 +325,7 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 
-	go func() {
-		handlerCtx, cancel, span := coretracing.StartDetachedSpan(
-			lifecycleCtx,
-			c.conn.Tracer(),
-			"fitz.rpc.worker_handler",
-			c.conn.AsyncHandlerTimeout(),
-			trace.WithAttributes(
-				attribute.String("fitz.route", route),
-				attribute.String("fitz.reply_route", replyRoute),
-			),
-		)
-		defer cancel()
-		defer span.End()
-
-		release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
-		if !ok {
-			if err := handlerCtx.Err(); err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
-			}
-			return
-		}
-		defer release()
-
+	if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.rpc.worker_handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 		if err := handler(handlerCtx, req, w); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -285,7 +335,14 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 		}
 		// Send stream_end
 		w.sendEnd()
-	}()
+	}, trace.WithAttributes(
+		attribute.String("fitz.route", route),
+		attribute.String("fitz.reply_route", replyRoute),
+	)) {
+		if log := c.conn.Logger(); log != nil {
+			log.Warn("rpc worker handler dropped", "route", route, "reply_route", replyRoute, "reason", "async handler queue full")
+		}
+	}
 }
 
 // RegisterWorker per CLIENT_SPEC.md:
@@ -295,7 +352,7 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.rpc.RegisterWorker", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("rpc.RegisterWorker", "route", route)
+		log.DebugContext(ctx, "rpc.RegisterWorker", "route", route)
 	}
 
 	// Validate route format
@@ -341,7 +398,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.rpc.Call", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("rpc.Call", "route", route)
+		log.DebugContext(ctx, "rpc.Call", "route", route)
 	}
 
 	// Check if context is already canceled
@@ -367,11 +424,11 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		return nil, err
 	}
 
-	// Create response channel
-	ch := make(chan ResponseFrame, 32)
+	// Create response stream.
+	stream := newResponseStream()
 
 	c.mu.Lock()
-	c.pendingRPCs[correlationID] = ch
+	c.pendingRPCs[correlationID] = stream
 	c.mu.Unlock()
 
 	// Build request with writer path
@@ -380,7 +437,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		c.mu.Lock()
 		delete(c.pendingRPCs, correlationID)
 		c.mu.Unlock()
-		close(ch)
+		stream.close()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("REQUEST failed: %w", err)
@@ -391,7 +448,7 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		c.mu.Lock()
 		delete(c.pendingRPCs, correlationID)
 		c.mu.Unlock()
-		close(ch)
+		stream.close()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("REQUEST failed: %w", mapRPCError(err))
@@ -400,20 +457,36 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		c.mu.Lock()
 		delete(c.pendingRPCs, correlationID)
 		c.mu.Unlock()
-		close(ch)
-		recordErr := fmt.Errorf("REQUEST failed: unexpected status")
+		stream.close()
+		recordErr := errors.New("REQUEST failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
 	}
 
 	iterator := &rpcIterator{
-		ch:            ch,
+		stream:        stream,
 		ctx:           ctx,
 		correlationID: correlationID,
 		client:        c,
 	}
 	return iterator, nil
+}
+
+// ClosePendingRPCs fails all in-flight RPC call iterators with connection.ErrConnectionClosed.
+func (c *client) ClosePendingRPCs() {
+	c.mu.Lock()
+	if len(c.pendingRPCs) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	pending := c.pendingRPCs
+	c.pendingRPCs = make(map[[16]byte]*responseStream, len(pending))
+	c.mu.Unlock()
+
+	for _, stream := range pending {
+		stream.fail(connection.ErrConnectionClosed)
+	}
 }
 
 // responseWriter implements ResponseWriter for workers.
@@ -439,7 +512,7 @@ func (w *responseWriter) sendEnd() {
 	seq := w.seq
 	w.mu.Unlock()
 
-	// sendEnd is called from finalisation paths (worker return, iterator close).
+	// sendEnd is called from finalization paths (worker return, iterator close).
 	// Errors here are intentionally dropped: the correlation ID has already
 	// been removed from the in-flight map, so there is no state to roll back.
 	// The caller observes the cancellation/end via iterator.Err() or context.
@@ -448,7 +521,7 @@ func (w *responseWriter) sendEnd() {
 
 // rpcIterator iterates over response frames from a Call.
 type rpcIterator struct {
-	ch            chan ResponseFrame
+	stream        *responseStream
 	ctx           context.Context
 	correlationID [16]byte
 	client        *client
@@ -466,43 +539,35 @@ func (it *rpcIterator) Next() bool {
 	}
 	it.mu.Unlock()
 
-	// Eagerly check context cancellation before entering the select.  This
-	// prevents the race where both it.ch has a buffered frame AND ctx.Done()
-	// is already closed simultaneously — without this guard, Go's scheduler
-	// would non-deterministically choose between the two cases, causing
-	// callers to receive a stale frame even after cancellation (CS-008).
+	// Eagerly check context cancellation before waiting on the response stream.
+	// This preserves deadline/cancel semantics even if the stream still has
+	// queued frames from the server.
 	if err := it.ctx.Err(); err != nil {
 		it.mu.Lock()
 		it.err = err
 		it.done = true
 		it.mu.Unlock()
-		it.client.mu.Lock()
-		delete(it.client.pendingRPCs, it.correlationID)
-		it.client.mu.Unlock()
+		it.client.removePendingRPC(it.correlationID)
 		return false
 	}
 
-	select {
-	case frame, ok := <-it.ch:
-		if !ok {
-			it.mu.Lock()
-			it.done = true
-			it.mu.Unlock()
-			return false
-		}
-		it.current = frame
-		return true
-	case <-it.ctx.Done():
+	frame, ok, err := it.stream.next(it.ctx)
+	if err != nil {
 		it.mu.Lock()
-		it.err = it.ctx.Err()
+		it.err = err
 		it.done = true
 		it.mu.Unlock()
-		// Clean up pending RPC immediately when context is canceled
-		it.client.mu.Lock()
-		delete(it.client.pendingRPCs, it.correlationID)
-		it.client.mu.Unlock()
+		it.client.removePendingRPC(it.correlationID)
 		return false
 	}
+	if !ok {
+		it.mu.Lock()
+		it.done = true
+		it.mu.Unlock()
+		return false
+	}
+	it.current = frame
+	return true
 }
 
 func (it *rpcIterator) Value() ResponseFrame {
@@ -519,11 +584,16 @@ func (it *rpcIterator) Close() error {
 	it.mu.Lock()
 	it.done = true
 	it.mu.Unlock()
+	it.stream.close()
 	// Clean up pending RPC
-	it.client.mu.Lock()
-	delete(it.client.pendingRPCs, it.correlationID)
-	it.client.mu.Unlock()
+	it.client.removePendingRPC(it.correlationID)
 	return nil
+}
+
+func (c *client) removePendingRPC(correlationID [16]byte) {
+	c.mu.Lock()
+	delete(c.pendingRPCs, correlationID)
+	c.mu.Unlock()
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {
@@ -544,12 +614,47 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 
-	for route, handler := range snapshot {
-		if _, err := c.subscribeWorker(ctx, route, handler); err != nil {
+	restoredRoutes := make([]string, 0, len(snapshot))
+
+	for route := range snapshot {
+		if err := c.restoreSubscribeWorker(ctx, route); err != nil {
+			for idx := len(restoredRoutes) - 1; idx >= 0; idx-- {
+				c.rollbackRestoredWorker(restoredRoutes[idx])
+			}
 			return err
 		}
+		restoredRoutes = append(restoredRoutes, route)
+	}
+
+	c.mu.Lock()
+	for route, handler := range snapshot {
+		c.workers[route] = handler
+	}
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *client) restoreSubscribeWorker(ctx context.Context, route string) error {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route))
+	if err != nil {
+		return fmt.Errorf("SUBSCRIBE_WORKER request failed: %w", err)
+	}
+
+	success, _, err := connection.ParseStandardResponse(resp)
+	if err != nil {
+		return fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err))
+	}
+	if !success {
+		return errors.New("SUBSCRIBE_WORKER failed: unexpected status")
 	}
 	return nil
+}
+
+func (c *client) rollbackRestoredWorker(route string) {
+	ctx := c.conn.LifecycleContext()
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcUnsubscribeWorker, rpcUnsubscribeWorkerPayloadWriter(route))
+	_ = resp
+	_ = err
 }
 
 func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCHandler) (*Subscription, error) {
@@ -563,7 +668,7 @@ func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCH
 		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: %w", mapRPCError(err))
 	}
 	if !success {
-		return nil, fmt.Errorf("SUBSCRIBE_WORKER failed: unexpected status")
+		return nil, errors.New("SUBSCRIBE_WORKER failed: unexpected status")
 	}
 
 	c.mu.Lock()

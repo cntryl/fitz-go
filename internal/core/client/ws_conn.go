@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -50,7 +51,7 @@ func doClientHandshake(conn net.Conn, host, path string) (*bufio.Reader, error) 
 
 	accept := hdrs.Get("Sec-WebSocket-Accept")
 	if accept == "" {
-		return nil, fmt.Errorf("missing Sec-WebSocket-Accept header")
+		return nil, errors.New("missing Sec-WebSocket-Accept header")
 	}
 
 	// validate accept
@@ -185,13 +186,14 @@ func writeFrame(w io.Writer, opcode byte, payload []byte, mask bool) error {
 	hdr := []byte{0x80 | (opcode & 0x0f)}
 
 	payloadLen := len(payload)
-	if payloadLen <= 125 {
+	switch {
+	case payloadLen <= 125:
 		b := byte(payloadLen)
 		if mask {
 			b |= 0x80
 		}
 		hdr = append(hdr, b)
-	} else if payloadLen <= 0xffff {
+	case payloadLen <= 0xffff:
 		b := byte(126)
 		if mask {
 			b |= 0x80
@@ -199,7 +201,7 @@ func writeFrame(w io.Writer, opcode byte, payload []byte, mask bool) error {
 		hdr = append(hdr, b)
 		ext := []byte{byte(payloadLen >> 8), byte(payloadLen)}
 		hdr = append(hdr, ext...)
-	} else {
+	default:
 		b := byte(127)
 		if mask {
 			b |= 0x80
@@ -249,20 +251,21 @@ func readFrame(r io.Reader) (byte, []byte, error) {
 	mask := b[1]&0x80 != 0
 	len7 := int(b[1] & 0x7f)
 	var length uint64
-	if len7 <= 125 {
+	switch {
+	case len7 <= 125:
 		length = uint64(len7)
-	} else if len7 == 126 {
+	case len7 == 126:
 		var ex [2]byte
 		if _, err := io.ReadFull(r, ex[:2]); err != nil {
 			return 0, nil, err
 		}
 		length = uint64(ex[0])<<8 | uint64(ex[1])
-	} else if len7 == 127 {
+	case len7 == 127:
 		var ex [8]byte
 		if _, err := io.ReadFull(r, ex[:8]); err != nil {
 			return 0, nil, err
 		}
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			length = (length << 8) | uint64(ex[i])
 		}
 	}

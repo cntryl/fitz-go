@@ -1,7 +1,6 @@
 package connection
 
 import (
-	"container/list"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -13,8 +12,123 @@ import (
 // pendingRequest represents one in-flight request awaiting response.
 type pendingRequest struct {
 	responseChan chan []byte
+	waiter       *requestWaiter
 	cancelFunc   context.CancelFunc
-	sentAt       time.Time
+}
+
+type requestWaiter struct {
+	ready       chan struct{}
+	response    []byte
+	hasResponse bool
+	closed      bool
+}
+
+var requestWaiterPool = sync.Pool{
+	New: func() interface{} {
+		return &requestWaiter{ready: make(chan struct{}, 1)}
+	},
+}
+
+func acquireRequestWaiter() *requestWaiter {
+	waiter := requestWaiterPool.Get().(*requestWaiter)
+	waiter.reset()
+	return waiter
+}
+
+func releaseRequestWaiter(waiter *requestWaiter) {
+	if waiter == nil {
+		return
+	}
+	waiter.reset()
+	requestWaiterPool.Put(waiter)
+}
+
+func (w *requestWaiter) reset() {
+	if w == nil {
+		return
+	}
+	w.response = nil
+	w.hasResponse = false
+	w.closed = false
+	select {
+	case <-w.ready:
+	default:
+	}
+}
+
+func (w *requestWaiter) deliver(payload []byte) {
+	if w == nil {
+		return
+	}
+	w.response = payload
+	w.hasResponse = true
+	select {
+	case w.ready <- struct{}{}:
+	default:
+	}
+}
+
+func (w *requestWaiter) fail() {
+	if w == nil {
+		return
+	}
+	w.closed = true
+	select {
+	case w.ready <- struct{}{}:
+	default:
+	}
+}
+
+type requestQueue struct {
+	items []pendingRequest
+}
+
+func (q *requestQueue) push(req pendingRequest) {
+	q.items = append(q.items, req)
+}
+
+func (q *requestQueue) pop() (pendingRequest, bool) {
+	if len(q.items) == 0 {
+		return pendingRequest{}, false
+	}
+	req := q.items[0]
+	copy(q.items, q.items[1:])
+	last := len(q.items) - 1
+	q.items[last] = pendingRequest{}
+	q.items = q.items[:last]
+	return req, true
+}
+
+func (q *requestQueue) remove(responseChan chan []byte) (pendingRequest, bool) {
+	for idx := range q.items {
+		if q.items[idx].responseChan != responseChan {
+			continue
+		}
+		req := q.items[idx]
+		copy(q.items[idx:], q.items[idx+1:])
+		q.items[len(q.items)-1] = pendingRequest{}
+		q.items = q.items[:len(q.items)-1]
+		return req, true
+	}
+	return pendingRequest{}, false
+}
+
+func (q *requestQueue) removeWaiter(waiter *requestWaiter) (pendingRequest, bool) {
+	for idx := range q.items {
+		if q.items[idx].waiter != waiter {
+			continue
+		}
+		req := q.items[idx]
+		copy(q.items[idx:], q.items[idx+1:])
+		q.items[len(q.items)-1] = pendingRequest{}
+		q.items = q.items[:len(q.items)-1]
+		return req, true
+	}
+	return pendingRequest{}, false
+}
+
+func (q *requestQueue) len() int {
+	return len(q.items)
 }
 
 // Multiplexer routes responses to pending requests using FIFO ordering.
@@ -23,8 +137,8 @@ type pendingRequest struct {
 type Multiplexer struct {
 	// FIFO queue of pending requests per MessageType
 	// Key = MessageType (100-199 for KV, 200-299 for Queue, etc.)
-	// Value = queue of *pendingRequest (oldest at front)
-	pending   map[uint16]*list.List
+	// Value = queue of pendingRequest (oldest at front)
+	pending   map[uint16]*requestQueue
 	mu        sync.Mutex
 	handlerMu sync.RWMutex
 
@@ -47,7 +161,7 @@ type Multiplexer struct {
 // NewMultiplexer creates a new multiplexer.
 func NewMultiplexer() *Multiplexer {
 	return &Multiplexer{
-		pending:        make(map[uint16]*list.List),
+		pending:        make(map[uint16]*requestQueue),
 		notifyHandlers: make(map[uint16]func(subID uint64, route string, payload []byte)),
 	}
 }
@@ -67,24 +181,44 @@ func (m *Multiplexer) RegisterRequest(msgType uint16, responseChan chan []byte, 
 	// Get or create FIFO queue for this MessageType
 	queue, exists := m.pending[msgType]
 	if !exists {
-		queue = list.New()
+		queue = &requestQueue{}
 		m.pending[msgType] = queue
 	}
 
 	// Add to back of queue (FIFO)
-	req := &pendingRequest{
+	req := pendingRequest{
 		responseChan: responseChan,
 		cancelFunc:   cancelFunc,
-		sentAt:       time.Now(),
 	}
-	queue.PushBack(req)
+	queue.push(req)
+
+	m.requestsInFlight.Add(1)
+	m.requestsTotal.Add(1)
+}
+
+func (m *Multiplexer) RegisterRequestWaiter(msgType uint16, waiter *requestWaiter, cancelFunc context.CancelFunc) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed.Load() {
+		waiter.fail()
+		return
+	}
+
+	queue, exists := m.pending[msgType]
+	if !exists {
+		queue = &requestQueue{}
+		m.pending[msgType] = queue
+	}
+
+	queue.push(pendingRequest{waiter: waiter, cancelFunc: cancelFunc})
 
 	m.requestsInFlight.Add(1)
 	m.requestsTotal.Add(1)
 }
 
 // UnregisterRequest removes a pending request from the queue.
-// Called when context is cancelled before response arrives.
+// Called when context is canceled before response arrives.
 func (m *Multiplexer) UnregisterRequest(msgType uint16, responseChan chan []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -94,18 +228,27 @@ func (m *Multiplexer) UnregisterRequest(msgType uint16, responseChan chan []byte
 		return
 	}
 
-	// Find and remove matching request
-	for e := queue.Front(); e != nil; e = e.Next() {
-		req := e.Value.(*pendingRequest)
-		if req.responseChan == responseChan {
-			queue.Remove(e)
-			m.requestsInFlight.Add(-1)
-			if queue.Len() == 0 {
-				delete(m.pending, msgType)
-			}
-			return
-		}
+	// Find and remove matching request.
+	if _, ok := queue.remove(responseChan); ok {
+		m.requestsInFlight.Add(-1)
+		return
 	}
+}
+
+func (m *Multiplexer) UnregisterRequestWaiter(msgType uint16, waiter *requestWaiter) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	queue, exists := m.pending[msgType]
+	if !exists {
+		return false
+	}
+
+	if _, ok := queue.removeWaiter(waiter); ok {
+		m.requestsInFlight.Add(-1)
+		return true
+	}
+	return false
 }
 
 // Dispatch routes a response to the appropriate handler.
@@ -131,26 +274,19 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 		return
 	}
 	if msgType == 302 {
-		// 302 can be either: (1) sync response (ack) to our outgoing REQUEST, or (2) async REQUEST forwarded to us as worker.
-		// If we have a pending request for 302, this is the ack; otherwise deliver to worker handler.
-		m.mu.Lock()
-		queue, exists := m.pending[302]
-		hasPending := exists && queue.Len() > 0
-		m.mu.Unlock()
-		if hasPending {
-			// Sync response to caller's SendRequest(302) — fall through to sync path below
-		} else if m.rpcRequestHandler() != nil {
+		// RPC worker requests have a fixed TLV shape: [u32 len=16][16-byte correlation_id][route][reply_route][body].
+		// Route those explicitly so an in-flight 302 call cannot steal an inbound worker request.
+		if m.looksLikeRpcWorkerRequest(payload) {
 			m.handleRpcRequest(payload)
 			return
 		}
-		// If no pending and no handler, fall through to sync path (will drop if no pending)
 	}
 	if msgType == 303 {
 		// 303 can be either: (1) sync response (ack) to our outgoing RESPONSE as worker, or (2) async RESPONSE forwarded to us as caller.
 		// If we have a pending request for 303, this is the ack; otherwise deliver to caller's response handler.
 		m.mu.Lock()
 		queue303, exists303 := m.pending[303]
-		hasPending303 := exists303 && queue303.Len() > 0
+		hasPending303 := exists303 && queue303.len() > 0
 		m.mu.Unlock()
 		if hasPending303 {
 			// Sync response to worker's SendRequest(303) — fall through to sync path below
@@ -163,20 +299,16 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	// Synchronous request/response - route to oldest pending request
 	m.mu.Lock()
 	queue, exists := m.pending[msgType]
-	if !exists || queue.Len() == 0 {
+	if !exists || queue.len() == 0 {
 		m.mu.Unlock()
 		// Unexpected response (no pending request)
-		// This can happen if context was cancelled but response arrived
+		// This can happen if context was canceled but response arrived
 		m.responsesDropped.Add(1)
 		return
 	}
 
 	// Pop oldest pending request (FIFO order)
-	elem := queue.Front()
-	req := queue.Remove(elem).(*pendingRequest)
-	if queue.Len() == 0 {
-		delete(m.pending, msgType)
-	}
+	req, _ := queue.pop()
 	m.mu.Unlock()
 
 	m.requestsInFlight.Add(-1)
@@ -184,6 +316,11 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 
 	// Deliver on a fast path first; if the consumer is slow, wait off the
 	// dispatch loop so response routing stays responsive under backpressure.
+	if req.waiter != nil {
+		req.waiter.deliver(payload)
+		return
+	}
+
 	select {
 	case req.responseChan <- payload:
 		// Success - response delivered immediately.
@@ -303,6 +440,14 @@ func (m *Multiplexer) handleRpcRequest(payload []byte) {
 	}
 }
 
+func (m *Multiplexer) looksLikeRpcWorkerRequest(payload []byte) bool {
+	if len(payload) < 20 {
+		return false
+	}
+	corrLen := binary.BigEndian.Uint32(payload[0:4])
+	return corrLen == 16 && len(payload) >= 4+int(corrLen)
+}
+
 // handleRpcResponse processes RPC RESPONSE messages (async delivery).
 // Per server rpc_codec.rs: [bytes correlation_id][u64 seq][bytes body][u8 stream_end]
 // where "bytes" = [u32 BE len][data] (TLV bytes format)
@@ -397,18 +542,22 @@ func (m *Multiplexer) Close() error {
 
 	// Close all pending request channels (signals error to waiters)
 	for _, queue := range m.pending {
-		for e := queue.Front(); e != nil; e = e.Next() {
-			req := e.Value.(*pendingRequest)
+		for idx := range queue.items {
+			req := queue.items[idx]
 			if req.cancelFunc != nil {
 				req.cancelFunc()
 			}
 			m.requestsInFlight.Add(-1)
+			if req.waiter != nil {
+				req.waiter.fail()
+				continue
+			}
 			close(req.responseChan)
 		}
 	}
 
 	// Clear pending requests
-	m.pending = make(map[uint16]*list.List)
+	m.pending = make(map[uint16]*requestQueue)
 
 	return nil
 }

@@ -32,6 +32,26 @@ func TestShouldAuthenticateAfterSilentConnectWindowGivenValidJWTWhenStartCalled(
 	require.NoError(t, conn.Close())
 }
 
+func TestShouldRemainOpenGivenIdleReadTimeoutWhenAuthenticated(t *testing.T) {
+	transport := testkit.NewMockTransport()
+	cfg := DefaultConfig()
+	cfg.Token = ""
+	cfg.ReadTimeout = 10 * time.Millisecond
+	conn := New(transport, cfg)
+
+	require.NoError(t, conn.Start(context.Background()))
+
+	select {
+	case <-conn.Done():
+		t.Fatal("idle read timeout unexpectedly closed the connection")
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	assert.Equal(t, StateAuthenticated, conn.State())
+	assert.NoError(t, conn.Err())
+	require.NoError(t, conn.Close())
+}
+
 func TestShouldReturnAuthenticationFailedGivenReadErrorWhenStartCalled(t *testing.T) {
 	// Arrange
 	transport := testkit.NewMockTransport()
@@ -63,7 +83,7 @@ func TestShouldLogReadErrorGivenLoggerWhenStartCalled(t *testing.T) {
 
 func TestShouldLogDecodeFailureGivenLoggerWhenStartCalled(t *testing.T) {
 	transport := testkit.NewMockTransport()
-	transport.SetReadFrames([][]byte{[]byte{0xFF}})
+	transport.SetReadFrames([][]byte{{0xFF}})
 	recorder := newLogRecorder()
 	cfg := DefaultConfig()
 	cfg.Token = "token"
@@ -94,6 +114,30 @@ func TestShouldConfirmAuthenticationGivenFirstValidResponseWhenStartCalled(t *te
 	require.NoError(t, err)
 	assert.True(t, conn.isAuthenticated())
 	require.NoError(t, conn.Close())
+}
+
+func TestShouldCloseLifecycleGivenDecodeFailureAfterStartWhenDispatchLoopExits(t *testing.T) {
+	transport := testkit.NewMockTransport()
+	transport.SetReadFrames([][]byte{{0xFF}})
+	conn := New(transport, Config{Token: "", ReadTimeout: time.Second})
+
+	require.NoError(t, conn.Start(context.Background()))
+
+	select {
+	case <-conn.Done():
+	case <-time.After(time.Second):
+		t.Fatal("dispatch loop did not exit after decode failure")
+	}
+
+	assert.Equal(t, StateClosed, conn.State())
+	require.Error(t, conn.Err())
+	assert.Contains(t, conn.Err().Error(), "decode frame")
+
+	select {
+	case <-conn.LifecycleContext().Done():
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle context was not canceled after dispatch failure")
+	}
 }
 
 func TestShouldReturnConnectionClosedGivenCloseWhileRequestPendingWhenSendRequestCalled(t *testing.T) {

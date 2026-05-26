@@ -1,4 +1,3 @@
-//nolint:exhaustive
 package client
 
 import (
@@ -50,6 +49,10 @@ type domainConnectionReplacer interface {
 	ReplaceConnection(conn *connection.Connection)
 }
 
+type pendingRPCCleaner interface {
+	ClosePendingRPCs()
+}
+
 // Client implements the Fitz client with connection management.
 // Per CLIENT_SPEC.md: Handles authentication, request/response correlation, and domain routing.
 type Client struct {
@@ -87,6 +90,7 @@ type Config struct {
 	AuthSettleDelay            time.Duration
 	ReadTimeout                time.Duration
 	WriteTimeout               time.Duration
+	MaxInFlightRequests        int
 	AsyncHandlerTimeout        time.Duration
 	AsyncHandlerMaxConcurrency int
 
@@ -112,6 +116,7 @@ func defaultConfig() *Config {
 		AuthSettleDelay:            500 * time.Millisecond,
 		ReadTimeout:                30 * time.Second,
 		WriteTimeout:               10 * time.Second,
+		MaxInFlightRequests:        256,
 		AsyncHandlerTimeout:        30 * time.Second,
 		AsyncHandlerMaxConcurrency: 256,
 	}
@@ -138,6 +143,12 @@ func WithReadTimeout(timeout time.Duration) Option {
 // WithWriteTimeout sets the write timeout.
 func WithWriteTimeout(timeout time.Duration) Option {
 	return func(c *Config) { c.WriteTimeout = timeout }
+}
+
+// WithMaxInFlightRequests sets the maximum number of concurrently admitted
+// outbound request operations on a connection.
+func WithMaxInFlightRequests(max int) Option {
+	return func(c *Config) { c.MaxInFlightRequests = max }
 }
 
 // WithAsyncHandlerTimeout sets the timeout used for detached async handler spans.
@@ -289,7 +300,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	defer span.End()
 
 	if c.config.Logger != nil {
-		c.config.Logger.Info("connect started", "addr", c.addr)
+		c.config.Logger.InfoContext(ctx, "connect started", "addr", c.addr)
 	}
 
 	if err := c.config.validate(); err != nil {
@@ -306,7 +317,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 
 	if c.config.Logger != nil {
-		c.config.Logger.Info("connect success", "addr", c.addr)
+		c.config.Logger.InfoContext(ctx, "connect success", "addr", c.addr)
 	}
 	return nil
 }
@@ -491,6 +502,7 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 		AuthSettleDelay:            c.config.AuthSettleDelay,
 		ReadTimeout:                c.config.ReadTimeout,
 		WriteTimeout:               c.config.WriteTimeout,
+		MaxInFlightRequests:        c.config.MaxInFlightRequests,
 		AsyncHandlerTimeout:        c.config.AsyncHandlerTimeout,
 		AsyncHandlerMaxConcurrency: c.config.AsyncHandlerMaxConcurrency,
 		Logger:                     c.config.Logger,
@@ -566,10 +578,15 @@ func (c *Client) replaceDomainConnections(conn *connection.Connection) {
 func (c *Client) monitorConnection(conn *connection.Connection) {
 	<-conn.Done()
 
-	if c.closed.Load() {
+	if c.currentConnection() != conn {
 		return
 	}
-	if c.currentConnection() != conn {
+	c.conn.CompareAndSwap(conn, nil)
+
+	if cleaner, ok := c.rpcClient.(pendingRPCCleaner); ok {
+		cleaner.ClosePendingRPCs()
+	}
+	if c.closed.Load() {
 		return
 	}
 	if !c.config.ReconnectEnabled {

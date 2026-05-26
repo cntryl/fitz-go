@@ -1,11 +1,10 @@
 // Package queue implements the Fitz Queue domain client.
 // Per CLIENT_SPEC.md: FIFO message queue with lease-based processing.
-//
-//nolint:gosec,errcheck
 package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,7 +14,6 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/internal/core/subscriptions"
-	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -97,7 +95,7 @@ func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 		return fmt.Errorf("extend failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("extend failed: unexpected status")
+		recordErr := errors.New("extend failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -130,7 +128,7 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 		return fmt.Errorf("complete failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("complete failed: unexpected status")
+		recordErr := errors.New("complete failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
@@ -182,7 +180,7 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.queue.Enqueue", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("queue.Enqueue", "route", route)
+		log.DebugContext(ctx, "queue.Enqueue", "route", route)
 	}
 
 	// Validate route format
@@ -206,7 +204,7 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 		return 0, fmt.Errorf("enqueue failed: %w", err)
 	}
 	if !success {
-		recordErr := fmt.Errorf("enqueue failed: unexpected status")
+		recordErr := errors.New("enqueue failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return 0, recordErr
@@ -257,7 +255,7 @@ func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs
 	))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("queue.Reserve", "route", route, "lease_secs", leaseSecs, "batch_size", cfg.batchSize, "wait_seconds", cfg.waitSeconds)
+		log.DebugContext(ctx, "queue.Reserve", "route", route, "lease_secs", leaseSecs, "batch_size", cfg.batchSize, "wait_seconds", cfg.waitSeconds)
 	}
 
 	// Validate route format
@@ -338,7 +336,7 @@ func (c *client) reserveOnce(
 		return nil, fmt.Errorf("reserve failed: %w", err)
 	}
 	if !success {
-		return nil, fmt.Errorf("reserve failed: unexpected status")
+		return nil, errors.New("reserve failed: unexpected status")
 	}
 
 	items, err := parseReserveItems(remaining, route, c.conn)
@@ -356,7 +354,7 @@ func parseReserveItems(remaining []byte, route string, conn *connection.Connecti
 	}
 
 	items := make([]*QueueItem, 0, count)
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		item := &QueueItem{route: route, conn: conn}
 
 		item.ID, offset, err = connection.ReadU64BE(remaining, offset)
@@ -381,7 +379,7 @@ func parseReserveItems(remaining []byte, route string, conn *connection.Connecti
 	}
 
 	if offset != len(remaining) {
-		return nil, fmt.Errorf("reserve response has trailing bytes")
+		return nil, errors.New("reserve response has trailing bytes")
 	}
 
 	return items, nil
@@ -410,30 +408,7 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	lifecycleCtx := c.conn.LifecycleContext()
 
 	for _, handler := range handlers {
-		go func() {
-			handlerCtx, cancel, span := coretracing.StartDetachedSpan(
-				lifecycleCtx,
-				c.conn.Tracer(),
-				"fitz.queue.handler",
-				c.conn.AsyncHandlerTimeout(),
-				trace.WithAttributes(
-					attribute.Int64("fitz.subscription_id", int64(subID)),
-					attribute.String("fitz.route", route),
-				),
-			)
-			defer cancel()
-			defer span.End()
-
-			release, ok := c.conn.AcquireAsyncHandlerSlot(handlerCtx)
-			if !ok {
-				if err := handlerCtx.Err(); err != nil {
-					span.RecordError(err)
-					span.SetStatus(codes.Error, err.Error())
-				}
-				return
-			}
-			defer release()
-
+		if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.queue.handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 			if err := handler(handlerCtx, notif); err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
@@ -441,7 +416,14 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 					log.Warn("queue notify handler failed", "route", route, "error", err)
 				}
 			}
-		}()
+		}, trace.WithAttributes(
+			attribute.Int64("fitz.subscription_id", int64(subID)),
+			attribute.String("fitz.route", route),
+		)) {
+			if log := c.conn.Logger(); log != nil {
+				log.Warn("queue notify handler dropped", "route", route, "sub_id", subID, "reason", "async handler queue full")
+			}
+		}
 	}
 }
 
@@ -451,7 +433,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Availabi
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.queue.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.Debug("queue.Subscribe", "pattern", pattern)
+		log.DebugContext(ctx, "queue.Subscribe", "pattern", pattern)
 	}
 	if err := types.ValidateSelectorRoute(pattern, "queue", 3, true); err != nil {
 		span.RecordError(err)
@@ -489,7 +471,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	parseQueueResponse(resp)
+	if _, _, err := parseQueueResponse(resp); err != nil {
+		return
+	}
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {
@@ -502,9 +486,22 @@ func (c *client) ReplaceConnection(conn *connection.Connection) {
 }
 
 func (c *client) RestoreSubscriptions(ctx context.Context) error {
-	return c.subscriptions.Restore(func(pattern string) (uint64, error) {
-		return c.subscribeWire(ctx, pattern)
-	})
+	return c.subscriptions.Restore(
+		func(pattern string) (uint64, error) {
+			return c.subscribeWire(ctx, pattern)
+		},
+		func(pattern string, _ uint64) error {
+			resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(wireWatchPattern(pattern)))
+			if err != nil {
+				return err
+			}
+			if _, _, err = parseQueueResponse(resp); err != nil {
+				return err
+			}
+			c.conn.AddSubscriptions(-1)
+			return nil
+		},
+	)
 }
 
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
@@ -518,7 +515,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("subscribe failed: %w", err)
 	}
 	if !success {
-		return 0, fmt.Errorf("subscribe failed: unexpected status")
+		return 0, errors.New("subscribe failed: unexpected status")
 	}
 
 	subID, err := parseSubscriptionID(remaining)
@@ -558,6 +555,6 @@ func parseSubscriptionID(remaining []byte) (uint64, error) {
 		}
 		return subID, nil
 	default:
-		return 0, fmt.Errorf("subscribe response missing subscription_id")
+		return 0, errors.New("subscribe response missing subscription_id")
 	}
 }

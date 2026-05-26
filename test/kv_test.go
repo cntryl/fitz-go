@@ -46,12 +46,12 @@ func TestShouldReadValueGivenExistingKeyWhenGetCalled(t *testing.T) {
 
 		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 		require.NoError(t, err)
-		require.NoError(t, tx.Put(ctx, []byte("colour"), []byte("blue")))
+		require.NoError(t, tx.Put(ctx, []byte("color"), []byte("blue")))
 		require.NoError(t, tx.Commit(ctx))
 
 		readTx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
-		result, err := readTx.Get(ctx, []byte("colour"))
+		result, err := readTx.Get(ctx, []byte("color"))
 		require.NoError(t, err)
 		assert.True(t, result.Found)
 		assert.Equal(t, "blue", string(result.Value))
@@ -187,7 +187,7 @@ func TestShouldScanKeysInOrderGivenRangeWhenScanCalled(t *testing.T) {
 		require.NoError(t, err)
 		iter, _, err := readTx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("a"), EndKey: []byte("d"), Limit: 10})
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var keys []string
 		for iter.Next() {
@@ -224,7 +224,7 @@ func TestShouldDeleteRangeGivenRangeWhenDeleteRangeCalled(t *testing.T) {
 		require.NoError(t, err)
 		iter, _, err := readTx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("a"), EndKey: []byte("z"), Limit: 10})
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		var keys []string
 		for iter.Next() {
@@ -255,7 +255,7 @@ func TestShouldRespectLimitGivenScanLimitWhenScanCalled(t *testing.T) {
 		require.NoError(t, err)
 		iter, _, err := readTx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("a"), EndKey: []byte("z"), Limit: 2})
 		require.NoError(t, err)
-		defer iter.Close()
+		defer closeQuietly(iter)
 
 		count := 0
 		for iter.Next() {
