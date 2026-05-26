@@ -69,7 +69,7 @@ func (c *rpcClient) RegisterWorker(ctx context.Context, route string, handler RP
 		return handler(ctx, RPCInboundRequest{
 			Route:         req.Route,
 			ReplyRoute:    req.ReplyRoute,
-			Body:          append([]byte(nil), req.Body...),
+			Body:          req.Body,
 			correlationID: req.CorrelationID,
 		}, &rpcResponseWriter{inner: writer})
 	})

@@ -46,6 +46,7 @@ type responseStream struct {
 	mu     sync.Mutex
 	notify chan struct{}
 	frames []ResponseFrame
+	head   int
 	closed bool
 	err    error
 }
@@ -90,12 +91,11 @@ func (s *responseStream) closeWithError(err error) {
 func (s *responseStream) next(ctx context.Context) (ResponseFrame, bool, error) {
 	for {
 		s.mu.Lock()
-		if len(s.frames) > 0 {
-			frame := s.frames[0]
-			copy(s.frames, s.frames[1:])
-			last := len(s.frames) - 1
-			s.frames[last] = ResponseFrame{}
-			s.frames = s.frames[:last]
+		if s.head < len(s.frames) {
+			frame := s.frames[s.head]
+			s.frames[s.head] = ResponseFrame{}
+			s.head++
+			s.compactLocked()
 			s.mu.Unlock()
 			return frame, true, nil
 		}
@@ -113,6 +113,26 @@ func (s *responseStream) next(ctx context.Context) (ResponseFrame, bool, error) 
 			return ResponseFrame{}, false, ctx.Err()
 		}
 	}
+}
+
+func (s *responseStream) compactLocked() {
+	if s.head == 0 {
+		return
+	}
+	if s.head >= len(s.frames) {
+		s.frames = s.frames[:0]
+		s.head = 0
+		return
+	}
+	if s.head < 32 || s.head*2 < len(s.frames) {
+		return
+	}
+	copy(s.frames, s.frames[s.head:])
+	for idx := len(s.frames) - s.head; idx < len(s.frames); idx++ {
+		s.frames[idx] = ResponseFrame{}
+	}
+	s.frames = s.frames[:len(s.frames)-s.head]
+	s.head = 0
 }
 
 func (s *responseStream) signal() {

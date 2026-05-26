@@ -81,6 +81,7 @@ func (w *requestWaiter) fail() {
 
 type requestQueue struct {
 	items []pendingRequest
+	head  int
 }
 
 func (q *requestQueue) push(req pendingRequest) {
@@ -88,19 +89,18 @@ func (q *requestQueue) push(req pendingRequest) {
 }
 
 func (q *requestQueue) pop() (pendingRequest, bool) {
-	if len(q.items) == 0 {
+	if q.head >= len(q.items) {
 		return pendingRequest{}, false
 	}
-	req := q.items[0]
-	copy(q.items, q.items[1:])
-	last := len(q.items) - 1
-	q.items[last] = pendingRequest{}
-	q.items = q.items[:last]
+	req := q.items[q.head]
+	q.items[q.head] = pendingRequest{}
+	q.head++
+	q.compact()
 	return req, true
 }
 
 func (q *requestQueue) remove(responseChan chan []byte) (pendingRequest, bool) {
-	for idx := range q.items {
+	for idx := q.head; idx < len(q.items); idx++ {
 		if q.items[idx].responseChan != responseChan {
 			continue
 		}
@@ -108,13 +108,17 @@ func (q *requestQueue) remove(responseChan chan []byte) (pendingRequest, bool) {
 		copy(q.items[idx:], q.items[idx+1:])
 		q.items[len(q.items)-1] = pendingRequest{}
 		q.items = q.items[:len(q.items)-1]
+		if q.head > len(q.items) {
+			q.head = len(q.items)
+		}
+		q.compact()
 		return req, true
 	}
 	return pendingRequest{}, false
 }
 
 func (q *requestQueue) removeWaiter(waiter *requestWaiter) (pendingRequest, bool) {
-	for idx := range q.items {
+	for idx := q.head; idx < len(q.items); idx++ {
 		if q.items[idx].waiter != waiter {
 			continue
 		}
@@ -122,13 +126,40 @@ func (q *requestQueue) removeWaiter(waiter *requestWaiter) (pendingRequest, bool
 		copy(q.items[idx:], q.items[idx+1:])
 		q.items[len(q.items)-1] = pendingRequest{}
 		q.items = q.items[:len(q.items)-1]
+		if q.head > len(q.items) {
+			q.head = len(q.items)
+		}
+		q.compact()
 		return req, true
 	}
 	return pendingRequest{}, false
 }
 
 func (q *requestQueue) len() int {
-	return len(q.items)
+	if q.head >= len(q.items) {
+		return 0
+	}
+	return len(q.items) - q.head
+}
+
+func (q *requestQueue) compact() {
+	if q.head == 0 {
+		return
+	}
+	if q.head >= len(q.items) {
+		q.items = q.items[:0]
+		q.head = 0
+		return
+	}
+	if q.head < 32 || q.head*2 < len(q.items) {
+		return
+	}
+	copy(q.items, q.items[q.head:])
+	for idx := len(q.items) - q.head; idx < len(q.items); idx++ {
+		q.items[idx] = pendingRequest{}
+	}
+	q.items = q.items[:len(q.items)-q.head]
+	q.head = 0
 }
 
 // Multiplexer routes responses to pending requests using FIFO ordering.
@@ -332,12 +363,17 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 func (m *Multiplexer) deliverResponse(responseChan chan []byte, payload []byte) {
 	timer := time.NewTimer(100 * time.Millisecond)
 	defer timer.Stop()
+	defer func() {
+		if recover() != nil {
+			m.responsesDropped.Add(1)
+		}
+	}()
 
 	select {
 	case responseChan <- payload:
 	case <-timer.C:
-		m.responsesDropped.Add(1)
 		close(responseChan)
+		m.responsesDropped.Add(1)
 	}
 }
 
@@ -542,7 +578,7 @@ func (m *Multiplexer) Close() error {
 
 	// Close all pending request channels (signals error to waiters)
 	for _, queue := range m.pending {
-		for idx := range queue.items {
+		for idx := queue.head; idx < len(queue.items); idx++ {
 			req := queue.items[idx]
 			if req.cancelFunc != nil {
 				req.cancelFunc()

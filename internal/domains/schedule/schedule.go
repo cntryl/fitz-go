@@ -102,11 +102,10 @@ func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
 		return
 	}
 
-	body := append([]byte(nil), payload...)
 	lifecycleCtx := c.conn.LifecycleContext()
 	for _, handler := range handlers {
 		msg := Notification{
-			Payload: append([]byte(nil), body...),
+			Payload: append([]byte(nil), payload...),
 		}
 		if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.schedule.handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 			if err := handler(handlerCtx, msg); err != nil {
@@ -328,34 +327,38 @@ func (c *client) ListBySelector(ctx context.Context, selector string, offset, li
 		return nil, 0, fmt.Errorf("invalid selector: %w", err)
 	}
 
-	allEntries, err := c.listAll(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
+	const pageSize uint64 = 100
 
-	filtered := filterScheduleEntries(allEntries, selector)
-	totalCount := uint64(len(filtered))
-	if offset >= totalCount {
-		return []ScheduleEntry{}, totalCount, nil
-	}
+	var (
+		sourceOffset uint64
+		totalMatches uint64
+		window       = make([]ScheduleEntry, 0)
+	)
 
-	end := totalCount
-	if limit != 0 && offset+limit < end {
-		end = offset + limit
-	}
+	for {
+		page, totalCount, err := c.List(ctx, sourceOffset, pageSize)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(page) == 0 {
+			return window, totalMatches, nil
+		}
 
-	startIdx := int(offset)
-	endIdx := int(end)
-	window := make([]ScheduleEntry, 0, endIdx-startIdx)
-	for _, entry := range filtered[startIdx:endIdx] {
-		window = append(window, ScheduleEntry{
-			ID:      entry.ID,
-			Route:   entry.Route,
-			Cron:    entry.Cron,
-			Payload: append([]byte(nil), entry.Payload...),
-		})
+		for _, entry := range page {
+			if !scheduleSelectorMatches(selector, entry.Route) {
+				continue
+			}
+			if totalMatches >= offset && (limit == 0 || uint64(len(window)) < limit) {
+				window = append(window, entry)
+			}
+			totalMatches++
+		}
+
+		sourceOffset += uint64(len(page))
+		if sourceOffset >= totalCount {
+			return window, totalMatches, nil
+		}
 	}
-	return window, totalCount, nil
 }
 
 // Subscribe per CLIENT_SPEC.md (703): Request [route]. Response: [status][optional u64 subscription_id].
@@ -465,25 +468,6 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 	}
 	c.conn.AddSubscriptions(1)
 	return subID, nil
-}
-
-func (c *client) listAll(ctx context.Context) ([]ScheduleEntry, error) {
-	var (
-		offset  uint64
-		entries []ScheduleEntry
-	)
-
-	for {
-		page, totalCount, err := c.List(ctx, offset, 100)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, page...)
-		offset += uint64(len(page))
-		if len(page) == 0 || offset >= totalCount {
-			return entries, nil
-		}
-	}
 }
 
 func filterScheduleEntries(entries []ScheduleEntry, selector string) []ScheduleEntry {

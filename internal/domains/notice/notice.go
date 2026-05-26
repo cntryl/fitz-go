@@ -91,12 +91,11 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 		return
 	}
 
-	body := append([]byte(nil), payload...)
 	lifecycleCtx := c.conn.LifecycleContext()
 	for _, handler := range handlers {
 		msg := NoticeMsg{
 			Route: route,
-			Body:  append([]byte(nil), body...),
+			Body:  append([]byte(nil), payload...),
 		}
 		if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.notice.handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 			if err := handler(handlerCtx, msg); err != nil {

@@ -162,8 +162,8 @@ func (it *kvPairIterator) Next() bool {
 	}
 	value := it.inner.Value()
 	it.current = KVPair{
-		Key:   append([]byte(nil), value.Key...),
-		Value: append([]byte(nil), value.Value...),
+		Key:   value.Key,
+		Value: value.Value,
 	}
 	return true
 }

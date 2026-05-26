@@ -68,7 +68,7 @@ func wrapQueueItem(item *internalqueue.QueueItem) *QueueItem {
 	return &QueueItem{
 		id:    item.ID,
 		token: item.Token,
-		Body:  append([]byte(nil), item.Body...),
+		Body:  item.Body,
 		inner: item,
 	}
 }

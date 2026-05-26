@@ -77,7 +77,7 @@ func copyScheduleEntries(entries []internalschedule.ScheduleEntry) []ScheduleEnt
 			ID:      entry.ID,
 			Route:   entry.Route,
 			Cron:    entry.Cron,
-			Payload: append([]byte(nil), entry.Payload...),
+			Payload: entry.Payload,
 		})
 	}
 	return publicEntries
@@ -86,7 +86,7 @@ func copyScheduleEntries(entries []internalschedule.ScheduleEntry) []ScheduleEnt
 // Subscribe registers a handler for schedule fire notifications.
 func (c *scheduleClient) Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error) {
 	sub, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notification internalschedule.Notification) error {
-		return handler(ctx, ScheduleNotification{Payload: append([]byte(nil), notification.Payload...)})
+		return handler(ctx, ScheduleNotification{Payload: notification.Payload})
 	})
 	if err != nil {
 		return nil, err

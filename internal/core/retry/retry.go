@@ -44,10 +44,14 @@ func Do(ctx context.Context, cfg BackoffConfig, maxRetries int, fn func() error,
 			lastErr = err
 			if attempt < maxRetries {
 				delay := calculateDelay(cfg, attempt)
+				timer := time.NewTimer(delay)
 				select {
-				case <-time.After(delay):
+				case <-timer.C:
 					// Continue to next attempt
 				case <-ctx.Done():
+					if !timer.Stop() {
+						<-timer.C
+					}
 					return ctx.Err()
 				}
 			}

@@ -43,7 +43,7 @@ func (c *noticeClient) Subscribe(ctx context.Context, pattern string, handler No
 	sub, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, msg internalnotice.NoticeMsg) error {
 		return handler(ctx, NoticeMsg{
 			Route: msg.Route,
-			Body:  append([]byte(nil), msg.Body...),
+			Body:  msg.Body,
 		})
 	})
 	if err != nil {

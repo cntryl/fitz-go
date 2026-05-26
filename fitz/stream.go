@@ -172,15 +172,15 @@ func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset ui
 			Offset:     item.Offset,
 			FromOffset: item.FromOffset,
 			ToOffset:   item.ToOffset,
-			Reason:     cloneFilteredReasonPtr(item.Reason),
+			Reason:     item.Reason,
 		}
 		if item.Record != nil {
 			converted.Record = &StreamRecord{
 				Offset:      item.Record.Offset,
-				AreaOffset:  cloneUint64Ptr(item.Record.AreaOffset),
-				RealmOffset: cloneUint64Ptr(item.Record.RealmOffset),
-				Body:        append([]byte(nil), item.Record.Body...),
-				Metadata:    append([]byte(nil), item.Record.Metadata...),
+				AreaOffset:  item.Record.AreaOffset,
+				RealmOffset: item.Record.RealmOffset,
+				Body:        item.Record.Body,
+				Metadata:    item.Record.Metadata,
 				Timestamp:   item.Record.Timestamp,
 			}
 		}
@@ -191,8 +191,8 @@ func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset ui
 		Items: items,
 		Cursor: StreamReadCursor{
 			LastResourceOffset: page.Cursor.LastResourceOffset,
-			LastAreaOffset:     cloneUint64Ptr(page.Cursor.LastAreaOffset),
-			LastRealmOffset:    cloneUint64Ptr(page.Cursor.LastRealmOffset),
+			LastAreaOffset:     page.Cursor.LastAreaOffset,
+			LastRealmOffset:    page.Cursor.LastRealmOffset,
 			HasMore:            page.Cursor.HasMore,
 		},
 	}, nil
@@ -206,10 +206,10 @@ func (c *streamClient) Peek(ctx context.Context, route string) (*StreamRecord, e
 	}
 	return &StreamRecord{
 		Offset:      record.Offset,
-		AreaOffset:  cloneUint64Ptr(record.AreaOffset),
-		RealmOffset: cloneUint64Ptr(record.RealmOffset),
-		Body:        append([]byte(nil), record.Body...),
-		Metadata:    append([]byte(nil), record.Metadata...),
+		AreaOffset:  record.AreaOffset,
+		RealmOffset: record.RealmOffset,
+		Body:        record.Body,
+		Metadata:    record.Metadata,
 		Timestamp:   record.Timestamp,
 	}, nil
 }
@@ -226,7 +226,7 @@ func (c *streamClient) Metadata(ctx context.Context, route string) (*StreamMetad
 		RecordCount:    meta.RecordCount,
 		MaxBatchEvents: meta.MaxBatchEvents,
 		MaxBatchBytes:  meta.MaxBatchBytes,
-		TTLSeconds:     cloneUint64Ptr(meta.TTLSeconds),
+		TTLSeconds:     meta.TTLSeconds,
 		AreaWatermark:  meta.AreaWatermark,
 		RealmWatermark: meta.RealmWatermark,
 	}, nil
@@ -276,10 +276,10 @@ func (it *streamRecordIterator) Next() bool {
 	record := it.inner.Value()
 	it.current = StreamRecord{
 		Offset:      record.Offset,
-		AreaOffset:  cloneUint64Ptr(record.AreaOffset),
-		RealmOffset: cloneUint64Ptr(record.RealmOffset),
-		Body:        append([]byte(nil), record.Body...),
-		Metadata:    append([]byte(nil), record.Metadata...),
+		AreaOffset:  record.AreaOffset,
+		RealmOffset: record.RealmOffset,
+		Body:        record.Body,
+		Metadata:    record.Metadata,
 		Timestamp:   record.Timestamp,
 	}
 	return true
@@ -298,20 +298,4 @@ func (it *streamRecordIterator) Err() error {
 // Close releases iterator resources.
 func (it *streamRecordIterator) Close() error {
 	return it.inner.Close()
-}
-
-func cloneUint64Ptr(value *uint64) *uint64 {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneFilteredReasonPtr(value *internalstream.FilteredReason) *StreamFilteredReason {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
