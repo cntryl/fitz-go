@@ -94,10 +94,7 @@ func (it *rpcResponseIterator) Next() bool {
 		return false
 	}
 	value := it.inner.Value()
-	it.current = RPCResponseFrame{
-		Body:     append([]byte(nil), value.Body...),
-		Sequence: value.Sequence,
-	}
+	it.current = RPCResponseFrame{Body: value.Body, Sequence: value.Sequence}
 	return true
 }
 
