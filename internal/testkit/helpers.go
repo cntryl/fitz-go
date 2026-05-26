@@ -83,6 +83,21 @@ func BrokerConnectable(addr string) bool {
 	return true
 }
 
+// CloseQuietly closes a resource and discards the close error.
+func CloseQuietly[T interface{ Close() error }](value T) {
+	_ = value.Close()
+}
+
+// RollbackQuietly rolls back a resource and discards the rollback error.
+func RollbackQuietly[T interface{ Rollback(context.Context) error }](ctx context.Context, value T) {
+	_ = value.Rollback(ctx)
+}
+
+// ReleaseQuietly releases a resource and discards the release error.
+func ReleaseQuietly[T interface{ Release(context.Context) error }](ctx context.Context, value T) {
+	_ = value.Release(ctx)
+}
+
 // TCPFrameWrapper wraps a frame with TCP length prefix.
 func TCPFrameWrapper(frame []byte) []byte {
 	tcpFrame := make([]byte, 4+len(frame))

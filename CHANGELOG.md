@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Moved the broker-backed acceptance suite behind the `integration` build tag and split the release gate so the default `go test ./...` path stays fast while the broker matrix remains opt-in.
+
+### Removed
+
+- Deleted the obsolete bug-tracking placeholder in `bugs/README.md`.
+- Removed placeholder example stubs from `fitz/` that did not add value beyond package godoc.
+
 ## v1.0.0 - 2026-03-24
 
 ### Breaking Changes

@@ -2,16 +2,20 @@
 
 package integration
 
-import "context"
+import (
+	"context"
+
+	"github.com/cntryl/fitz-go/internal/testkit"
+)
 
 func closeQuietly[T interface{ Close() error }](value T) {
-	_ = value.Close()
+	testkit.CloseQuietly(value)
 }
 
 func rollbackQuietly[T interface{ Rollback(context.Context) error }](ctx context.Context, value T) {
-	_ = value.Rollback(ctx)
+	testkit.RollbackQuietly(ctx, value)
 }
 
 func releaseQuietly[T interface{ Release(context.Context) error }](ctx context.Context, value T) {
-	_ = value.Release(ctx)
+	testkit.ReleaseQuietly(ctx, value)
 }
