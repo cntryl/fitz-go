@@ -39,7 +39,7 @@ jobs:
         run: go build ./...
 
       - name: Run tests
-        run: go test ./...
+        run: go test ./... -timeout 60s
 
       - name: Stop broker stack
         if: always()

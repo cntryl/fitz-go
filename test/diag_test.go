@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 // diag_test.go — Diagnostic test for raw frame debugging.

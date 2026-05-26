@@ -150,8 +150,8 @@ _ = page.Cursor.LastResourceOffset
 
 ## Broker-backed tests
 
-Integration tests target a running Fitz broker and are part of the default
-verification bar.
+Integration tests target a running Fitz broker and are opt-in via the
+`integration` build tag.
 
 Use the local compose stack in [compose.yml](compose.yml):
 
@@ -172,6 +172,13 @@ export FITZ_BROKER_WS_ADDR=ws://localhost:4190/ws
 go test ./...
 ```
 
+Run the broker-backed acceptance suite explicitly when you want the full
+end-to-end matrix:
+
+```bash
+go test -tags=integration ./test
+```
+
 Auth-required broker example:
 
 ```bash
@@ -185,11 +192,11 @@ go test ./...
 
 Error-path coverage in the broker-backed suite includes unauthorized operations across all 7 domains, plus invalid KV range and invalid cron cases.
 
-Focused reconnect validation is usually more useful than a blanket `go test ./test/...` run in this repo. The high-signal reconnect slices are:
+Focused reconnect validation is usually more useful than a blanket `go test -tags=integration ./test` run in this repo. The high-signal reconnect slices are:
 
 ```bash
-go test ./test -run "TestShould(RestoreNoticeSubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreWorkerRegistrationGivenLiveDisconnectWhenReconnectEnabled|RestoreAvailabilitySubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreCommitSubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreLeaseSubscriptionGivenLiveDisconnectWhenReconnectEnabled)"
-go test ./test -run "TestShouldRestoreScheduleSubscriptionGivenLiveDisconnectWhenReconnectEnabled"
+go test -tags=integration ./test -run "TestShould(RestoreNoticeSubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreWorkerRegistrationGivenLiveDisconnectWhenReconnectEnabled|RestoreAvailabilitySubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreCommitSubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreLeaseSubscriptionGivenLiveDisconnectWhenReconnectEnabled)"
+go test -tags=integration ./test -run "TestShouldRestoreScheduleSubscriptionGivenLiveDisconnectWhenReconnectEnabled"
 go test ./test/conformance/... -run "TestConformanceSuite/(CS-009_disconnect_during_request|CS-010_reconnect_behavior)"
 ```
 
@@ -200,8 +207,8 @@ Benchmark thresholds and evidence policy are documented in [docs/PERF_RESULTS.md
 Run the full suite with:
 
 ```bash
-go test ./test/...
 go test ./...
+go test -tags=integration ./test
 ```
 
 Or use the repo-local verification script:

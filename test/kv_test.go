@@ -1,3 +1,5 @@
+//go:build integration
+
 //nolint:gosec,errcheck,dupl
 package integration
 

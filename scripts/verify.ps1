@@ -22,8 +22,8 @@ Write-Host "==> golangci-lint run --config .golangci.yml"
 Write-Host "==> go test ./..."
 go test ./...
 
-Write-Host "==> go test ./test/..."
-go test ./test/...
+Write-Host "==> go test -tags=integration ./test"
+go test -tags=integration ./test
 
 Write-Host "==> go test ./test/conformance/... -run TestConformanceSuite"
 go test ./test/conformance/... -run TestConformanceSuite
