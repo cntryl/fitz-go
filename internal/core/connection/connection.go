@@ -11,6 +11,7 @@ import (
 	"time"
 
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/internal/core/retry"
 	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
 	"github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/protocol"
@@ -62,16 +63,23 @@ type Connection struct {
 	writeMu          sync.Mutex   // Serializes outbound frames so FIFO request queues match wire order
 	requestSem       chan struct{}
 	oneWaySem        chan struct{}
+	queuedRequests   atomic.Int64
+	queuedWrites     atomic.Int64
 	asyncHandlerSem  chan struct{}
 	asyncHandlerJobs chan asyncHandlerJob
+	asyncHandlerMu   sync.Mutex
+	asyncClosing     atomic.Bool
 	asyncWorkersOnce sync.Once
+	heartbeatOnce    sync.Once
+	lastActivityUnix atomic.Int64
 
 	// CONNECT configuration (per CLIENT_SPEC.md)
 	token string
 
 	// Authentication confirmation
-	authConfirmed chan struct{} // Closed when auth succeeds
-	authError     error         // Set if auth fails
+	authConfirmed   chan struct{} // Closed when auth succeeds
+	authConfirmOnce sync.Once
+	authError       error // Set if auth fails
 
 	// Multiplexer for request/response correlation
 	mux *Multiplexer
@@ -115,10 +123,20 @@ type Config struct {
 	ReadTimeout                time.Duration // Default 30s (per-read timeout)
 	WriteTimeout               time.Duration // Default 10s
 	MaxInFlightRequests        int           // Default 256 concurrently admitted outbound requests
+	MaxRequestQueueSize        int           // Default 1024 waiters beyond MaxInFlightRequests
 	AsyncHandlerTimeout        time.Duration // Default 30s for detached async handler spans
 	AsyncHandlerMaxConcurrency int           // Default 256 concurrent async handlers
 	ReconnectEnabled           bool
 	ReconnectBackoff           time.Duration
+	RetryEnabled               bool
+	RetryConfigured            bool
+	RetryMaxAttempts           int
+	RetryBackoff               time.Duration
+	RetryMaxBackoff            time.Duration
+	HeartbeatEnabled           bool
+	HeartbeatConfigured        bool
+	HeartbeatInterval          time.Duration
+	HeartbeatTimeout           time.Duration
 
 	// Observability (optional)
 	Logger *slog.Logger // When nil, no logging.
@@ -133,6 +151,16 @@ func DefaultConfig() Config {
 		ReadTimeout:         30 * time.Second,
 		WriteTimeout:        10 * time.Second,
 		MaxInFlightRequests: 256,
+		MaxRequestQueueSize: 1024,
+		RetryEnabled:        true,
+		RetryConfigured:     true,
+		RetryMaxAttempts:    3,
+		RetryBackoff:        100 * time.Millisecond,
+		RetryMaxBackoff:     time.Second,
+		HeartbeatEnabled:    true,
+		HeartbeatConfigured: true,
+		HeartbeatInterval:   10 * time.Second,
+		HeartbeatTimeout:    30 * time.Second,
 	}
 }
 
@@ -143,6 +171,8 @@ var (
 	ErrAuthenticationTimeout    = errors.New("authentication timeout")
 	ErrConnectionClosed         = errors.New("connection closed")
 	ErrConnectionAlreadyStarted = errors.New("connection already started")
+	ErrRequestQueueFull         = errors.New("request queue full")
+	ErrStaleHandle              = errors.New("stale handle")
 )
 
 // New creates a new connection with the given transport.
@@ -162,11 +192,38 @@ func New(trans transport.Transport, cfg Config) *Connection {
 	if cfg.MaxInFlightRequests <= 0 {
 		cfg.MaxInFlightRequests = 256
 	}
+	if cfg.MaxRequestQueueSize < 0 {
+		cfg.MaxRequestQueueSize = 0
+	}
+	if cfg.MaxRequestQueueSize == 0 {
+		cfg.MaxRequestQueueSize = 1024
+	}
 	if cfg.AsyncHandlerTimeout == 0 {
 		cfg.AsyncHandlerTimeout = 30 * time.Second
 	}
 	if cfg.AsyncHandlerMaxConcurrency <= 0 {
 		cfg.AsyncHandlerMaxConcurrency = 256
+	}
+	if !cfg.RetryConfigured {
+		cfg.RetryEnabled = true
+	}
+	if cfg.RetryMaxAttempts <= 0 {
+		cfg.RetryMaxAttempts = 3
+	}
+	if cfg.RetryBackoff <= 0 {
+		cfg.RetryBackoff = 100 * time.Millisecond
+	}
+	if cfg.RetryMaxBackoff <= 0 {
+		cfg.RetryMaxBackoff = time.Second
+	}
+	if !cfg.HeartbeatConfigured {
+		cfg.HeartbeatEnabled = true
+	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = 10 * time.Second
+	}
+	if cfg.HeartbeatTimeout <= 0 {
+		cfg.HeartbeatTimeout = 30 * time.Second
 	}
 
 	tracer := cfg.Tracer
@@ -197,6 +254,8 @@ func New(trans transport.Transport, cfg Config) *Connection {
 		metricsEnabled:   cfg.Meter != nil,
 		tracingEnabled:   cfg.Tracer != nil,
 	}
+	conn.mux.setLogger(cfg.Logger)
+	conn.recordActivity()
 	conn.initAsyncHandlerMetrics()
 	return conn
 }
@@ -326,6 +385,7 @@ func (c *Connection) Start(ctx context.Context) error {
 		if c.logger != nil {
 			c.logger.InfoContext(ctx, "connection authenticated")
 		}
+		c.startHeartbeat()
 		return nil
 
 	case <-c.done:
@@ -350,9 +410,10 @@ func (c *Connection) Start(ctx context.Context) error {
 	case <-time.After(authSettleDelay):
 		// Valid JWT CONNECT is silently accepted by the broker; if the transport
 		// remains open through the auth window, treat the connection as
-		// authenticated.
-		if c.getConnError() != nil {
-			err := c.getConnError()
+		// authenticated. The dispatch loop's ReadTimeout (30s by default) is the
+		// fallback guard that wakes reads so transport closure/auth failure is
+		// still observed if the server stays silent longer than this window.
+		if err := c.authSettleError(ctx); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
@@ -361,8 +422,41 @@ func (c *Connection) Start(ctx context.Context) error {
 		if c.logger != nil {
 			c.logger.InfoContext(ctx, "connection authenticated after silent CONNECT window")
 		}
+		c.startHeartbeat()
 		return nil
 	}
+}
+
+func (c *Connection) authSettleError(ctx context.Context) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	select {
+	case <-c.done:
+		if err := c.getConnError(); err != nil {
+			return err
+		}
+		return ErrConnectionClosed
+	default:
+	}
+	if c.closed.Load() || c.State() == StateClosed {
+		if err := c.getConnError(); err != nil {
+			return err
+		}
+		return ErrConnectionClosed
+	}
+	if c.ctx.Err() != nil {
+		if err := c.getConnError(); err != nil {
+			return err
+		}
+		return ErrConnectionClosed
+	}
+	if err := c.getConnError(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // sendConnect sends the CONNECT message (MessageType=1).
@@ -397,6 +491,7 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
+	c.recordActivity()
 
 	// For anonymous mode (empty JWT), confirm immediately
 	// Per CLIENT_SPEC.md: Server stays silent on valid JWT
@@ -410,24 +505,22 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 // confirmAuthentication marks authentication as successful.
 // Called when first valid response arrives (or immediately for anonymous).
 func (c *Connection) confirmAuthentication() {
-	select {
-	case <-c.authConfirmed:
-		// Already confirmed
-	default:
+	c.authConfirmOnce.Do(func() {
 		c.setState(StateAuthenticated)
 		close(c.authConfirmed)
-	}
+	})
 }
 
 // dispatchLoop reads frames from transport and routes to multiplexer.
 // Runs in its own goroutine, started by Start().
 func (c *Connection) dispatchLoop() {
 	defer func() {
-		c.cancel()
 		c.setState(StateClosed)
 		if err := c.mux.Close(); err != nil && c.logger != nil {
 			c.logger.Warn("close multiplexer", "error", err)
 		}
+		c.beginAsyncHandlerShutdown()
+		c.cancel()
 		close(c.done)
 	}()
 
@@ -453,6 +546,7 @@ func (c *Connection) dispatchLoop() {
 				c.handleReadError(err)
 				return
 			}
+			c.recordActivity()
 
 			// Decode frame (MessageType + payload)
 			msgType, payload, err := protocol.DecodeFrame(frame)
@@ -483,6 +577,7 @@ func (c *Connection) dispatchLoop() {
 			c.handleReadError(err)
 			return
 		}
+		c.recordActivity()
 
 		// Decode frame (MessageType + payload)
 		msgType, payload, err := protocol.DecodeFrame(frame)
@@ -562,9 +657,7 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		return nil, ErrNotAuthenticated
 	}
 
-	ok := c.AcquireRequestSlot(ctx)
-	if !ok {
-		err := c.outboundAdmissionError(ctx)
+	if err := c.AcquireRequestSlotErr(ctx); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -613,6 +706,7 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		span.SetStatus(codes.Error, wrapped.Error())
 		return nil, wrapped
 	}
+	c.recordActivity()
 
 	select {
 	case <-waiter.ready:
@@ -684,9 +778,7 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		return nil, ErrNotAuthenticated
 	}
 
-	ok := c.AcquireRequestSlot(ctx)
-	if !ok {
-		err := c.outboundAdmissionError(ctx)
+	if err := c.AcquireRequestSlotErr(ctx); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -735,6 +827,7 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		span.SetStatus(codes.Error, wrapped.Error())
 		return nil, wrapped
 	}
+	c.recordActivity()
 
 	select {
 	case <-waiter.ready:
@@ -786,9 +879,7 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 		return ErrNotAuthenticated
 	}
 
-	ok := c.AcquireWriteSlot(ctx)
-	if !ok {
-		err := c.outboundAdmissionError(ctx)
+	if err := c.AcquireWriteSlotErr(ctx); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -820,6 +911,7 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 		span.SetStatus(codes.Error, wrapped.Error())
 		return wrapped
 	}
+	c.recordActivity()
 
 	return nil
 }
@@ -837,9 +929,7 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 		return ErrNotAuthenticated
 	}
 
-	ok := c.AcquireWriteSlot(ctx)
-	if !ok {
-		err := c.outboundAdmissionError(ctx)
+	if err := c.AcquireWriteSlotErr(ctx); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -871,6 +961,7 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 		span.SetStatus(codes.Error, wrapped.Error())
 		return wrapped
 	}
+	c.recordActivity()
 
 	return nil
 }
@@ -894,9 +985,9 @@ func (c *Connection) Close() error {
 		return nil
 	}
 
+	c.beginAsyncHandlerShutdown()
 	// Cancel context (signals dispatch loop to stop)
 	c.cancel()
-	c.drainAsyncHandlerJobs()
 
 	// Close transport FIRST to unblock any pending Read() calls.
 	// Without this, the dispatch loop would block forever on transport.Read()
@@ -1025,22 +1116,61 @@ func (c *Connection) MaxInFlightRequests() int {
 	return c.cfg.MaxInFlightRequests
 }
 
+// MaxRequestQueueSize returns the configured number of waiters admitted beyond
+// the active in-flight limit.
+func (c *Connection) MaxRequestQueueSize() int {
+	if c == nil {
+		return 1024
+	}
+	if c.cfg.MaxRequestQueueSize <= 0 {
+		return 1024
+	}
+	return c.cfg.MaxRequestQueueSize
+}
+
+// RetryEnabled reports whether automatic retry helpers are enabled.
+func (c *Connection) RetryEnabled() bool {
+	return c != nil && c.cfg.RetryEnabled
+}
+
 // AcquireRequestSlot acquires a concurrency slot for outbound request admission.
 // It returns false if acquisition was canceled by context shutdown/deadline.
 func (c *Connection) AcquireRequestSlot(ctx context.Context) bool {
+	return c.AcquireRequestSlotErr(ctx) == nil
+}
+
+// AcquireRequestSlotErr acquires a request slot or returns the admission error.
+func (c *Connection) AcquireRequestSlotErr(ctx context.Context) error {
 	if c == nil || c.requestSem == nil {
-		return true
+		return nil
 	}
 	if ctx == nil {
 		ctx = c.LifecycleContext()
 	}
 	select {
 	case c.requestSem <- struct{}{}:
-		return true
+		return nil
 	case <-ctx.Done():
-		return false
+		return ctx.Err()
 	case <-c.done:
-		return false
+		return c.outboundAdmissionError(ctx)
+	default:
+	}
+
+	queued := c.queuedRequests.Add(1)
+	if queued > int64(c.MaxRequestQueueSize()) {
+		c.queuedRequests.Add(-1)
+		return ErrRequestQueueFull
+	}
+	defer c.queuedRequests.Add(-1)
+
+	select {
+	case c.requestSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return c.outboundAdmissionError(ctx)
 	}
 }
 
@@ -1055,19 +1185,41 @@ func (c *Connection) ReleaseRequestSlot() {
 // AcquireWriteSlot acquires a concurrency slot for one-way outbound writes.
 // It returns false if acquisition was canceled by context shutdown/deadline.
 func (c *Connection) AcquireWriteSlot(ctx context.Context) bool {
+	return c.AcquireWriteSlotErr(ctx) == nil
+}
+
+// AcquireWriteSlotErr acquires a one-way write slot or returns the admission error.
+func (c *Connection) AcquireWriteSlotErr(ctx context.Context) error {
 	if c == nil || c.oneWaySem == nil {
-		return true
+		return nil
 	}
 	if ctx == nil {
 		ctx = c.LifecycleContext()
 	}
 	select {
 	case c.oneWaySem <- struct{}{}:
-		return true
+		return nil
 	case <-ctx.Done():
-		return false
+		return ctx.Err()
 	case <-c.done:
-		return false
+		return c.outboundAdmissionError(ctx)
+	default:
+	}
+
+	queued := c.queuedWrites.Add(1)
+	if queued > int64(c.MaxRequestQueueSize()) {
+		c.queuedWrites.Add(-1)
+		return ErrRequestQueueFull
+	}
+	defer c.queuedWrites.Add(-1)
+
+	select {
+	case c.oneWaySem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return c.outboundAdmissionError(ctx)
 	}
 }
 
@@ -1096,6 +1248,9 @@ func (c *Connection) LaunchAsyncHandler(parent context.Context, spanName string,
 	if parent == nil {
 		parent = c.LifecycleContext()
 	}
+	if c.closed.Load() || c.asyncClosing.Load() || c.State() == StateClosed {
+		return false
+	}
 	if err := c.ctx.Err(); err != nil {
 		return false
 	}
@@ -1109,6 +1264,21 @@ func (c *Connection) LaunchAsyncHandler(parent context.Context, spanName string,
 		cancel: cancel,
 		span:   span,
 		run:    run,
+	}
+
+	c.asyncHandlerMu.Lock()
+	defer c.asyncHandlerMu.Unlock()
+	if c.closed.Load() || c.asyncClosing.Load() || c.State() == StateClosed {
+		c.cancelAsyncHandlerJob(job, "connection shutting down")
+		return false
+	}
+	if err := c.ctx.Err(); err != nil {
+		c.cancelAsyncHandlerJob(job, err.Error())
+		return false
+	}
+	if err := parent.Err(); err != nil {
+		c.cancelAsyncHandlerJob(job, err.Error())
+		return false
 	}
 
 	select {
@@ -1142,9 +1312,22 @@ func (c *Connection) asyncHandlerWorker() {
 		case <-c.ctx.Done():
 			return
 		case job := <-c.asyncHandlerJobs:
-			c.executeAsyncHandlerJob(job)
+			if c.claimAsyncHandlerJob(job) {
+				c.executeAsyncHandlerJob(job)
+			}
 		}
 	}
+}
+
+func (c *Connection) claimAsyncHandlerJob(job asyncHandlerJob) bool {
+	c.asyncHandlerMu.Lock()
+	defer c.asyncHandlerMu.Unlock()
+	jobDone := job.ctx != nil && job.ctx.Err() != nil
+	if c.asyncClosing.Load() || c.closed.Load() || c.State() == StateClosed || c.ctx.Err() != nil || jobDone {
+		c.cancelAsyncHandlerJob(job, c.asyncHandlerStopError(job).Error())
+		return false
+	}
+	return true
 }
 
 func (c *Connection) executeAsyncHandlerJob(job asyncHandlerJob) {
@@ -1153,10 +1336,9 @@ func (c *Connection) executeAsyncHandlerJob(job asyncHandlerJob) {
 
 	release, ok := c.AcquireAsyncHandlerSlot(job.ctx)
 	if !ok {
-		if err := job.ctx.Err(); err != nil {
-			job.span.RecordError(err)
-			job.span.SetStatus(codes.Error, err.Error())
-		}
+		err := c.asyncHandlerStopError(job)
+		job.span.RecordError(err)
+		job.span.SetStatus(codes.Error, err.Error())
 		return
 	}
 	defer release()
@@ -1164,17 +1346,53 @@ func (c *Connection) executeAsyncHandlerJob(job asyncHandlerJob) {
 	job.run(job.ctx, job.span)
 }
 
-func (c *Connection) drainAsyncHandlerJobs() {
+func (c *Connection) beginAsyncHandlerShutdown() {
 	if c == nil || c.asyncHandlerJobs == nil {
 		return
 	}
+	c.asyncHandlerMu.Lock()
+	defer c.asyncHandlerMu.Unlock()
+	c.asyncClosing.Store(true)
+	c.drainAsyncHandlerJobsLocked()
+}
+
+func (c *Connection) drainAsyncHandlerJobsLocked() {
 	for {
 		select {
-		case <-c.asyncHandlerJobs:
+		case job := <-c.asyncHandlerJobs:
+			c.cancelAsyncHandlerJob(job, "connection shutting down")
 		default:
 			return
 		}
 	}
+}
+
+func (c *Connection) cancelAsyncHandlerJob(job asyncHandlerJob, reason string) {
+	if job.cancel != nil {
+		job.cancel()
+	}
+	if job.span != nil {
+		if reason != "" {
+			err := errors.New(reason)
+			job.span.RecordError(err)
+			job.span.SetStatus(codes.Error, err.Error())
+		}
+		job.span.End()
+	}
+}
+
+func (c *Connection) asyncHandlerStopError(job asyncHandlerJob) error {
+	if job.ctx != nil {
+		if err := job.ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if c != nil && c.ctx != nil {
+		if err := c.ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return errors.New("connection shutting down")
 }
 
 // AcquireAsyncHandlerSlot acquires a concurrency slot for async handler execution.
@@ -1213,6 +1431,12 @@ func (c *Connection) AcquireAsyncHandlerSlot(ctx context.Context) (release func(
 			<-c.asyncHandlerSem
 			recordWait(c.ctx)
 			recordFailure(c.ctx, "connection_shutdown")
+			return noop, false
+		}
+		if c.asyncClosing.Load() || c.closed.Load() || c.State() == StateClosed {
+			<-c.asyncHandlerSem
+			recordWait(c.LifecycleContext())
+			recordFailure(c.LifecycleContext(), "connection_shutdown")
 			return noop, false
 		}
 		recordWait(ctx)
@@ -1258,4 +1482,197 @@ func (c *Connection) ActiveSubscriptions() int64 {
 		return 0
 	}
 	return c.activeSubscriptions.Load()
+}
+
+// CheckLiveHandle returns ErrStaleHandle when a handle is bound to a
+// connection that has already closed. Stateful handles created before a
+// reconnect must fail fast instead of silently using the replacement
+// connection.
+func (c *Connection) CheckLiveHandle() error {
+	if c == nil {
+		return ErrStaleHandle
+	}
+	if c.closed.Load() {
+		return fmt.Errorf("%w: %w", ErrStaleHandle, ErrConnectionClosed)
+	}
+	select {
+	case <-c.done:
+		if err := c.getConnError(); err != nil {
+			return fmt.Errorf("%w: %w", ErrStaleHandle, err)
+		}
+		return fmt.Errorf("%w: %w", ErrStaleHandle, ErrConnectionClosed)
+	default:
+		return nil
+	}
+}
+
+// RunWithRetry executes fn with the connection retry policy. maxAttempts is
+// total attempts, not retries; the default is three attempts.
+func (c *Connection) RunWithRetry(ctx context.Context, fn func() error, isRetryable func(error) bool) error {
+	if c == nil || fn == nil {
+		return nil
+	}
+	if !c.cfg.RetryEnabled {
+		return fn()
+	}
+	if isRetryable == nil {
+		isRetryable = IsTransientRetryable
+	}
+	maxAttempts := c.cfg.RetryMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	backoff := retry.BackoffConfig{
+		InitialDelay: c.cfg.RetryBackoff,
+		MaxDelay:     c.cfg.RetryMaxBackoff,
+		Multiplier:   2.0,
+		JitterFactor: 0.1,
+	}
+	if backoff.InitialDelay <= 0 {
+		backoff.InitialDelay = 100 * time.Millisecond
+	}
+	if backoff.MaxDelay <= 0 {
+		backoff.MaxDelay = time.Second
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+		if !isRetryable(lastErr) || attempt == maxAttempts {
+			return lastErr
+		}
+
+		timer := time.NewTimer(retry.CalculateDelay(backoff, attempt-1))
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-c.done:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return c.outboundAdmissionError(ctx)
+		}
+	}
+	return lastErr
+}
+
+// IsTransientRetryable reports whether err is safe for replayable read retries.
+func IsTransientRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrConnectionClosed) ||
+		errors.Is(err, ErrNotAuthenticated) {
+		return true
+	}
+	var transportErr *transport.TransportError
+	if errors.As(err, &transportErr) {
+		return true
+	}
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		switch uint32(domainErr.Code) {
+		case coreerrors.KvIsolationConflict,
+			coreerrors.KvBackendError,
+			coreerrors.StreamReadBeyondWatermark,
+			coreerrors.QueueFull,
+			coreerrors.LeaseHeld,
+			coreerrors.RpcTimeout,
+			coreerrors.RpcWorkerNotFound,
+			coreerrors.RpcBackpressure,
+			coreerrors.RpcRouteNotRegistered:
+			return true
+		}
+	}
+	return false
+}
+
+type heartbeatSender interface {
+	SendHeartbeat(context.Context) error
+}
+
+type keepAliveEnabler interface {
+	EnableKeepAlive(time.Duration) error
+}
+
+func (c *Connection) startHeartbeat() {
+	if c == nil || !c.cfg.HeartbeatEnabled {
+		return
+	}
+	c.heartbeatOnce.Do(func() {
+		if enabler, ok := c.transport.(keepAliveEnabler); ok {
+			_ = enabler.EnableKeepAlive(c.cfg.HeartbeatInterval)
+		}
+		sender, ok := c.transport.(heartbeatSender)
+		if !ok {
+			return
+		}
+		go c.heartbeatLoop(sender)
+	})
+}
+
+func (c *Connection) heartbeatLoop(sender heartbeatSender) {
+	interval := c.cfg.HeartbeatInterval
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	timeout := c.cfg.HeartbeatTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	for {
+		last := time.Unix(0, c.lastActivityUnix.Load())
+		delay := interval - time.Since(last)
+		if delay < 0 {
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-c.done:
+			timer.Stop()
+			return
+		case <-c.ctx.Done():
+			timer.Stop()
+			return
+		}
+
+		if time.Since(time.Unix(0, c.lastActivityUnix.Load())) < interval {
+			continue
+		}
+
+		heartbeatCtx, cancel := context.WithTimeout(c.ctx, timeout)
+		err := sender.SendHeartbeat(heartbeatCtx)
+		cancel()
+		if err == nil {
+			c.recordActivity()
+			continue
+		}
+		if c.ctx.Err() != nil {
+			return
+		}
+		c.setConnError(fmt.Errorf("heartbeat failed: %w", err))
+		c.cancel()
+		_ = c.transport.Close()
+		return
+	}
+}
+
+func (c *Connection) recordActivity() {
+	if c == nil {
+		return
+	}
+	c.lastActivityUnix.Store(time.Now().UnixNano())
 }

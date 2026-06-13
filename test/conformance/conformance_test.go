@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
 // Covers 21 scenarios: the 16 scenarios currently implemented from the

@@ -24,6 +24,9 @@ When implementing or reviewing `fitz-go` behavior:
 - read the canonical documents above first
 - update the canonical docs before changing SDK protocol behavior
 - keep this file as a pointer, not a second protocol specification
+- treat route strings as opaque broker-owned values; client-side route
+  validation is limited to syntax/shape only and never validates permissions,
+  existence, realm semantics, resource names, or auth claims
 
 This file intentionally contains no duplicated wire-format tables or request
 examples so the Go SDK cannot drift from the server-owned client docs.

@@ -77,7 +77,8 @@ type Client interface {
 }
 
 type client struct {
-	conn *connection.Connection
+	conn   *connection.Connection
+	connMu sync.RWMutex
 
 	mu                      sync.Mutex
 	subscriptions           *subscriptions.Registry[ScheduleHandler]
@@ -91,32 +92,33 @@ func (c *client) initScheduleNotifyHandler() {
 	c.notifyHandlerInitOnce.Do(func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		c.conn.RegisterScheduleNotifyHandler(c.handleScheduleNotify)
+		c.currentConn().RegisterScheduleNotifyHandler(c.handleScheduleNotify)
 		c.notifyHandlerRegistered.Store(true)
 	})
 }
 
 func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
+	conn := c.currentConn()
 	handlers := c.subscriptions.Handlers(subID)
 	if len(handlers) == 0 {
 		return
 	}
 
-	lifecycleCtx := c.conn.LifecycleContext()
+	lifecycleCtx := conn.LifecycleContext()
 	for _, handler := range handlers {
 		msg := Notification{
 			Payload: append([]byte(nil), payload...),
 		}
-		if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.schedule.handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
+		if !conn.LaunchAsyncHandler(lifecycleCtx, "fitz.schedule.handler", conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 			if err := handler(handlerCtx, msg); err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
-				if log := c.conn.Logger(); log != nil {
+				if log := conn.Logger(); log != nil {
 					log.Warn("schedule notify handler failed", "error", err)
 				}
 			}
 		}, trace.WithAttributes(attribute.Int64("fitz.subscription_id", int64(subID)))) {
-			if log := c.conn.Logger(); log != nil {
+			if log := conn.Logger(); log != nil {
 				log.Warn("schedule notify handler dropped", "sub_id", subID, "reason", "async handler queue full")
 			}
 		}
@@ -128,16 +130,23 @@ func NewClient(conn *connection.Connection) Client {
 	return &client{conn: conn, subscriptions: subscriptions.NewRegistry[ScheduleHandler]()}
 }
 
+func (c *client) currentConn() *connection.Connection {
+	c.connMu.RLock()
+	defer c.connMu.RUnlock()
+	return c.conn
+}
+
 // Create per CLIENT_SPEC.md: Request [route_len][route][cron_len][cron][payload_len][payload].
 // Response: status=0 (success); optional [u8 has_schedule_id][string schedule_id] when present.
 // Returns route as identity (spec uses route-based identity).
 func (c *client) Create(ctx context.Context, route string, cronExpr string, payload []byte) (string, error) {
-	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.Create", trace.WithAttributes(
+	conn := c.currentConn()
+	ctx, span := conn.Tracer().Start(ctx, "fitz.schedule.Create", trace.WithAttributes(
 		attribute.String("fitz.route", route),
 		attribute.String("fitz.cron", cronExpr),
 	))
 	defer span.End()
-	if log := c.conn.Logger(); log != nil {
+	if log := conn.Logger(); log != nil {
 		log.DebugContext(ctx, "schedule.Create", "route", route, "cron", cronExpr)
 	}
 
@@ -153,7 +162,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 		return "", err
 	}
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreate, scheduleCreatePayloadWriter(route, cronExpr, payload))
+	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreate, scheduleCreatePayloadWriter(route, cronExpr, payload))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -187,9 +196,10 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 
 // Cancel per CLIENT_SPEC.md: Request [route_len][route] (route-based identity).
 func (c *client) Cancel(ctx context.Context, route string) error {
-	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.Cancel", trace.WithAttributes(attribute.String("fitz.route", route)))
+	conn := c.currentConn()
+	ctx, span := conn.Tracer().Start(ctx, "fitz.schedule.Cancel", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
-	if log := c.conn.Logger(); log != nil {
+	if log := conn.Logger(); log != nil {
 		log.DebugContext(ctx, "schedule.Cancel", "route", route)
 	}
 
@@ -200,7 +210,7 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 		return fmt.Errorf("invalid schedule route: %w", err)
 	}
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCancel, scheduleCancelPayloadWriter(route))
+	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCancel, scheduleCancelPayloadWriter(route))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -227,12 +237,13 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 // offset: starting offset (0-based), default 0
 // limit: max entries per page (0 = server default of 100), default 0
 func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
-	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.List")
+	conn := c.currentConn()
+	ctx, span := conn.Tracer().Start(ctx, "fitz.schedule.List")
 	defer span.End()
-	if log := c.conn.Logger(); log != nil {
+	if log := conn.Logger(); log != nil {
 		log.DebugContext(ctx, "schedule.List", "offset", offset, "limit", limit)
 	}
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleList, scheduleListPayloadWriter(offset, limit))
+	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleList, scheduleListPayloadWriter(offset, limit))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -366,9 +377,10 @@ func (c *client) ListBySelector(ctx context.Context, selector string, offset, li
 
 // Subscribe per CLIENT_SPEC.md (703): Request [route]. Response: [status][optional u64 subscription_id].
 func (c *client) Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*Subscription, error) {
-	ctx, span := c.conn.Tracer().Start(ctx, "fitz.schedule.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
+	conn := c.currentConn()
+	ctx, span := conn.Tracer().Start(ctx, "fitz.schedule.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
-	if log := c.conn.Logger(); log != nil {
+	if log := conn.Logger(); log != nil {
 		log.DebugContext(ctx, "schedule.Subscribe", "pattern", pattern)
 	}
 	c.initScheduleNotifyHandler()
@@ -400,11 +412,12 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if !c.subscriptions.Unsubscribe(sub.pattern, sub.handlerID) {
 		return
 	}
-	c.conn.AddSubscriptions(-1)
+	conn := c.currentConn()
+	conn.AddSubscriptions(-1)
 
 	// Best-effort unsubscribe; ignore errors to match notice semantics.
-	ctx := c.conn.LifecycleContext()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleUnsubscribe, scheduleUnsubscribePayloadWriter(sub.pattern))
+	ctx := conn.LifecycleContext()
+	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleUnsubscribe, scheduleUnsubscribePayloadWriter(sub.pattern))
 	if err != nil {
 		return
 	}
@@ -414,11 +427,11 @@ func (c *client) unsubscribe(sub *Subscription) {
 }
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.connMu.Lock()
 	c.conn = conn
+	c.connMu.Unlock()
 	if c.notifyHandlerRegistered.Load() {
-		c.conn.RegisterScheduleNotifyHandler(c.handleScheduleNotify)
+		conn.RegisterScheduleNotifyHandler(c.handleScheduleNotify)
 	}
 }
 
@@ -428,21 +441,23 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 			return c.subscribeWire(ctx, pattern)
 		},
 		func(pattern string, _ uint64) error {
-			resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleUnsubscribe, scheduleUnsubscribePayloadWriter(pattern))
+			conn := c.currentConn()
+			resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleUnsubscribe, scheduleUnsubscribePayloadWriter(pattern))
 			if err != nil {
 				return err
 			}
 			if _, _, err = connection.ParseStandardResponse(resp); err != nil {
 				return err
 			}
-			c.conn.AddSubscriptions(-1)
+			conn.AddSubscriptions(-1)
 			return nil
 		},
 	)
 }
 
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleSubscribe, scheduleSubscribePayloadWriter(pattern))
+	conn := c.currentConn()
+	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleSubscribe, scheduleSubscribePayloadWriter(pattern))
 	if err != nil {
 		return 0, fmt.Errorf("subscribe request failed: %w", err)
 	}
@@ -469,7 +484,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 	if err != nil {
 		return 0, fmt.Errorf("parse subscription_id: %w", err)
 	}
-	c.conn.AddSubscriptions(1)
+	conn.AddSubscriptions(1)
 	return subID, nil
 }
 

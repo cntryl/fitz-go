@@ -303,7 +303,7 @@ func TestShouldAllowManualReconnectGivenConnectionLossWhenReconnectDisabled(t *t
 	assert.Equal(t, []byte("token-1"), connectPayload)
 }
 
-func TestShouldRejectSecondConnectGivenExistingConnectionWhenConnectCalled(t *testing.T) {
+func TestShouldReturnNilWithoutRedialGivenExistingConnectionWhenConnectCalled(t *testing.T) {
 	originalDialTCP := dialTCPTransport
 	defer func() {
 		dialTCPTransport = originalDialTCP
@@ -324,7 +324,7 @@ func TestShouldRejectSecondConnectGivenExistingConnectionWhenConnectCalled(t *te
 	defer closeQuietly(c)
 
 	err := c.Connect(ctx)
-	require.ErrorIs(t, err, ErrClientAlreadyConnected)
+	require.NoError(t, err)
 	assert.Equal(t, 1, dialCalls)
 }
 
@@ -374,6 +374,24 @@ func TestShouldUseDefaultMaxInFlightRequestsGivenNoOptionWhenNewClientCreated(t 
 	assert.Equal(t, 256, c.config.MaxInFlightRequests)
 }
 
+func TestShouldUseTSStyleResilienceDefaultsGivenNoOptionsWhenNewClientCreated(t *testing.T) {
+	c := NewClient("localhost:4091", nil)
+
+	require.NotNil(t, c.config)
+	assert.True(t, c.config.ReconnectEnabled)
+	assert.Equal(t, 0, c.config.MaxReconnects)
+	assert.Equal(t, 250*time.Millisecond, c.config.ReconnectBackoff)
+	assert.Equal(t, 5*time.Second, c.config.ReconnectMaxDelay)
+	assert.True(t, c.config.RetryEnabled)
+	assert.Equal(t, 3, c.config.RetryMaxAttempts)
+	assert.Equal(t, 100*time.Millisecond, c.config.RetryBackoff)
+	assert.Equal(t, time.Second, c.config.RetryMaxDelay)
+	assert.True(t, c.config.HeartbeatEnabled)
+	assert.Equal(t, 10*time.Second, c.config.HeartbeatInterval)
+	assert.Equal(t, 30*time.Second, c.config.HeartbeatTimeout)
+	assert.Equal(t, 1024, c.config.MaxRequestQueueSize)
+}
+
 func TestShouldApplyAsyncHandlerMaxConcurrencyOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {
 	// Arrange
 	customMax := 64
@@ -384,6 +402,36 @@ func TestShouldApplyAsyncHandlerMaxConcurrencyOptionGivenOverrideWhenNewClientWi
 	// Assert
 	require.NotNil(t, c.config)
 	assert.Equal(t, customMax, c.config.AsyncHandlerMaxConcurrency)
+}
+
+func TestShouldEmitLifecycleEventsGivenConnectAndCloseWhenHandlerConfigured(t *testing.T) {
+	firstTransport := newScriptedTransport()
+
+	originalDialTCP := dialTCPTransport
+	originalDialWS := dialWebSocketTransport
+	defer func() {
+		dialTCPTransport = originalDialTCP
+		dialWebSocketTransport = originalDialWS
+	}()
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		return firstTransport, nil
+	}
+
+	var events []string
+	c := NewClientWithOptions("localhost:4091", nil, WithLifecycleHandler(func(event LifecycleEvent) {
+		events = append(events, event.Event)
+	}))
+	c.config.AuthSettleDelay = 20 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, c.Connect(ctx))
+	require.NoError(t, c.Close())
+
+	assert.Contains(t, events, "connect_start")
+	assert.Contains(t, events, "auth_start")
+	assert.Contains(t, events, "connect_succeeded")
+	assert.Contains(t, events, "closed")
 }
 
 func TestShouldApplyMaxInFlightRequestsOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {

@@ -139,23 +139,26 @@ type MockTCPConn struct {
 	WriteDelay       time.Duration
 	MaxWriteSize     int
 	RemoteAddrString string
+	deadlineMu       sync.RWMutex
 	readDeadline     time.Time
 	writeDeadline    time.Time
 }
 
 func (m *MockTCPConn) Read(b []byte) (int, error) {
+	readDeadline := m.currentReadDeadline()
 	if m.Blocked {
-		if !m.readDeadline.IsZero() {
-			if time.Now().After(m.readDeadline) {
+		if !readDeadline.IsZero() {
+			if time.Now().After(readDeadline) {
 				return 0, context.DeadlineExceeded
 			}
-			time.Sleep(time.Until(m.readDeadline))
+			time.Sleep(time.Until(readDeadline))
 			return 0, context.DeadlineExceeded
 		}
 		select {}
 	}
 	time.Sleep(m.ReadDelay)
-	if !m.readDeadline.IsZero() && time.Now().After(m.readDeadline) {
+	readDeadline = m.currentReadDeadline()
+	if !readDeadline.IsZero() && time.Now().After(readDeadline) {
 		return 0, context.DeadlineExceeded
 	}
 	if m.ReadPos >= len(m.ToRead) {
@@ -167,9 +170,10 @@ func (m *MockTCPConn) Read(b []byte) (int, error) {
 }
 
 func (m *MockTCPConn) Write(b []byte) (int, error) {
-	if !m.writeDeadline.IsZero() {
-		if time.Now().Add(m.WriteDelay).After(m.writeDeadline) {
-			time.Sleep(time.Until(m.writeDeadline))
+	writeDeadline := m.currentWriteDeadline()
+	if !writeDeadline.IsZero() {
+		if time.Now().Add(m.WriteDelay).After(writeDeadline) {
+			time.Sleep(time.Until(writeDeadline))
 			return 0, context.DeadlineExceeded
 		}
 	}
@@ -202,19 +206,37 @@ func (m *MockTCPConn) RemoteAddr() net.Addr {
 }
 
 func (m *MockTCPConn) SetDeadline(t time.Time) error {
+	m.deadlineMu.Lock()
+	defer m.deadlineMu.Unlock()
 	m.readDeadline = t
 	m.writeDeadline = t
 	return nil
 }
 
 func (m *MockTCPConn) SetReadDeadline(t time.Time) error {
+	m.deadlineMu.Lock()
+	defer m.deadlineMu.Unlock()
 	m.readDeadline = t
 	return nil
 }
 
 func (m *MockTCPConn) SetWriteDeadline(t time.Time) error {
+	m.deadlineMu.Lock()
+	defer m.deadlineMu.Unlock()
 	m.writeDeadline = t
 	return nil
+}
+
+func (m *MockTCPConn) currentReadDeadline() time.Time {
+	m.deadlineMu.RLock()
+	defer m.deadlineMu.RUnlock()
+	return m.readDeadline
+}
+
+func (m *MockTCPConn) currentWriteDeadline() time.Time {
+	m.deadlineMu.RLock()
+	defer m.deadlineMu.RUnlock()
+	return m.writeDeadline
 }
 
 // MockWSConn is a mock WebSocket connection for testing.
@@ -230,6 +252,7 @@ type MockWSConn struct {
 	readBuf        []byte
 	readPos        int
 	writeBuf       []byte
+	deadlineMu     sync.RWMutex
 	readDeadline   time.Time
 	writeDeadline  time.Time
 }
@@ -238,12 +261,13 @@ func (m *MockWSConn) Read(b []byte) (int, error) {
 	if m.Closed {
 		return 0, errors.New("connection closed")
 	}
+	readDeadline := m.currentReadDeadline()
 	if m.Blocked {
-		if !m.readDeadline.IsZero() {
-			if time.Now().After(m.readDeadline) {
+		if !readDeadline.IsZero() {
+			if time.Now().After(readDeadline) {
 				return 0, context.DeadlineExceeded
 			}
-			time.Sleep(time.Until(m.readDeadline))
+			time.Sleep(time.Until(readDeadline))
 			return 0, context.DeadlineExceeded
 		}
 		select {}
@@ -271,7 +295,8 @@ func (m *MockWSConn) Write(b []byte) (int, error) {
 	if m.Closed {
 		return 0, errors.New("connection closed")
 	}
-	if !m.writeDeadline.IsZero() && time.Now().After(m.writeDeadline) {
+	writeDeadline := m.currentWriteDeadline()
+	if !writeDeadline.IsZero() && time.Now().After(writeDeadline) {
 		return 0, context.DeadlineExceeded
 	}
 	chunk := len(b)
@@ -309,19 +334,37 @@ func (m *MockWSConn) RemoteAddr() net.Addr {
 }
 
 func (m *MockWSConn) SetDeadline(t time.Time) error {
+	m.deadlineMu.Lock()
+	defer m.deadlineMu.Unlock()
 	m.readDeadline = t
 	m.writeDeadline = t
 	return nil
 }
 
 func (m *MockWSConn) SetReadDeadline(t time.Time) error {
+	m.deadlineMu.Lock()
+	defer m.deadlineMu.Unlock()
 	m.readDeadline = t
 	return nil
 }
 
 func (m *MockWSConn) SetWriteDeadline(t time.Time) error {
+	m.deadlineMu.Lock()
+	defer m.deadlineMu.Unlock()
 	m.writeDeadline = t
 	return nil
+}
+
+func (m *MockWSConn) currentReadDeadline() time.Time {
+	m.deadlineMu.RLock()
+	defer m.deadlineMu.RUnlock()
+	return m.readDeadline
+}
+
+func (m *MockWSConn) currentWriteDeadline() time.Time {
+	m.deadlineMu.RLock()
+	defer m.deadlineMu.RUnlock()
+	return m.writeDeadline
 }
 
 func buildWSFrame(opcode byte, payload []byte, mask bool) []byte {

@@ -62,7 +62,7 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 			},
 			{
 				name:        "notice_subscribe",
-				permissions: []string{},
+				permissions: []string{"kv://**#read"},
 				routeScheme: "notice",
 				expected:    unauthorizedNotice,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {

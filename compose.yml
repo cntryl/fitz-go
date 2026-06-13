@@ -21,8 +21,12 @@ services:
       - "4091:4091"
     environment:
       FITZ_AUTH_REQUIRED: "true"
+      FITZ_ASSUME_EXTERNAL_TLS: "true"
+      FITZ_WS_ALLOWED_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000,http://localhost:4090,http://127.0.0.1:4090"
       FITZ_JWT_HMAC_SECRET: "test-secret-key"
       FITZ_JWT_AUDIENCE: "fitz"
+      FITZ_ROUTE_FAMILIES: "1"
+      FITZ_ROUTE_FAMILY_MAP: "fitz-ts-tests=1"
       FITZ_STORAGE_MODE: "memory"
       FITZ_STORAGE_PATH: "/data"
       RUST_LOG: "info,fitz=trace"

@@ -246,6 +246,9 @@ func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte
 		attribute.Int64("fitz.expected_offset", int64(expectedOffset)),
 	))
 	defer span.End()
+	if err := s.conn.CheckLiveHandle(); err != nil {
+		return 0, err
+	}
 	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, expectedOffset, body, nil, opts...))
 	if err != nil {
 		span.RecordError(err)
@@ -292,6 +295,9 @@ func (s *session) Commit(ctx context.Context, mode CommitMode) error {
 		attribute.Int64("fitz.session_id", int64(s.sessionID)),
 	))
 	defer span.End()
+	if err := s.conn.CheckLiveHandle(); err != nil {
+		return err
+	}
 	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamCommit, streamCommitPayloadWriter(s.sessionID, mode))
 	if err != nil {
 		span.RecordError(err)
@@ -322,6 +328,9 @@ func (s *session) Rollback(ctx context.Context) error {
 		attribute.Int64("fitz.session_id", int64(s.sessionID)),
 	))
 	defer span.End()
+	if err := s.conn.CheckLiveHandle(); err != nil {
+		return err
+	}
 	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRollback, streamRollbackPayloadWriter(s.sessionID))
 	if err != nil {
 		span.RecordError(err)
@@ -377,40 +386,36 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 	if len(opts) > 0 && opts[0] != nil {
 		readOptions = opts[0]
 	}
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRead, streamReadPayloadWriter(route, fromOffset, limit, readOptions))
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("read request failed: %w", err)
-	}
+	var page *ReadPage
+	err := c.conn.RunWithRetry(ctx, func() error {
+		resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamRead, streamReadPayloadWriter(route, fromOffset, limit, readOptions))
+		if err != nil {
+			return fmt.Errorf("read request failed: %w", err)
+		}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("read failed: %w", mapStreamError(err))
-	}
-	if !success {
-		recordErr := errors.New("read failed: unexpected status")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return nil, recordErr
-	}
+		success, remaining, err := connection.ParseStandardResponse(resp)
+		if err != nil {
+			return fmt.Errorf("read failed: %w", mapStreamError(err))
+		}
+		if !success {
+			return errors.New("read failed: unexpected status")
+		}
 
-	// Skip optional session_id and extract data blob.
-	data, err := skipOptionalSessionIDAndGetData(remaining)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse read response envelope: %w", err)
-	}
+		data, err := skipOptionalSessionIDAndGetData(remaining)
+		if err != nil {
+			return fmt.Errorf("parse read response envelope: %w", err)
+		}
 
-	// Parse read page from data.
-	page, err := parseReadPageResponse(data)
+		page, err = parseReadPageResponse(data)
+		if err != nil {
+			return fmt.Errorf("parse read response: %w", err)
+		}
+		return nil
+	}, isStreamReadRetryable)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse read response: %w", err)
+		return nil, err
 	}
 
 	return page, nil
@@ -430,44 +435,40 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamLast, streamLastPayloadWriter(route))
+	var record *Record
+	err := c.conn.RunWithRetry(ctx, func() error {
+		resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamLast, streamLastPayloadWriter(route))
+		if err != nil {
+			return fmt.Errorf("peek request failed: %w", err)
+		}
+
+		success, remaining, err := connection.ParseStandardResponse(resp)
+		if err != nil {
+			return fmt.Errorf("peek failed: %w", mapStreamError(err))
+		}
+		if !success {
+			return errors.New("peek failed: unexpected status")
+		}
+
+		data, err := skipOptionalSessionIDAndGetData(remaining)
+		if err != nil {
+			return fmt.Errorf("parse peek response envelope: %w", err)
+		}
+		if len(data) == 0 {
+			record = nil
+			return nil
+		}
+
+		record, err = parseRecord(data, 0)
+		if err != nil {
+			return fmt.Errorf("parse peek response: %w", err)
+		}
+		return nil
+	}, isStreamReadRetryable)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("peek request failed: %w", err)
-	}
-
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("peek failed: %w", mapStreamError(err))
-	}
-	if !success {
-		recordErr := errors.New("peek failed: unexpected status")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return nil, recordErr
-	}
-
-	// Skip optional session_id and extract data blob.
-	data, err := skipOptionalSessionIDAndGetData(remaining)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse peek response envelope: %w", err)
-	}
-
-	// Empty data means no record (stream empty or server stub)
-	if len(data) == 0 {
-		return nil, nil
-	}
-
-	record, err := parseRecord(data, 0)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse peek response: %w", err)
+		return nil, err
 	}
 
 	return record, nil
@@ -487,39 +488,36 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamGetMetadata, streamGetMetadataPayloadWriter(route))
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("get_metadata request failed: %w", err)
-	}
+	var meta *Metadata
+	err := c.conn.RunWithRetry(ctx, func() error {
+		resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamGetMetadata, streamGetMetadataPayloadWriter(route))
+		if err != nil {
+			return fmt.Errorf("get_metadata request failed: %w", err)
+		}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("get_metadata failed: %w", mapStreamError(err))
-	}
-	if !success {
-		recordErr := errors.New("get_metadata failed: unexpected status")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return nil, recordErr
-	}
+		success, remaining, err := connection.ParseStandardResponse(resp)
+		if err != nil {
+			return fmt.Errorf("get_metadata failed: %w", mapStreamError(err))
+		}
+		if !success {
+			return errors.New("get_metadata failed: unexpected status")
+		}
 
-	// Skip optional session_id and extract data blob.
-	data, err := skipOptionalSessionIDAndGetData(remaining)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse GET_METADATA response envelope: %w", err)
-	}
+		data, err := skipOptionalSessionIDAndGetData(remaining)
+		if err != nil {
+			return fmt.Errorf("parse GET_METADATA response envelope: %w", err)
+		}
 
-	meta, err := parseMetadataPayload(data)
+		meta, err = parseMetadataPayload(data)
+		if err != nil {
+			return fmt.Errorf("parse GET_METADATA response: %w", err)
+		}
+		return nil
+	}, isStreamReadRetryable)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("parse GET_METADATA response: %w", err)
+		return nil, err
 	}
 
 	return meta, nil
@@ -736,6 +734,10 @@ func flattenReadItems(items []ReadItem) []Record {
 		}
 	}
 	return records
+}
+
+func isStreamReadRetryable(err error) bool {
+	return connection.IsTransientRetryable(err) || errors.Is(err, ErrStreamReadError)
 }
 
 func parseMetadataPayload(data []byte) (*Metadata, error) {

@@ -33,7 +33,7 @@ var (
 	ErrQueueFull       = errors.New("queue full")
 )
 
-// Queue error codes sent by the server as [u8 status=1][u8 error_code].
+// Legacy queue error codes sent by older brokers as [u8 status=1][u8 error_code].
 const (
 	queueErrCodeInvalidToken  = 1
 	queueErrCodeLeaseExpired  = 2
@@ -41,10 +41,21 @@ const (
 	queueErrCodeQueueNotFound = 4
 )
 
+// Current broker queue error codes in the shared domain error envelope:
+// [u8 status=1][u32 code][u32 msg_len][msg].
+const (
+	queueDomainErrInvalidToken  = 4001
+	queueDomainErrLeaseExpired  = 4002
+	queueDomainErrNotFound      = 4003
+	queueDomainErrQueueNotFound = 4004
+	queueDomainErrQueueFull     = 4005
+)
+
 // parseQueueResponse handles the Queue domain's non-standard error format.
 // Queue errors can be either:
-//   - [u8 1][u8 error_code]        (2 bytes, for typed errors)
-//   - [u8 1][u32 len][error_msg]   (5+ bytes, for BadRequest/Error)
+//   - [u8 1][u32 code][u32 len][error_msg] (current shared domain error envelope)
+//   - [u8 1][u8 error_code]                (legacy typed errors)
+//   - [u8 1][u32 len][error_msg]           (legacy string errors)
 //
 // This replaces ParseStandardResponse for queue operations.
 func parseQueueResponse(payload []byte) (bool, []byte, error) {
@@ -57,22 +68,19 @@ func parseQueueResponse(payload []byte) (bool, []byte, error) {
 		return true, payload[1:], nil
 	}
 
-	// Error response — check if it's a 1-byte error code or a string error
+	// Current shared domain error envelope.
+	if len(payload) >= 9 {
+		code := binary.BigEndian.Uint32(payload[1:5])
+		msgLen := binary.BigEndian.Uint32(payload[5:9])
+		if isQueueDomainErrorCode(code) && int(9+msgLen) <= len(payload) {
+			return false, nil, mapQueueErrorCode(code, string(payload[9:9+msgLen]))
+		}
+	}
+
+	// Legacy error response — check if it's a 1-byte error code or a string error.
 	if len(payload) == 2 {
 		// [u8 1][u8 error_code]
-		code := payload[1]
-		switch code {
-		case queueErrCodeInvalidToken:
-			return false, nil, ErrInvalidToken
-		case queueErrCodeLeaseExpired:
-			return false, nil, ErrLeaseExpiredQ
-		case queueErrCodeNotFound:
-			return false, nil, ErrMessageNotFound
-		case queueErrCodeQueueNotFound:
-			return false, nil, ErrQueueNotFound
-		default:
-			return false, nil, fmt.Errorf("unknown queue error code: %d", code)
-		}
+		return false, nil, mapLegacyQueueErrorCode(payload[1])
 	}
 
 	// [u8 1][u32 len][error_msg] — standard string error; map to sentinels for consistent handling
@@ -84,6 +92,47 @@ func parseQueueResponse(payload []byte) (bool, []byte, error) {
 	}
 
 	return false, nil, fmt.Errorf("malformed queue error response (%d bytes)", len(payload))
+}
+
+func isQueueDomainErrorCode(code uint32) bool {
+	switch code {
+	case queueDomainErrInvalidToken, queueDomainErrLeaseExpired, queueDomainErrNotFound, queueDomainErrQueueNotFound, queueDomainErrQueueFull:
+		return true
+	default:
+		return false
+	}
+}
+
+func mapLegacyQueueErrorCode(code byte) error {
+	switch code {
+	case queueErrCodeInvalidToken:
+		return ErrInvalidToken
+	case queueErrCodeLeaseExpired:
+		return ErrLeaseExpiredQ
+	case queueErrCodeNotFound:
+		return ErrMessageNotFound
+	case queueErrCodeQueueNotFound:
+		return ErrQueueNotFound
+	default:
+		return fmt.Errorf("unknown queue error code: %d", code)
+	}
+}
+
+func mapQueueErrorCode(code uint32, msg string) error {
+	switch code {
+	case queueDomainErrInvalidToken:
+		return ErrInvalidToken
+	case queueDomainErrLeaseExpired:
+		return ErrLeaseExpiredQ
+	case queueDomainErrNotFound:
+		return ErrMessageNotFound
+	case queueDomainErrQueueNotFound:
+		return ErrQueueNotFound
+	case queueDomainErrQueueFull:
+		return ErrQueueFull
+	default:
+		return mapQueueError(msg)
+	}
 }
 
 // mapQueueError maps a broker error message to a domain-specific Go error.

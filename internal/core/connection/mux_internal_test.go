@@ -2,6 +2,8 @@ package connection
 
 import (
 	"encoding/binary"
+	"log/slog"
+	"math"
 	"testing"
 	"time"
 
@@ -95,6 +97,142 @@ func TestShouldUnregisterMiddleWaiterGivenPendingRequestsWhenDispatchCalled(t *t
 	require.Equal(t, int64(0), mux.Metrics().RequestsInFlight)
 }
 
+func TestShouldDropMalformedNotifyFrameGivenBoundsFailureWhenDispatchCalled(t *testing.T) {
+	tests := []struct {
+		name     string
+		msgType  uint16
+		payload  []byte
+		register func(*Multiplexer, func())
+	}{
+		{
+			name:    "notice notify missing subscription id",
+			msgType: protocol.MessageTypeNoticeNotify,
+			payload: []byte{0x01},
+			register: func(mux *Multiplexer, called func()) {
+				mux.SetNotifyHandler(protocol.MessageTypeNoticeNotify, func(uint64, string, []byte) {
+					called()
+				})
+			},
+		},
+		{
+			name:    "queue notify missing header",
+			msgType: protocol.MessageTypeQueueNotify,
+			payload: []byte{0x01},
+			register: func(mux *Multiplexer, called func()) {
+				mux.SetNotifyHandler(protocol.MessageTypeQueueNotify, func(uint64, string, []byte) {
+					called()
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := NewMultiplexer()
+			t.Cleanup(func() {
+				require.NoError(t, mux.Close())
+			})
+			recorder := newLogRecorder()
+			mux.setLogger(slog.New(recorder))
+
+			called := false
+			tt.register(mux, func() {
+				called = true
+			})
+
+			mux.Dispatch(tt.msgType, tt.payload)
+
+			require.False(t, called)
+			require.Equal(t, uint64(1), mux.Metrics().ResponsesDropped)
+			assertLogEntry(t, recorder.snapshot(), slog.LevelWarn, "dropped malformed frame")
+		})
+	}
+}
+
+func TestShouldDropMalformedRpcResponseGivenShortCorrelationPayloadWhenDispatchCalled(t *testing.T) {
+	mux := NewMultiplexer()
+	t.Cleanup(func() {
+		require.NoError(t, mux.Close())
+	})
+	recorder := newLogRecorder()
+	mux.setLogger(slog.New(recorder))
+
+	called := false
+	mux.SetRPCResponseHandler(func([16]byte, []byte) {
+		called = true
+	})
+
+	for payloadLen := 4; payloadLen < 20; payloadLen++ {
+		mux.Dispatch(protocol.MessageTypeRpcResponse, make([]byte, payloadLen))
+	}
+
+	require.False(t, called)
+	require.Equal(t, uint64(16), mux.Metrics().ResponsesDropped)
+	assertLogEntry(t, recorder.snapshot(), slog.LevelWarn, "dropped malformed frame")
+}
+
+func TestShouldDropMalformedNotifyFrameGivenUint32LengthOverflowWhenDispatchCalled(t *testing.T) {
+	tests := []struct {
+		name    string
+		msgType uint16
+		payload []byte
+		setup   func(*Multiplexer, func())
+	}{
+		{
+			name:    "notice route length max uint32",
+			msgType: protocol.MessageTypeNoticeNotify,
+			payload: notifyPayloadWithLengths(math.MaxUint32),
+			setup: func(mux *Multiplexer, called func()) {
+				mux.SetNotifyHandler(protocol.MessageTypeNoticeNotify, func(uint64, string, []byte) {
+					called()
+				})
+			},
+		},
+		{
+			name:    "notice payload length max uint32",
+			msgType: protocol.MessageTypeNoticeNotify,
+			payload: notifyPayloadWithLengths(0, math.MaxUint32),
+			setup: func(mux *Multiplexer, called func()) {
+				mux.SetNotifyHandler(protocol.MessageTypeNoticeNotify, func(uint64, string, []byte) {
+					called()
+				})
+			},
+		},
+		{
+			name:    "queue route length max uint32",
+			msgType: protocol.MessageTypeQueueNotify,
+			payload: notifyPayloadWithLengths(math.MaxUint32),
+			setup: func(mux *Multiplexer, called func()) {
+				mux.SetNotifyHandler(protocol.MessageTypeQueueNotify, func(uint64, string, []byte) {
+					called()
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := NewMultiplexer()
+			t.Cleanup(func() {
+				require.NoError(t, mux.Close())
+			})
+			recorder := newLogRecorder()
+			mux.setLogger(slog.New(recorder))
+
+			called := false
+			tt.setup(mux, func() {
+				called = true
+			})
+
+			mux.Dispatch(tt.msgType, tt.payload)
+
+			require.False(t, called)
+			require.Equal(t, uint64(1), mux.Metrics().ResponsesDropped)
+			assertLogEntry(t, recorder.snapshot(), slog.LevelWarn, "dropped malformed frame")
+		})
+	}
+}
+
 func rpcWorkerRequestPayloadForTest(route string, replyRoute string, body []byte) []byte {
 	payload := make([]byte, 0, 20+4+len(route)+4+len(replyRoute)+4+len(body))
 
@@ -121,5 +259,15 @@ func rpcWorkerRequestPayloadForTest(route string, replyRoute string, body []byte
 	writeTLVString(route)
 	writeTLVString(replyRoute)
 	writeTLVBytes(body)
+	return payload
+}
+
+func notifyPayloadWithLengths(lengths ...uint32) []byte {
+	payload := make([]byte, 8)
+	for _, length := range lengths {
+		var lenBuf [4]byte
+		binary.BigEndian.PutUint32(lenBuf[:], length)
+		payload = append(payload, lenBuf[:]...)
+	}
 	return payload
 }

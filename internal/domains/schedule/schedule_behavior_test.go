@@ -9,6 +9,7 @@ import (
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coretypes "github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -267,21 +268,15 @@ func TestShouldReturnErrorGivenMissingServerSubscriptionIDWhenSubscribeCalled(t 
 	assert.Nil(t, sub)
 }
 
-func TestShouldForwardWildcardPatternGivenSubscribeCalled(t *testing.T) {
-	client, transport := newStartedScheduleClient(t)
-	buf := connection.GetBuffer()
-	connection.WriteU8(buf, 1)
-	connection.WriteU64BE(buf, 42)
-	payload := append([]byte(nil), buf.Bytes()...)
-	connection.PutBuffer(buf)
-	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleSubscribe, payload)
+func TestShouldRejectWildcardPatternGivenSubscribeCalled(t *testing.T) {
+	client, _ := newStartedScheduleClient(t)
 
 	sub, err := client.Subscribe(context.Background(), "schedule://realm/area/*", func(context.Context, Notification) error {
 		return nil
 	})
 
-	require.NoError(t, err)
-	assert.NotNil(t, sub)
+	require.ErrorIs(t, err, coretypes.ErrInvalidRouteShape)
+	assert.Nil(t, sub)
 }
 
 func TestShouldDispatchNotificationGivenMatchingSubscriptionWhenHandleScheduleNotifyCalled(t *testing.T) {
@@ -379,16 +374,15 @@ func TestShouldContinueFanOutGivenHandlerErrorWhenHandleScheduleNotifyCalled(t *
 	}
 }
 
-func TestShouldForwardEmptyRouteGivenCancelCalled(t *testing.T) {
+func TestShouldRejectEmptyRouteGivenCancelCalled(t *testing.T) {
 	// Arrange
-	client, transport := newStartedScheduleClient(t)
-	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleCancel, nil)
+	client, _ := newStartedScheduleClient(t)
 
 	// Act
 	err := client.Cancel(context.Background(), "")
 
 	// Assert
-	require.NoError(t, err)
+	require.ErrorIs(t, err, coretypes.ErrInvalidRouteShape)
 }
 
 func TestShouldFilterEntriesGivenAreaWildcardSelectorWhenListBySelectorMatches(t *testing.T) {

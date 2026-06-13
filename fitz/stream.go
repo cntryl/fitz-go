@@ -3,6 +3,7 @@ package fitz
 import (
 	"context"
 
+	coreiter "github.com/cntryl/fitz-go/internal/core/iter"
 	internalstream "github.com/cntryl/fitz-go/internal/domains/stream"
 )
 
@@ -122,6 +123,7 @@ type StreamClient interface {
 	Begin(ctx context.Context, route string) (StreamSession, error)
 	Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (Iterator[StreamRecord], error)
 	ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (*StreamReadPage, error)
+	ReadWhenCommitted(ctx context.Context, route string, fromOffset uint64, batchSize uint64, opts ...*StreamReadOptions) (Iterator[[]StreamRecord], error)
 	Peek(ctx context.Context, route string) (*StreamRecord, error)
 	Metadata(ctx context.Context, route string) (*StreamMetadata, error)
 	Subscribe(ctx context.Context, pattern string, handler StreamCommitHandler) (*StreamSubscription, error)
@@ -196,6 +198,89 @@ func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset ui
 			HasMore:            page.Cursor.HasMore,
 		},
 	}, nil
+}
+
+// ReadWhenCommitted yields non-empty record batches. Commit notifications only
+// wake the loop; ReadPage remains authoritative.
+func (c *streamClient) ReadWhenCommitted(ctx context.Context, route string, fromOffset uint64, batchSize uint64, opts ...*StreamReadOptions) (Iterator[[]StreamRecord], error) {
+	if batchSize == 0 {
+		batchSize = 1
+	}
+	helperCtx, cancel := context.WithCancel(ctx)
+	gate := NewWakeGate()
+	subscription, err := c.Subscribe(helperCtx, route, func(context.Context, StreamCommitNotification) error {
+		gate.Wake()
+		return nil
+	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	batches := make(chan []StreamRecord)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(batches)
+		defer close(errCh)
+		defer subscription.Unsubscribe()
+
+		offset := fromOffset
+		var version uint64
+		for {
+			page, err := c.ReadPage(helperCtx, route, offset, batchSize, opts...)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if page == nil {
+				version, err = gate.WaitAfter(helperCtx, version)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				continue
+			}
+			records := streamRecordsFromPage(page)
+			if len(page.Items) > 0 {
+				offset = page.Cursor.LastResourceOffset + 1
+			}
+			if len(records) > 0 {
+				select {
+				case batches <- records:
+					if page.Cursor.HasMore {
+						continue
+					}
+				case <-helperCtx.Done():
+					errCh <- helperCtx.Err()
+					return
+				}
+			}
+			if page.Cursor.HasMore {
+				continue
+			}
+
+			version, err = gate.WaitAfter(helperCtx, version)
+			if err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+
+	return coreiter.NewChannelIterator[[]StreamRecord](batches, errCh, cancel), nil
+}
+
+func streamRecordsFromPage(page *StreamReadPage) []StreamRecord {
+	if page == nil {
+		return nil
+	}
+	records := make([]StreamRecord, 0, len(page.Items))
+	for _, item := range page.Items {
+		if item.Kind == StreamReadItemEvent && item.Record != nil {
+			records = append(records, *item.Record)
+		}
+	}
+	return records
 }
 
 // Peek returns the latest record for the route, if present.

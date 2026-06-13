@@ -1,3 +1,5 @@
+//go:build integration
+
 package conformance
 
 import "github.com/cntryl/fitz-go/internal/testkit"

@@ -80,50 +80,54 @@ func (t *transaction) Get(ctx context.Context, key []byte) ([]byte, bool, error)
 		return nil, false, fmt.Errorf("encode get: %w", err)
 	}
 
-	// Send request
-	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvGet, writer)
+	var (
+		value []byte
+		found bool
+	)
+	err = t.conn.RunWithRetry(ctx, func() error {
+		resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvGet, writer)
+		if err != nil {
+			return fmt.Errorf("get request failed: %w", err)
+		}
+
+		success, remaining, err := connection.ParseStandardResponse(resp)
+		if err != nil {
+			return fmt.Errorf("get failed: %w", mapKVError(err))
+		}
+		if !success {
+			return errors.New("get failed: unexpected status")
+		}
+
+		if len(remaining) < 1 {
+			return errors.New("invalid get response: expected at least 1 byte for found flag")
+		}
+
+		found = remaining[0] == 1
+		value = nil
+		if !found {
+			return nil
+		}
+		if len(remaining) < 5 {
+			return errors.New("invalid get response: missing value length")
+		}
+
+		valueLen, offset, err := connection.ReadU32BE(remaining, 1)
+		if err != nil {
+			return fmt.Errorf("parse value length: %w", err)
+		}
+		if len(remaining) < offset+int(valueLen) {
+			return errors.New("invalid get response: truncated value")
+		}
+
+		value = make([]byte, valueLen)
+		copy(value, remaining[offset:offset+int(valueLen)])
+		return nil
+	}, isKVReadRetryable)
 	if err != nil {
-		return nil, false, fmt.Errorf("get request failed: %w", err)
+		return nil, false, err
 	}
 
-	// Parse standard response status
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		return nil, false, fmt.Errorf("get failed: %w", mapKVError(err))
-	}
-	if !success {
-		return nil, false, errors.New("get failed: unexpected status")
-	}
-
-	// Parse GET-specific response: [found][value_len?][value?]
-	if len(remaining) < 1 {
-		return nil, false, errors.New("invalid get response: expected at least 1 byte for found flag")
-	}
-
-	found := remaining[0] == 1
-
-	if !found {
-		return nil, false, nil // Key not found (normal case, not an error)
-	}
-
-	// Extract value
-	if len(remaining) < 5 { // found(1) + value_len(4)
-		return nil, false, errors.New("invalid get response: missing value length")
-	}
-
-	valueLen, offset, err := connection.ReadU32BE(remaining, 1)
-	if err != nil {
-		return nil, false, fmt.Errorf("parse value length: %w", err)
-	}
-
-	if len(remaining) < offset+int(valueLen) {
-		return nil, false, errors.New("invalid get response: truncated value")
-	}
-
-	value := make([]byte, valueLen)
-	copy(value, remaining[offset:offset+int(valueLen)])
-
-	return value, true, nil
+	return value, found, nil
 }
 
 // Put upserts a key/value pair (create or overwrite).
@@ -333,25 +337,32 @@ func (t *transaction) Scan(ctx context.Context, query ScanQuery) (iter.Iterator[
 		return nil, false, fmt.Errorf("encode scan: %w", err)
 	}
 
-	// Send request
-	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvScan, writer)
-	if err != nil {
-		return nil, false, fmt.Errorf("scan request failed: %w", err)
-	}
+	var (
+		pairs   []KVPair
+		hasMore bool
+	)
+	err = t.conn.RunWithRetry(ctx, func() error {
+		resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvScan, writer)
+		if err != nil {
+			return fmt.Errorf("scan request failed: %w", err)
+		}
 
-	// Parse standard response status
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		return nil, false, fmt.Errorf("scan failed: %w", mapKVError(err))
-	}
-	if !success {
-		return nil, false, errors.New("scan failed: unexpected status")
-	}
+		success, remaining, err := connection.ParseStandardResponse(resp)
+		if err != nil {
+			return fmt.Errorf("scan failed: %w", mapKVError(err))
+		}
+		if !success {
+			return errors.New("scan failed: unexpected status")
+		}
 
-	// Parse SCAN response: [item_count][items...][has_more]
-	pairs, hasMore, err := parseScanResponse(remaining)
+		pairs, hasMore, err = parseScanResponse(remaining)
+		if err != nil {
+			return fmt.Errorf("parse scan response: %w", err)
+		}
+		return nil
+	}, isKVReadRetryable)
 	if err != nil {
-		return nil, false, fmt.Errorf("parse scan response: %w", err)
+		return nil, false, err
 	}
 
 	// Return SliceIterator for batch results
@@ -476,6 +487,9 @@ func (t *transaction) Rollback(ctx context.Context) error {
 	))
 	defer span.End()
 	// Validate state (allow rollback even if committed)
+	if err := t.conn.CheckLiveHandle(); err != nil {
+		return err
+	}
 	if t.rolledback.Load() {
 		return errors.New("transaction already rolled back")
 	}
@@ -504,6 +518,9 @@ func (t *transaction) Rollback(ctx context.Context) error {
 
 // checkState validates transaction state before operations.
 func (t *transaction) checkState() error {
+	if err := t.conn.CheckLiveHandle(); err != nil {
+		return err
+	}
 	if t.committed.Load() {
 		return errors.New("transaction already committed")
 	}
@@ -511,6 +528,10 @@ func (t *transaction) checkState() error {
 		return errors.New("transaction already rolled back")
 	}
 	return nil
+}
+
+func isKVReadRetryable(err error) bool {
+	return connection.IsTransientRetryable(err) || errors.Is(err, ErrConcurrencyConflict)
 }
 
 func (t *transaction) checkWritable() error {

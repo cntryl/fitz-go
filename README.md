@@ -26,14 +26,14 @@ func main() {
 
 	client := fitz.NewClient("ws://localhost:4090/ws", func(context.Context) (string, error) {
 		return "your-jwt-token", nil
-	}, fitz.WithReconnect(true, 250*time.Millisecond, 5))
+	})
 
 	if err := client.Connect(ctx); err != nil {
 		panic(err)
 	}
 	defer client.Close()
 
-	tx, err := client.KV().Begin(ctx, "kv://realm/area/users")
+	tx, err := client.KV().Begin(ctx, "kv://realm/area/users", fitz.KVDurabilitySync)
 	if err != nil {
 		panic(err)
 	}
@@ -64,6 +64,8 @@ Use one control plane for request lifetime: `context.Context`.
 - RPC calls use context deadlines/cancellation only.
 - Schedule/Notice/Queue/Lease/Stream subscription handlers return `error`.
 - Streaming iterators should be closed when no longer needed.
+- Routes are opaque broker-owned values. The client validates route shape only
+  (scheme, segment count, empty segments, and allowed wildcard placement).
 
 Connection lifecycle is part of the stable public API:
 
@@ -77,10 +79,16 @@ Connection lifecycle is part of the stable public API:
 
 Reconnect guarantees:
 
-- Automatic reconnect only runs when configured with `fitz.WithReconnect(...)`.
+- Automatic reconnect is enabled by default after the first successful
+  `Connect`; `fitz.WithReconnect(false, ..., ...)` disables it.
+- `fitz.WithReconnect(..., maxAttempts=0)` means unlimited reconnect attempts.
 - Notice, stream, lease, queue, and schedule subscriptions are restored after reconnect.
 - RPC worker registrations are restored after reconnect.
 - `Close()` is idempotent and permanently ends reconnect activity.
+
+Production defaults also include heartbeat (`10s` interval, `30s` timeout),
+safe automatic retries for replayable reads, and a bounded outbound request
+queue of `1024`. See [docs/PUBLIC_CONTRACT.md](docs/PUBLIC_CONTRACT.md).
 
 The broker-backed test suite verifies those guarantees through a live disconnect proxy rather than by closing one client and creating another.
 
@@ -176,7 +184,7 @@ Run the broker-backed acceptance suite explicitly when you want the full
 end-to-end matrix:
 
 ```bash
-go test -tags=integration ./test
+go test -tags=integration ./test ./test/conformance/...
 ```
 
 Auth-required broker example:
@@ -187,7 +195,7 @@ export FITZ_BROKER_WS_ADDR=ws://localhost:4090/ws
 export FITZ_BROKER_AUTH_REQUIRED=true
 export FITZ_BROKER_JWT_HMAC_SECRET=test-secret-key
 export FITZ_BROKER_JWT_AUDIENCE=fitz
-go test ./...
+go test -tags=integration ./test
 ```
 
 Error-path coverage in the broker-backed suite includes unauthorized operations across all 7 domains, plus invalid KV range and invalid cron cases.
@@ -197,7 +205,7 @@ Focused reconnect validation is usually more useful than a blanket `go test -tag
 ```bash
 go test -tags=integration ./test -run "TestShould(RestoreNoticeSubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreWorkerRegistrationGivenLiveDisconnectWhenReconnectEnabled|RestoreAvailabilitySubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreCommitSubscriptionGivenLiveDisconnectWhenReconnectEnabled|RestoreLeaseSubscriptionGivenLiveDisconnectWhenReconnectEnabled)"
 go test -tags=integration ./test -run "TestShouldRestoreScheduleSubscriptionGivenLiveDisconnectWhenReconnectEnabled"
-go test ./test/conformance/... -run "TestConformanceSuite/(CS-009_disconnect_during_request|CS-010_reconnect_behavior)"
+go test -tags=integration ./test/conformance/... -run "TestConformanceSuite/(CS-009_disconnect_during_request|CS-010_reconnect_behavior)"
 ```
 
 Those tests use the shared live-disconnect seam in `test/fixture/proxy.go` to exercise real disconnect, reconnect, and restore behavior against a running broker.
@@ -208,7 +216,8 @@ Run the full suite with:
 
 ```bash
 go test ./...
-go test -tags=integration ./test
+go test -tags=integration ./test ./test/conformance/...
+./scripts/consumer-smoke.sh
 ```
 
 Or use the repo-local verification script:

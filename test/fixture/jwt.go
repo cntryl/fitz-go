@@ -7,14 +7,12 @@ import (
 )
 
 type jwtClaims struct {
-	Audience string `json:"aud"`
-	Subject  string `json:"sub"`
-	TenantID string `json:"tid"`
-	Expires  int64  `json:"exp"`
-	IssuedAt int64  `json:"iat"`
-	Fitz     struct {
-		Permissions []string `json:"permissions"`
-	} `json:"fitz"`
+	Audience    string   `json:"aud"`
+	Subject     string   `json:"sub"`
+	TenantID    string   `json:"tid"`
+	Expires     int64    `json:"exp"`
+	IssuedAt    int64    `json:"iat"`
+	Permissions []string `json:"permissions"`
 }
 
 func GenerateValidTestJWT(secret string, audience string) (string, error) {
@@ -36,22 +34,22 @@ func GenerateScopedTestJWT(secret string, audience string, permissions []string)
 func generateTestJWT(secret string, audience string, expiresAt time.Time, permissions []string) (string, error) {
 	now := time.Now().Unix()
 	claims := jwtClaims{
-		Audience: audience,
-		Subject:  "fitz-go-tests",
-		TenantID: "fitz-go-tests",
-		Expires:  expiresAt.Unix(),
-		IssuedAt: now,
+		Audience:    audience,
+		Subject:     "fitz-ts-tests",
+		TenantID:    "fitz-ts-tests",
+		Expires:     expiresAt.Unix(),
+		IssuedAt:    now,
+		Permissions: permissions,
 	}
-	claims.Fitz.Permissions = permissions
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"iss":  "",
-		"aud":  claims.Audience,
-		"sub":  claims.Subject,
-		"tid":  claims.TenantID,
-		"exp":  claims.Expires,
-		"iat":  claims.IssuedAt,
-		"fitz": map[string]any{"permissions": claims.Fitz.Permissions},
+		"iss":         "",
+		"aud":         claims.Audience,
+		"sub":         claims.Subject,
+		"tid":         claims.TenantID,
+		"exp":         claims.Expires,
+		"iat":         claims.IssuedAt,
+		"permissions": claims.Permissions,
 	})
 	return token.SignedString([]byte(secret))
 }

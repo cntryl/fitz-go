@@ -45,6 +45,9 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 		attribute.Int("fitz.ttl_secs", int(ttlSecs)),
 	))
 	defer span.End()
+	if err := l.conn.CheckLiveHandle(); err != nil {
+		return 0, err
+	}
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRenew, leaseRenewPayloadWriter(l.route, tokenToU64(token), ttlSecs))
 	if isLeaseHeldError(err) {
 		span.RecordError(err)
@@ -87,6 +90,9 @@ func (l *Lease) ReleaseWithToken(ctx context.Context, token []byte) error {
 func (l *Lease) releaseWithToken(ctx context.Context, token []byte) error {
 	ctx, span := l.conn.Tracer().Start(ctx, "fitz.lease.Release", trace.WithAttributes(attribute.String("fitz.route", l.route)))
 	defer span.End()
+	if err := l.conn.CheckLiveHandle(); err != nil {
+		return err
+	}
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRelease, leaseReleasePayloadWriter(l.route, tokenToU64(token)))
 	if err != nil {
 		span.RecordError(err)
@@ -259,31 +265,33 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseQuery, leaseQueryPayloadWriter(route))
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("QUERY request failed: %w", err)
-	}
+	var info *LeaseInfo
+	err := c.conn.RunWithRetry(ctx, func() error {
+		resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseQuery, leaseQueryPayloadWriter(route))
+		if err != nil {
+			return fmt.Errorf("QUERY request failed: %w", err)
+		}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("QUERY failed: %w", mapLeaseError(err))
-	}
-	if !success {
-		recordErr := errors.New("QUERY failed: unexpected status")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return nil, recordErr
-	}
+		success, remaining, err := connection.ParseStandardResponse(resp)
+		if err != nil {
+			return fmt.Errorf("QUERY failed: %w", mapLeaseError(err))
+		}
+		if !success {
+			return errors.New("QUERY failed: unexpected status")
+		}
 
-	info, err := parseLeaseQueryResponse(remaining)
+		info, err = parseLeaseQueryResponse(remaining)
+		if err != nil {
+			return fmt.Errorf("QUERY failed: %w", err)
+		}
+		return nil
+	}, func(err error) bool {
+		return connection.IsTransientRetryable(err) || errors.Is(err, ErrLeaseHeld)
+	})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("QUERY failed: %w", err)
+		return nil, err
 	}
 	return info, nil
 }

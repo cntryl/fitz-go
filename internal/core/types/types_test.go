@@ -6,86 +6,137 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestShouldAcceptRouteGivenServerSupportedTwoSegmentShapeWhenValidateRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateRoute("queue://realm/resource", "queue"))
+func TestShouldValidateConcreteRouteSyntaxGivenValidateRouteCalled(t *testing.T) {
+	accepted := []string{
+		"queue://realm/area",
+		"queue://realm/area/resource",
+	}
+	for _, route := range accepted {
+		require.NoError(t, ValidateRoute(route, "queue"), route)
+	}
+
+	rejected := []string{
+		"",
+		"notice://realm/area/resource",
+		"queue://",
+		"queue://realm//resource",
+		"queue://realm/area/foo*",
+	}
+	for _, route := range rejected {
+		require.ErrorIs(t, ValidateRoute(route, "queue"), ErrInvalidRouteShape, route)
+	}
 }
 
-func TestShouldAcceptRouteGivenServerSupportedFourSegmentShapeWhenValidateRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateRoute("rpc://acme/auth/users/authenticate", "rpc"))
+func TestShouldValidateKVRouteShapesGivenMethodSpecificHelpers(t *testing.T) {
+	require.NoError(t, ValidateFixedRoute("kv://realm/area/resource", "kv", 3))
+	require.NoError(t, ValidateSelectorRoute("kv://realm/area/resource", "kv", 3, true))
+	require.NoError(t, ValidateSelectorRoute("kv://realm/area/*", "kv", 3, true))
+	require.NoError(t, ValidateSelectorRoute("kv://realm/*/*", "kv", 3, true))
+
+	rejected := []string{
+		"kv://realm/area",
+		"kv://realm/area/resource/extra",
+		"kv://realm//resource",
+		"kv://*/area/resource",
+		"kv://realm/*/resource",
+		"kv://realm/**",
+	}
+	for _, route := range rejected {
+		require.ErrorIs(t, ValidateFixedRoute(route, "kv", 3), ErrInvalidRouteShape, route)
+	}
 }
 
-func TestShouldTreatDifferentSchemeRouteAsOpaqueWhenValidateRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateRoute("notice://realm/area/resource", "queue"))
+func TestShouldValidateQueueRouteShapesGivenMethodSpecificHelpers(t *testing.T) {
+	require.NoError(t, ValidateFixedRoute("queue://realm/area/resource", "queue", 3))
+	require.NoError(t, ValidateSelectorRoute("queue://realm/area/resource", "queue", 3, false))
+	require.NoError(t, ValidateSelectorRoute("queue://realm/area/*", "queue", 3, false))
+	require.NoError(t, ValidateSelectorRoute("queue://realm/*/*", "queue", 3, true))
+
+	require.ErrorIs(t, ValidateFixedRoute("queue://realm/area/*", "queue", 3), ErrInvalidRouteShape)
+	require.ErrorIs(t, ValidateSelectorRoute("queue://realm/*/*", "queue", 3, false), ErrInvalidRouteShape)
+	require.ErrorIs(t, ValidateSelectorRoute("queue://realm/**", "queue", 3, true), ErrInvalidRouteShape)
+	require.ErrorIs(t, ValidateSelectorRoute("queue://*/area/resource", "queue", 3, true), ErrInvalidRouteShape)
 }
 
-func TestShouldTreatEmptyRouteAsOpaqueWhenValidateRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateRoute("", "stream"))
+func TestShouldValidateNoticeRouteShapesGivenPublishAndSubscribe(t *testing.T) {
+	require.NoError(t, ValidateFixedRoute("notice://realm/area/resource", "notice", 3))
+	require.NoError(t, ValidateSelectorRoute("notice://realm/area/resource", "notice", 3, true))
+	require.NoError(t, ValidateSelectorRoute("notice://realm/area/*", "notice", 3, true))
+	require.NoError(t, ValidateSelectorRoute("notice://realm/*/*", "notice", 3, true))
+
+	require.ErrorIs(t, ValidateFixedRoute("notice://realm/area/*", "notice", 3), ErrInvalidRouteShape)
+	require.ErrorIs(t, ValidateSelectorRoute("notice://realm/**", "notice", 3, true), ErrInvalidRouteShape)
+	require.ErrorIs(t, ValidateSelectorRoute("notice://realm/*/resource", "notice", 3, true), ErrInvalidRouteShape)
 }
 
-func TestShouldTreatWildcardConcreteRouteAsOpaqueWhenValidateConcreteRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateConcreteRoute("rpc://acme/*/users", "rpc"))
-}
-
-func TestShouldAcceptFixedRouteGivenExactThreeSegmentsWhenValidateFixedRouteCalled(t *testing.T) {
+func TestShouldValidateStreamRouteShapesGivenMethodSpecificHelpers(t *testing.T) {
 	require.NoError(t, ValidateFixedRoute("stream://realm/area/resource", "stream", 3))
+	require.NoError(t, ValidateSelectorRoute("stream://realm/area/resource", "stream", 3, true))
+	require.NoError(t, ValidateSelectorRoute("stream://realm/area/*", "stream", 3, true))
+	require.NoError(t, ValidateSelectorRoute("stream://realm/*/*", "stream", 3, true))
+
+	require.ErrorIs(t, ValidateFixedRoute("stream://realm/area/*", "stream", 3), ErrInvalidRouteShape)
+	require.ErrorIs(t, ValidateSelectorRoute("stream://realm/**", "stream", 3, true), ErrInvalidRouteShape)
+	require.ErrorIs(t, ValidateSelectorRoute("stream://realm/*/resource", "stream", 3, true), ErrInvalidRouteShape)
 }
 
-func TestShouldTreatWildcardFixedRouteAsOpaqueWhenValidateFixedRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateFixedRoute("stream://realm/area/*", "stream", 3))
+func TestShouldValidateLeaseRouteShapesGivenConcreteOnlyContract(t *testing.T) {
+	require.NoError(t, ValidateFixedRoute("lease://realm/area/resource", "lease", 3))
+
+	rejected := []string{
+		"lease://realm/area",
+		"lease://realm/area/*",
+		"lease://realm/*/*",
+		"lease://*/area/resource",
+		"queue://realm/area/resource",
+	}
+	for _, route := range rejected {
+		require.ErrorIs(t, ValidateFixedRoute(route, "lease", 3), ErrInvalidRouteShape, route)
+	}
 }
 
-func TestShouldAcceptSelectorRouteGivenRealmWildcardWhenValidateSelectorRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateSelectorRoute("notice://realm/**", "notice", 3, true))
+func TestShouldValidateRPCRouteShapesGivenExactOnlyContract(t *testing.T) {
+	require.NoError(t, ValidateConcreteRoute("rpc://realm/area/resource", "rpc"))
+	require.NoError(t, ValidateConcreteRoute("rpc://realm/area/resource/operation", "rpc"))
+
+	rejected := []string{
+		"rpc://",
+		"rpc://realm//resource",
+		"rpc://realm/area/*",
+		"rpc://realm/*/*",
+		"queue://realm/area/resource",
+	}
+	for _, route := range rejected {
+		require.ErrorIs(t, ValidateConcreteRoute(route, "rpc"), ErrInvalidRouteShape, route)
+	}
 }
 
-func TestShouldTreatSelectorWildcardAsOpaqueWhenValidateSelectorRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateSelectorRoute("queue://realm/**", "queue", 3, false))
-}
-
-func TestShouldAcceptScheduleRouteGivenServerSupportedFourSegmentShapeWhenValidateScheduleRouteCalled(t *testing.T) {
+func TestShouldValidateScheduleRouteShapesGivenConcreteAndSelectorContracts(t *testing.T) {
 	require.NoError(t, ValidateScheduleRoute("schedule://realm/area/resource/run"))
-}
-
-func TestShouldTreatEmptyScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleRoute(""))
-}
-
-func TestShouldTreatLegacyScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleRoute("schedule://realm/area/resource"))
-}
-
-func TestShouldTreatWildcardScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleRoute("schedule://realm/area/resource/*"))
-}
-
-func TestShouldTreatWrongSchemeScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleRoute("queue://realm/area/resource/run"))
-}
-
-func TestShouldTreatEmptySegmentScheduleRouteAsOpaqueWhenValidateScheduleRouteCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleRoute("schedule://realm//resource/run"))
-}
-
-func TestShouldAcceptScheduleSelectorGivenWildcardPatternWhenValidateScheduleSelectorCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleSelector("schedule://realm/**"))
-}
-
-func TestShouldAcceptScheduleSelectorGivenAreaWildcardWhenValidateScheduleSelectorCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleSelector("schedule://realm/area/*"))
-}
-
-func TestShouldAcceptScheduleSelectorGivenResourceWildcardWhenValidateScheduleSelectorCalled(t *testing.T) {
+	require.NoError(t, ValidateScheduleSelector("schedule://realm/area/resource/run"))
 	require.NoError(t, ValidateScheduleSelector("schedule://realm/area/resource/*"))
-}
+	require.NoError(t, ValidateScheduleSelector("schedule://realm/area/*"))
+	require.NoError(t, ValidateScheduleSelector("schedule://realm/**"))
 
-func TestShouldTreatEmptyScheduleSelectorAsOpaqueWhenValidateScheduleSelectorCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleSelector(""))
-}
+	routeRejects := []string{
+		"",
+		"schedule://realm/area/resource",
+		"schedule://realm/area/resource/run/extra",
+		"schedule://realm/area/resource/*",
+		"schedule://*/area/resource/run",
+		"queue://realm/area/resource/run",
+	}
+	for _, route := range routeRejects {
+		require.ErrorIs(t, ValidateScheduleRoute(route), ErrInvalidRouteShape, route)
+	}
 
-func TestShouldTreatLegacyScheduleSelectorAsOpaqueWhenValidateScheduleSelectorCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleSelector("schedule://realm/area"))
-}
-
-func TestShouldTreatRealmWildcardScheduleSelectorAsOpaqueWhenValidateScheduleSelectorCalled(t *testing.T) {
-	require.NoError(t, ValidateScheduleSelector("schedule://*/area/resource/*"))
+	selectorRejects := []string{
+		"schedule://realm/area",
+		"schedule://realm/*/resource/*",
+		"schedule://*/area/resource/*",
+		"schedule://realm/**/extra",
+	}
+	for _, selector := range selectorRejects {
+		require.ErrorIs(t, ValidateScheduleSelector(selector), ErrInvalidRouteShape, selector)
+	}
 }

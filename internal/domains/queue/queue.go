@@ -82,6 +82,9 @@ func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 		attribute.Int64("fitz.message_id", int64(q.ID)),
 	))
 	defer span.End()
+	if err := q.conn.CheckLiveHandle(); err != nil {
+		return err
+	}
 	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueExtend, extendPayloadWriter(q.route, q.ID, q.Token, leaseSecs))
 	if err != nil {
 		span.RecordError(err)
@@ -115,6 +118,9 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 		attribute.Int64("fitz.message_id", int64(q.ID)),
 	))
 	defer span.End()
+	if err := q.conn.CheckLiveHandle(); err != nil {
+		return err
+	}
 	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueComplete, completePayloadWriter(q.route, q.ID, token))
 	if err != nil {
 		span.RecordError(err)
@@ -190,38 +196,37 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 		return 0, fmt.Errorf("invalid route: %w", err)
 	}
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueEnqueue, enqueuePayloadWriter(route, body, 0))
+	var msgID uint64
+	err := c.conn.RunWithRetry(ctx, func() error {
+		resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueEnqueue, enqueuePayloadWriter(route, body, 0))
+		if err != nil {
+			return fmt.Errorf("enqueue request failed: %w", err)
+		}
+
+		success, remaining, err := parseQueueResponse(resp)
+		if err != nil {
+			return fmt.Errorf("enqueue failed: %w", err)
+		}
+		if !success {
+			return errors.New("enqueue failed: unexpected status")
+		}
+
+		if len(remaining) < 8 {
+			return fmt.Errorf("enqueue response too short: got %d bytes", len(remaining))
+		}
+
+		msgID, _, err = connection.ReadU64BE(remaining, 0)
+		if err != nil {
+			return fmt.Errorf("parse message_id: %w", err)
+		}
+		return nil
+	}, func(err error) bool {
+		return errors.Is(err, ErrQueueFull)
+	})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("enqueue request failed: %w", err)
-	}
-
-	success, remaining, err := parseQueueResponse(resp)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("enqueue failed: %w", err)
-	}
-	if !success {
-		recordErr := errors.New("enqueue failed: unexpected status")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return 0, recordErr
-	}
-
-	if len(remaining) < 8 {
-		recordErr := fmt.Errorf("enqueue response too short: got %d bytes", len(remaining))
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return 0, recordErr
-	}
-
-	msgID, _, err := connection.ReadU64BE(remaining, 0)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return 0, fmt.Errorf("parse message_id: %w", err)
+		return 0, err
 	}
 
 	return msgID, nil

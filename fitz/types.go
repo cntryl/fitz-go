@@ -8,6 +8,7 @@ import (
 
 	coreclient "github.com/cntryl/fitz-go/internal/core/client"
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coretypes "github.com/cntryl/fitz-go/internal/core/types"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -49,6 +50,17 @@ const (
 	TransportWebSocket
 	TransportTCP
 )
+
+// LifecycleEvent is emitted by WithLifecycleHandler for connection lifecycle
+// transitions. Event names match fitz-ts.
+type LifecycleEvent struct {
+	Event     string
+	State     ConnectionState
+	Transport string
+	URL       string
+	Attempt   int
+	Error     error
+}
 
 type clientConfig struct {
 	coreOptions []coreclient.Option
@@ -99,6 +111,14 @@ func WithMaxInFlightRequests(max int) Option {
 	}
 }
 
+// WithMaxRequestQueueSize sets how many outbound operations may wait for an
+// in-flight slot before new operations fail fast with ErrRequestQueueFull.
+func WithMaxRequestQueueSize(max int) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithMaxRequestQueueSize(max))
+	}
+}
+
 // WithAsyncHandlerTimeout sets the timeout used for detached async handler
 // spans in subscription callbacks and RPC worker handlers.
 func WithAsyncHandlerTimeout(timeout time.Duration) Option {
@@ -131,6 +151,55 @@ func WithReconnect(enabled bool, backoff time.Duration, maxAttempts int) Option 
 func WithReconnectMaxDelay(d time.Duration) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReconnectMaxDelay(d))
+	}
+}
+
+// WithRetry controls automatic retries for replay-safe operations. maxAttempts
+// is the total number of attempts; values <= 0 use the default.
+func WithRetry(enabled bool, backoff time.Duration, maxAttempts int) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithRetry(enabled, backoff, maxAttempts))
+	}
+}
+
+// WithRetryMaxDelay sets the ceiling for automatic retry backoff.
+func WithRetryMaxDelay(d time.Duration) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithRetryMaxDelay(d))
+	}
+}
+
+// WithHeartbeat configures idle liveness checks. WebSocket uses ping/pong;
+// TCP uses socket keepalive.
+func WithHeartbeat(enabled bool, interval time.Duration, timeout time.Duration) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithHeartbeat(enabled, interval, timeout))
+	}
+}
+
+// WithMaxFrameSize sets the per-transport inbound frame size limit in bytes.
+func WithMaxFrameSize(bytes int) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithMaxFrameSize(bytes))
+	}
+}
+
+// WithLifecycleHandler registers a callback for connection lifecycle events.
+func WithLifecycleHandler(handler func(LifecycleEvent)) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithLifecycleHandler(func(event coreclient.LifecycleEvent) {
+			if handler == nil {
+				return
+			}
+			handler(LifecycleEvent{
+				Event:     event.Event,
+				State:     fromCoreConnectionState(event.State),
+				Transport: event.Transport,
+				URL:       event.URL,
+				Attempt:   event.Attempt,
+				Error:     event.Error,
+			})
+		}))
 	}
 }
 
@@ -200,4 +269,7 @@ var (
 	ErrNotAuthenticated      = connection.ErrNotAuthenticated
 	ErrAuthenticationFailed  = connection.ErrAuthenticationFailed
 	ErrAuthenticationTimeout = connection.ErrAuthenticationTimeout
+	ErrRequestQueueFull      = connection.ErrRequestQueueFull
+	ErrStaleHandle           = connection.ErrStaleHandle
+	ErrInvalidRouteShape     = coretypes.ErrInvalidRouteShape
 )

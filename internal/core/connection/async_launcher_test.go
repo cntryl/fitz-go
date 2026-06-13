@@ -7,6 +7,9 @@ import (
 
 	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -95,5 +98,112 @@ func TestShouldExpireQueuedAsyncHandlerGivenTimeoutBeforeWorkerStartsWhenLaunchA
 	case <-secondRan:
 		t.Fatal("queued async handler ran after its timeout elapsed")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestShouldEndQueuedAsyncHandlerSpanGivenShutdownWhenJobDrained(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider()
+	tp.RegisterSpanProcessor(recorder)
+	t.Cleanup(func() {
+		require.NoError(t, tp.Shutdown(context.Background()))
+	})
+
+	conn := New(testkit.NewMockTransport(), Config{
+		AsyncHandlerMaxConcurrency: 1,
+		Tracer:                     tp.Tracer("fitz-go-async-test"),
+	})
+
+	firstStarted := make(chan struct{})
+	firstRelease := make(chan struct{})
+	secondRan := make(chan struct{})
+	defer func() {
+		close(firstRelease)
+		_ = conn.Close()
+	}()
+
+	require.True(t, conn.LaunchAsyncHandler(context.Background(), "fitz.test.first", time.Second, func(context.Context, trace.Span) {
+		close(firstStarted)
+		<-firstRelease
+	}))
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first async handler did not start")
+	}
+
+	require.True(t, conn.LaunchAsyncHandler(context.Background(), "fitz.test.queued", time.Minute, func(context.Context, trace.Span) {
+		close(secondRan)
+	}))
+
+	conn.beginAsyncHandlerShutdown()
+
+	require.False(t, conn.LaunchAsyncHandler(context.Background(), "fitz.test.after_shutdown", time.Second, func(context.Context, trace.Span) {}))
+	require.Eventually(t, func() bool {
+		for _, span := range recorder.Ended() {
+			if span.Name() == "fitz.test.queued" {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+
+	select {
+	case <-secondRan:
+		t.Fatal("queued async handler ran after shutdown drain")
+	default:
+	}
+}
+
+func TestShouldCancelReceivedAsyncHandlerJobGivenShutdownBeforeSlotAcquired(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider()
+	tp.RegisterSpanProcessor(recorder)
+	t.Cleanup(func() {
+		require.NoError(t, tp.Shutdown(context.Background()))
+	})
+
+	conn := New(testkit.NewMockTransport(), Config{
+		AsyncHandlerMaxConcurrency: 1,
+		Tracer:                     tp.Tracer("fitz-go-async-test"),
+	})
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	conn.asyncHandlerSem <- struct{}{}
+	defer func() {
+		select {
+		case <-conn.asyncHandlerSem:
+		default:
+		}
+	}()
+
+	ran := make(chan struct{})
+	require.True(t, conn.LaunchAsyncHandler(context.Background(), "fitz.test.received_before_shutdown", time.Minute, func(context.Context, trace.Span) {
+		close(ran)
+	}))
+
+	require.Eventually(t, func() bool {
+		return len(conn.asyncHandlerJobs) == 0
+	}, time.Second, time.Millisecond)
+
+	conn.beginAsyncHandlerShutdown()
+	conn.cancel()
+
+	require.Eventually(t, func() bool {
+		for _, span := range recorder.Ended() {
+			if span.Name() == "fitz.test.received_before_shutdown" {
+				return span.Status().Code == codes.Error
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+
+	select {
+	case <-ran:
+		t.Fatal("async handler ran after shutdown before acquiring a slot")
+	default:
 	}
 }

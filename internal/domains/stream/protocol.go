@@ -3,7 +3,6 @@ package stream
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"strings"
 
@@ -320,7 +319,9 @@ func encodeStreamFilterSet(filter *StreamFilterSet) []byte {
 	}
 
 	buf := &bytes.Buffer{}
-	writeU64LE(buf, uint64(len(filter.Clauses)))
+	buf.WriteByte(0)
+	buf.WriteByte(0xf1)
+	encoding.WriteU32(buf, uint32(len(filter.Clauses)))
 	for _, clause := range filter.Clauses {
 		encodeStreamFilterClause(buf, clause)
 	}
@@ -331,39 +332,21 @@ func encodeStreamFilterSet(filter *StreamFilterSet) []byte {
 func encodeStreamFilterClause(buf *bytes.Buffer, clause StreamFilterClause) {
 	switch clause.Kind {
 	case StreamFilterEquals:
-		writeU32LE(buf, 0)
-		writeLEString(buf, clause.Value)
+		buf.WriteByte(0)
+		encoding.WriteString(buf, clause.Value)
 	case StreamFilterNotEquals:
-		writeU32LE(buf, 1)
-		writeLEString(buf, clause.Value)
+		buf.WriteByte(1)
+		encoding.WriteString(buf, clause.Value)
 	case StreamFilterStartsWith:
-		writeU32LE(buf, 2)
-		writeLEString(buf, clause.Value)
+		buf.WriteByte(2)
+		encoding.WriteString(buf, clause.Value)
 	case StreamFilterAnyOf:
-		writeU32LE(buf, 3)
-		writeU64LE(buf, uint64(len(clause.Values)))
+		buf.WriteByte(3)
+		encoding.WriteU32(buf, uint32(len(clause.Values)))
 		for _, value := range clause.Values {
-			writeLEString(buf, value)
+			encoding.WriteString(buf, value)
 		}
 	}
-}
-
-func writeU32LE(buf *bytes.Buffer, value uint32) {
-	var scratch [4]byte
-	binary.LittleEndian.PutUint32(scratch[:], value)
-	buf.Write(scratch[:])
-}
-
-func writeU64LE(buf *bytes.Buffer, value uint64) {
-	var scratch [8]byte
-	binary.LittleEndian.PutUint64(scratch[:], value)
-	buf.Write(scratch[:])
-}
-
-func writeLEString(buf *bytes.Buffer, value string) {
-	bytesValue := []byte(value)
-	writeU64LE(buf, uint64(len(bytesValue)))
-	buf.Write(bytesValue)
 }
 
 // Subscription payload writers for SUBSCRIBE/UNSUBSCRIBE

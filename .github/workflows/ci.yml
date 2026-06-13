@@ -38,11 +38,14 @@ jobs:
       - name: Run build
         run: go build ./...
 
+      - name: Run consumer smoke
+        run: bash scripts/consumer-smoke.sh
+
       - name: Run default tests
         run: go test ./... -timeout 60s
 
       - name: Run broker acceptance tests
-        run: go test -tags=integration ./test -timeout 10m
+        run: go test -tags=integration ./test ./test/conformance/... -timeout 10m
 
       - name: Stop broker stack
         if: always()

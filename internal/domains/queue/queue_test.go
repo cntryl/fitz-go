@@ -85,6 +85,21 @@ func queueSubscribeResponsePayload(subID uint64) []byte {
 	return append([]byte(nil), buf.Bytes()...)
 }
 
+func TestShouldReturnStaleHandleGivenClosedConnectionWhenQueueItemCompleted(t *testing.T) {
+	conn := connection.New(newScriptedRestoreTransport(), connection.Config{Token: ""})
+	require.NoError(t, conn.Close())
+	item := &QueueItem{
+		ID:    1,
+		Token: 2,
+		route: "queue://realm/area/resource",
+		conn:  conn,
+	}
+
+	err := item.Complete(context.Background())
+
+	require.ErrorIs(t, err, connection.ErrStaleHandle)
+}
+
 func waitForRestoreWrites(t *testing.T, trans *scriptedRestoreTransport, expected int) {
 	t.Helper()
 	require.Eventually(t, func() bool {

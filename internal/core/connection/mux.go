@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 )
@@ -231,6 +232,7 @@ type Multiplexer struct {
 	requestsTotal    atomic.Uint64
 	responsesTotal   atomic.Uint64
 	responsesDropped atomic.Uint64
+	logger           *slog.Logger
 
 	closed atomic.Bool
 }
@@ -241,6 +243,10 @@ func NewMultiplexer() *Multiplexer {
 		pending:        make(map[uint16]*requestQueue),
 		notifyHandlers: make(map[uint16]func(subID uint64, route string, payload []byte)),
 	}
+}
+
+func (m *Multiplexer) setLogger(logger *slog.Logger) {
+	m.logger = logger
 }
 
 // RegisterRequest registers a pending request before sending.
@@ -309,14 +315,14 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	// Queue NOTIFY (209) uses a queue-specific payload shape.
 	if msgType == 209 {
 		if handler := m.notifyHandler(msgType); handler != nil {
-			m.handleQueueNotify(payload, handler)
+			m.handleQueueNotify(msgType, payload, handler)
 		}
 		return
 	}
 	// Lease NOTIFY (409), Notice NOTIFY (504), Stream NOTIFY (609) use the shared route/payload shape.
 	if msgType == 409 || msgType == 504 || msgType == 609 {
 		if handler := m.notifyHandler(msgType); handler != nil {
-			m.handleNotify(payload, handler)
+			m.handleNotify(msgType, payload, handler)
 		}
 		return
 	}
@@ -342,7 +348,7 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 		if hasPending303 {
 			// Sync response to worker's SendRequest(303) — fall through to sync path below
 		} else {
-			m.handleRpcResponse(payload)
+			m.handleRpcResponse(msgType, payload)
 			return
 		}
 	}
@@ -370,8 +376,9 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 
 // handleNotify processes NOTIFY messages (209 Queue, 409 Lease, 504 Notice, 609 Stream).
 // Per CLIENT_SPEC.md: [u64 BE subscription_id][u32 route_len][route][u32 payload_len][payload]
-func (m *Multiplexer) handleNotify(payload []byte, handler func(subID uint64, route string, payload []byte)) {
+func (m *Multiplexer) handleNotify(msgType uint16, payload []byte, handler func(subID uint64, route string, payload []byte)) {
 	if len(payload) < 8 {
+		m.dropFrame(msgType, payload, "notify missing subscription_id")
 		return // Malformed
 	}
 
@@ -383,36 +390,35 @@ func (m *Multiplexer) handleNotify(payload []byte, handler func(subID uint64, ro
 
 	// Read route length and route
 	if len(payload) < offset+4 {
+		m.dropFrame(msgType, payload, "notify missing route length")
 		return
 	}
-	routeLen := binary.BigEndian.Uint32(payload[offset : offset+4])
-	offset += 4
-
-	if len(payload) < offset+int(routeLen) {
+	routeBytes, offset, ok := readU32Bytes(payload, offset)
+	if !ok {
+		m.dropFrame(msgType, payload, "notify truncated route")
 		return
 	}
-	route := string(payload[offset : offset+int(routeLen)])
-	offset += int(routeLen)
+	route := string(routeBytes)
 
 	// Read payload length and payload
 	if len(payload) < offset+4 {
+		m.dropFrame(msgType, payload, "notify missing payload length")
 		return
 	}
-	payloadLen := binary.BigEndian.Uint32(payload[offset : offset+4])
-	offset += 4
-
-	if len(payload) < offset+int(payloadLen) {
+	msgPayload, _, ok := readU32Bytes(payload, offset)
+	if !ok {
+		m.dropFrame(msgType, payload, "notify truncated payload")
 		return
 	}
-	msgPayload := payload[offset : offset+int(payloadLen)]
 
 	handler(subID, route, msgPayload)
 }
 
 // handleQueueNotify processes Queue NOTIFY messages (209).
 // Per queue sink wire format: [u64 BE subscription_id][u32 route_len][route][u64 ready][u64 delayed][u64 inflight]
-func (m *Multiplexer) handleQueueNotify(payload []byte, handler func(subID uint64, route string, payload []byte)) {
+func (m *Multiplexer) handleQueueNotify(msgType uint16, payload []byte, handler func(subID uint64, route string, payload []byte)) {
 	if len(payload) < 8+4 {
+		m.dropFrame(msgType, payload, "queue notify missing header")
 		return
 	}
 
@@ -420,16 +426,16 @@ func (m *Multiplexer) handleQueueNotify(payload []byte, handler func(subID uint6
 	subID := binary.BigEndian.Uint64(payload[offset : offset+8])
 	offset += 8
 
-	routeLen := binary.BigEndian.Uint32(payload[offset : offset+4])
-	offset += 4
-	if len(payload) < offset+int(routeLen) {
+	routeBytes, offset, ok := readU32Bytes(payload, offset)
+	if !ok {
+		m.dropFrame(msgType, payload, "queue notify truncated route")
 		return
 	}
-	route := string(payload[offset : offset+int(routeLen)])
-	offset += int(routeLen)
+	route := string(routeBytes)
 
 	// Queue watch notifications carry three u64 counters after the route.
 	if len(payload) < offset+24 {
+		m.dropFrame(msgType, payload, "queue notify missing counters")
 		return
 	}
 
@@ -448,12 +454,10 @@ func (m *Multiplexer) handleScheduleNotify(payload []byte) {
 	if len(payload) < offset+4 {
 		return
 	}
-	payloadLen := binary.BigEndian.Uint32(payload[offset : offset+4])
-	offset += 4
-	if len(payload) < offset+int(payloadLen) {
+	msgPayload, _, ok := readU32Bytes(payload, offset)
+	if !ok {
 		return
 	}
-	msgPayload := payload[offset : offset+int(payloadLen)]
 	if handler := m.scheduleHandler(); handler != nil {
 		handler(subID, msgPayload)
 	}
@@ -478,15 +482,17 @@ func (m *Multiplexer) looksLikeRpcWorkerRequest(payload []byte) bool {
 // handleRpcResponse processes RPC RESPONSE messages (async delivery).
 // Per server rpc_codec.rs: [bytes correlation_id][u64 seq][bytes body][u8 stream_end]
 // where "bytes" = [u32 BE len][data] (TLV bytes format)
-func (m *Multiplexer) handleRpcResponse(payload []byte) {
+func (m *Multiplexer) handleRpcResponse(msgType uint16, payload []byte) {
 	// Need at least [u32 len=16][16 bytes uuid] = 20 bytes for correlation_id
 	if len(payload) < 20 {
+		m.dropFrame(msgType, payload, "rpc response missing correlation_id")
 		return
 	}
 
 	// Parse correlation_id as TLV bytes: [u32 BE len][16 bytes UUID]
 	corrLen := binary.BigEndian.Uint32(payload[0:4])
 	if corrLen != 16 || len(payload) < 4+int(corrLen) {
+		m.dropFrame(msgType, payload, "rpc response invalid correlation_id")
 		return
 	}
 
@@ -497,6 +503,26 @@ func (m *Multiplexer) handleRpcResponse(payload []byte) {
 	if handler := m.rpcResponseHandler(); handler != nil {
 		handler(correlationID, payload[20:])
 	}
+}
+
+func (m *Multiplexer) dropFrame(msgType uint16, payload []byte, reason string) {
+	m.responsesDropped.Add(1)
+	if m.logger != nil {
+		m.logger.Warn("dropped malformed frame", "msg_type", msgType, "payload_len", len(payload), "reason", reason)
+	}
+}
+
+func readU32Bytes(payload []byte, offset int) ([]byte, int, bool) {
+	if offset < 0 || offset > len(payload) || len(payload)-offset < 4 {
+		return nil, offset, false
+	}
+	length := binary.BigEndian.Uint32(payload[offset : offset+4])
+	offset += 4
+	if uint64(length) > uint64(len(payload)-offset) {
+		return nil, offset, false
+	}
+	end := offset + int(length)
+	return payload[offset:end], end, true
 }
 
 // SetNotifyHandler registers the handler for NOTIFY messages for the given message type.

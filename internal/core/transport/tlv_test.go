@@ -101,6 +101,21 @@ func TestShouldReturnValueWhenUint64LengthCorrectWhenGetUint64Called(t *testing.
 	require.Equal(t, uint64(1), v)
 }
 
+func TestShouldReturnDefensiveCopyGivenBytesValueWhenGetBytesCalled(t *testing.T) {
+	enc := NewTLVEncoder()
+	enc.AddBytes(TagBody, []byte("body"))
+	b := enc.Encode()
+	dec, err := NewTLVDecoder(b)
+	require.NoError(t, err)
+
+	first := dec.GetBytes(TagBody)
+	require.Equal(t, []byte("body"), first)
+
+	first[0] = 'x'
+	second := dec.GetBytes(TagBody)
+	require.Equal(t, []byte("body"), second)
+}
+
 func TestShouldReturnErrorGivenOversizedValueWhenAddTagCalled(t *testing.T) {
 	// Arrange
 	enc := NewTLVEncoder()

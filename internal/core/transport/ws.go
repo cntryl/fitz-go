@@ -40,11 +40,14 @@ const (
 // Per CLIENT_SPEC.md: Binary frames only, one message per frame.
 // Implements RFC 6455 WebSocket protocol.
 type WebSocketTransport struct {
-	conn   net.Conn
-	reader *bufio.Reader
-	addr   string
-	closed atomic.Bool
-	mu     sync.Mutex // Protects conn writes (WebSocket frames must be written atomically)
+	conn         net.Conn
+	reader       *bufio.Reader
+	addr         string
+	closed       atomic.Bool
+	mu           sync.Mutex // Protects conn writes (WebSocket frames must be written atomically)
+	maxFrameSize atomic.Int64
+	pongMu       sync.Mutex
+	pongWaiters  map[chan struct{}]struct{}
 }
 
 // DialWebSocket creates a WebSocket transport to the specified URL.
@@ -85,11 +88,13 @@ func DialWebSocket(ctx context.Context, urlStr string) (Transport, error) {
 		return nil, newTransportError("handshake", err)
 	}
 
-	return &WebSocketTransport{
+	trans := &WebSocketTransport{
 		conn:   conn,
 		reader: reader,
 		addr:   urlStr,
-	}, nil
+	}
+	trans.SetMaxFrameSize(MaxFrameSize)
+	return trans, nil
 }
 
 // performHandshake sends HTTP upgrade request and validates response.
@@ -111,6 +116,11 @@ func performHandshake(conn net.Conn, u *url.URL, ctx context.Context) (reader *b
 	if u.RawQuery != "" {
 		path += "?" + u.RawQuery
 	}
+	originScheme := "http"
+	if u.Scheme == "wss" {
+		originScheme = "https"
+	}
+	origin := originScheme + "://" + u.Host
 
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
@@ -126,12 +136,13 @@ func performHandshake(conn net.Conn, u *url.URL, ctx context.Context) (reader *b
 	req := fmt.Sprintf(
 		"GET %s HTTP/1.1\r\n"+
 			"Host: %s\r\n"+
+			"Origin: %s\r\n"+
 			"Upgrade: websocket\r\n"+
 			"Connection: Upgrade\r\n"+
 			"Sec-WebSocket-Key: %s\r\n"+
 			"Sec-WebSocket-Version: 13\r\n"+
 			"\r\n",
-		path, u.Host, key,
+		path, u.Host, origin, key,
 	)
 
 	// Send upgrade request
@@ -207,6 +218,100 @@ func (w *WebSocketTransport) Write(ctx context.Context, frame []byte) (retErr er
 		return err
 	}
 	return nil
+}
+
+// SetMaxFrameSize overrides the inbound frame size limit for this transport.
+func (w *WebSocketTransport) SetMaxFrameSize(bytes int) {
+	if bytes <= 0 {
+		bytes = MaxFrameSize
+	}
+	w.maxFrameSize.Store(int64(bytes))
+}
+
+func (w *WebSocketTransport) frameSizeLimit() int64 {
+	limit := w.maxFrameSize.Load()
+	if limit <= 0 {
+		return MaxFrameSize
+	}
+	return limit
+}
+
+// SendHeartbeat sends a WebSocket ping and waits for a pong observed by Read.
+func (w *WebSocketTransport) SendHeartbeat(ctx context.Context) error {
+	if w.closed.Load() {
+		return ErrTransportClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	waiter := make(chan struct{})
+	w.addPongWaiter(waiter)
+	defer w.removePongWaiter(waiter)
+
+	w.mu.Lock()
+	err := w.writeControlFrame(ctx, opcodePing, nil)
+	w.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	select {
+	case <-waiter:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (w *WebSocketTransport) writeControlFrame(ctx context.Context, opcode byte, payload []byte) (retErr error) {
+	cleanupDeadline, err := bindConnDeadlineToContext(ctx, w.conn.SetWriteDeadline)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("set websocket control write deadline: %w", err)
+	}
+	defer func() {
+		if err := cleanupDeadline(); retErr == nil && err != nil {
+			retErr = fmt.Errorf("clear websocket control write deadline: %w", err)
+		}
+	}()
+	if err := w.writeFrame(opcode, payload, true); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	}
+	return nil
+}
+
+func (w *WebSocketTransport) addPongWaiter(waiter chan struct{}) {
+	w.pongMu.Lock()
+	defer w.pongMu.Unlock()
+	if w.pongWaiters == nil {
+		w.pongWaiters = make(map[chan struct{}]struct{})
+	}
+	w.pongWaiters[waiter] = struct{}{}
+}
+
+func (w *WebSocketTransport) removePongWaiter(waiter chan struct{}) {
+	w.pongMu.Lock()
+	defer w.pongMu.Unlock()
+	delete(w.pongWaiters, waiter)
+}
+
+func (w *WebSocketTransport) notifyPongWaiters() {
+	w.pongMu.Lock()
+	waiters := make([]chan struct{}, 0, len(w.pongWaiters))
+	for waiter := range w.pongWaiters {
+		waiters = append(waiters, waiter)
+	}
+	w.pongWaiters = nil
+	w.pongMu.Unlock()
+	for _, waiter := range waiters {
+		close(waiter)
+	}
 }
 
 // writeFrame writes a WebSocket frame with optional masking.
@@ -318,7 +423,7 @@ func (w *WebSocketTransport) Read(ctx context.Context) (payload []byte, retErr e
 		switch opcode {
 		case opcodeBinary:
 			// Validate frame size (safety check)
-			if len(payload) > MaxFrameSize {
+			if int64(len(payload)) > w.frameSizeLimit() {
 				return nil, ErrFrameTooLarge
 			}
 			return payload, nil
@@ -338,7 +443,7 @@ func (w *WebSocketTransport) Read(ctx context.Context) (payload []byte, retErr e
 			continue
 
 		case opcodePong:
-			// Ignore pong frames
+			w.notifyPongWaiters()
 			continue
 
 		case opcodeClose:
@@ -407,7 +512,7 @@ func (w *WebSocketTransport) readFrame() (opcode byte, payload []byte, err error
 	if isControl && length > 125 {
 		return 0, nil, errors.New("control frame payload too large")
 	}
-	if !isControl && length > uint64(MaxFrameSize) {
+	if !isControl && length > uint64(w.frameSizeLimit()) {
 		return 0, nil, ErrFrameTooLarge
 	}
 

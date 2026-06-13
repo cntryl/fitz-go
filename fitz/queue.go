@@ -3,6 +3,7 @@ package fitz
 import (
 	"context"
 
+	coreiter "github.com/cntryl/fitz-go/internal/core/iter"
 	internalqueue "github.com/cntryl/fitz-go/internal/domains/queue"
 )
 
@@ -46,6 +47,7 @@ type QueueClient interface {
 	Enqueue(ctx context.Context, route string, body []byte) (uint64, error)
 	Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error)
 	ReserveWithOptions(ctx context.Context, route string, leaseSecs uint64, opts ...QueueReserveOption) ([]*QueueItem, error)
+	ReserveWhenAvailable(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) (Iterator[[]*QueueItem], error)
 	Subscribe(ctx context.Context, pattern string, handler QueueAvailabilityHandler) (*QueueSubscription, error)
 }
 
@@ -130,6 +132,58 @@ func (c *queueClient) ReserveWithOptions(ctx context.Context, route string, leas
 		wrapped = append(wrapped, wrapQueueItem(item))
 	}
 	return wrapped, nil
+}
+
+// ReserveWhenAvailable yields non-empty reserve batches. Availability
+// notifications only wake the loop; Reserve remains authoritative.
+func (c *queueClient) ReserveWhenAvailable(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) (Iterator[[]*QueueItem], error) {
+	if batchSize == 0 {
+		batchSize = 1
+	}
+	helperCtx, cancel := context.WithCancel(ctx)
+	gate := NewWakeGate()
+	subscription, err := c.Subscribe(helperCtx, route, func(context.Context, QueueAvailabilityNotification) error {
+		gate.Wake()
+		return nil
+	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	batches := make(chan []*QueueItem)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(batches)
+		defer close(errCh)
+		defer subscription.Unsubscribe()
+
+		var version uint64
+		for {
+			reserved, err := c.Reserve(helperCtx, route, leaseSecs, batchSize)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if len(reserved) > 0 {
+				select {
+				case batches <- reserved:
+					continue
+				case <-helperCtx.Done():
+					errCh <- helperCtx.Err()
+					return
+				}
+			}
+
+			version, err = gate.WaitAfter(helperCtx, version)
+			if err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+
+	return coreiter.NewChannelIterator[[]*QueueItem](batches, errCh, cancel), nil
 }
 
 func (c *queueClient) Subscribe(ctx context.Context, pattern string, handler QueueAvailabilityHandler) (*QueueSubscription, error) {

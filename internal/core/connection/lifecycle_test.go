@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,95 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type heartbeatMockTransport struct {
+	*testkit.MockTransport
+
+	count atomic.Int32
+	err   error
+}
+
+func (h *heartbeatMockTransport) SendHeartbeat(context.Context) error {
+	h.count.Add(1)
+	return h.err
+}
+
+type authCloseRaceTransport struct {
+	wrote        chan struct{}
+	closeStarted chan struct{}
+	releaseRead  chan struct{}
+	releaseClose chan struct{}
+	writeOnce    sync.Once
+	closeOnce    sync.Once
+}
+
+func newAuthCloseRaceTransport() *authCloseRaceTransport {
+	return &authCloseRaceTransport{
+		wrote:        make(chan struct{}),
+		closeStarted: make(chan struct{}),
+		releaseRead:  make(chan struct{}),
+		releaseClose: make(chan struct{}),
+	}
+}
+
+func (t *authCloseRaceTransport) Write(context.Context, []byte) error {
+	t.writeOnce.Do(func() {
+		close(t.wrote)
+	})
+	return nil
+}
+
+func (t *authCloseRaceTransport) Read(ctx context.Context) ([]byte, error) {
+	<-t.releaseRead
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, io.EOF
+}
+
+func (t *authCloseRaceTransport) Close() error {
+	t.closeOnce.Do(func() {
+		close(t.closeStarted)
+	})
+	<-t.releaseClose
+	return nil
+}
+
+func (t *authCloseRaceTransport) RemoteAddr() string {
+	return "mock://auth-close-race"
+}
+
+func TestShouldConfirmAuthenticationOnlyOnceGivenConcurrentCalls(t *testing.T) {
+	conn := New(testkit.NewMockTransport(), DefaultConfig())
+	t.Cleanup(func() {
+		require.NoError(t, conn.Close())
+	})
+
+	panicCh := make(chan any, 128)
+	var wg sync.WaitGroup
+	for range 128 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					panicCh <- recovered
+				}
+			}()
+			conn.confirmAuthentication()
+		}()
+	}
+	wg.Wait()
+	close(panicCh)
+
+	require.Empty(t, panicCh)
+	select {
+	case <-conn.authConfirmed:
+	default:
+		t.Fatal("authentication was not confirmed")
+	}
+	assert.Equal(t, StateAuthenticated, conn.State())
+}
 
 func TestShouldAuthenticateAfterSilentConnectWindowGivenValidJWTWhenStartCalled(t *testing.T) {
 	// Arrange
@@ -30,6 +120,55 @@ func TestShouldAuthenticateAfterSilentConnectWindowGivenValidJWTWhenStartCalled(
 	require.NoError(t, err)
 	assert.True(t, conn.isAuthenticated())
 	require.NoError(t, conn.Close())
+}
+
+func TestShouldReturnConnectionClosedGivenCloseDuringSilentAuthSettleWindow(t *testing.T) {
+	transport := newAuthCloseRaceTransport()
+	cfg := DefaultConfig()
+	cfg.Token = "token"
+	cfg.AuthSettleDelay = 20 * time.Millisecond
+	cfg.ReadTimeout = time.Second
+	conn := New(transport, cfg)
+
+	startResult := make(chan error, 1)
+	go func() {
+		startResult <- conn.Start(context.Background())
+	}()
+
+	select {
+	case <-transport.wrote:
+	case <-time.After(time.Second):
+		t.Fatal("CONNECT was not written")
+	}
+
+	closeResult := make(chan error, 1)
+	go func() {
+		closeResult <- conn.Close()
+	}()
+
+	select {
+	case <-transport.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("close did not start")
+	}
+
+	select {
+	case err := <-startResult:
+		require.ErrorIs(t, err, ErrConnectionClosed)
+	case <-time.After(time.Second):
+		t.Fatal("Start did not return after auth settle window")
+	}
+	assert.False(t, conn.isAuthenticated())
+
+	close(transport.releaseRead)
+	close(transport.releaseClose)
+
+	select {
+	case err := <-closeResult:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish")
+	}
 }
 
 func TestShouldRemainOpenGivenIdleReadTimeoutWhenAuthenticated(t *testing.T) {
@@ -50,6 +189,39 @@ func TestShouldRemainOpenGivenIdleReadTimeoutWhenAuthenticated(t *testing.T) {
 	assert.Equal(t, StateAuthenticated, conn.State())
 	assert.NoError(t, conn.Err())
 	require.NoError(t, conn.Close())
+}
+
+func TestShouldReturnQueueFullGivenRequestWaitQueueSaturated(t *testing.T) {
+	conn := New(testkit.NewMockTransport(), Config{
+		Token:               "",
+		MaxInFlightRequests: 1,
+		MaxRequestQueueSize: 1,
+	})
+	conn.requestSem <- struct{}{}
+	conn.queuedRequests.Store(1)
+
+	err := conn.AcquireRequestSlotErr(context.Background())
+
+	require.ErrorIs(t, err, ErrRequestQueueFull)
+	<-conn.requestSem
+}
+
+func TestShouldSendHeartbeatGivenIdleAuthenticatedConnection(t *testing.T) {
+	transport := &heartbeatMockTransport{MockTransport: testkit.NewMockTransport()}
+	cfg := DefaultConfig()
+	cfg.Token = ""
+	cfg.ReadTimeout = 5 * time.Millisecond
+	cfg.HeartbeatInterval = 10 * time.Millisecond
+	cfg.HeartbeatTimeout = 20 * time.Millisecond
+	conn := New(transport, cfg)
+	require.NoError(t, conn.Start(context.Background()))
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	require.Eventually(t, func() bool {
+		return transport.count.Load() > 0
+	}, time.Second, 5*time.Millisecond)
 }
 
 func TestShouldReturnAuthenticationFailedGivenReadErrorWhenStartCalled(t *testing.T) {

@@ -164,6 +164,9 @@ func (e *TLVEncoder) Encode() []byte {
 
 // TLVDecoder decodes a byte slice into TLV entries.
 // Duplicate tags are rejected per CLIENT_SPEC.md rule 5.
+// Decoded entries are zero-copy views over the input buffer, so callers must
+// treat the input bytes as immutable for the decoder lifetime. Accessors that
+// expose byte slices return defensive copies unless documented otherwise.
 type TLVDecoder struct {
 	entries map[uint8][]byte
 }
@@ -195,8 +198,7 @@ func (d *TLVDecoder) parse(data []byte) error {
 		if offset+int(length) > len(data) {
 			return errors.New("truncated TLV: value exceeds remaining bytes")
 		}
-		value := make([]byte, length)
-		copy(value, data[offset:offset+int(length)])
+		value := data[offset : offset+int(length)]
 		offset += int(length)
 		if _, exists := d.entries[tag]; exists {
 			return fmt.Errorf("duplicate TLV tag 0x%02X: tags must be unique within a frame", tag)

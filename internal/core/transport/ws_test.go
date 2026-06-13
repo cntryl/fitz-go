@@ -310,6 +310,31 @@ func TestShouldCloseGracefullyGivenOpenWSTransportWhenCloseCalled(t *testing.T) 
 	assert.True(t, conn.Closed)
 }
 
+func TestShouldNotifyOnlyRegisteredPongWaitersGivenWaiterRemoved(t *testing.T) {
+	transport := &WebSocketTransport{}
+	removed := make(chan struct{})
+	registered := make(chan struct{})
+
+	transport.addPongWaiter(removed)
+	transport.addPongWaiter(registered)
+	transport.removePongWaiter(removed)
+	transport.notifyPongWaiters()
+
+	select {
+	case <-registered:
+	case <-time.After(time.Second):
+		t.Fatal("registered pong waiter was not notified")
+	}
+
+	select {
+	case <-removed:
+		t.Fatal("removed pong waiter was notified")
+	default:
+	}
+
+	require.Empty(t, transport.pongWaiters)
+}
+
 // TestShouldReturnRemoteAddrGivenWSTransportWhenRemoteAddrCalled tests WebSocket remote address reporting.
 func TestShouldReturnRemoteAddrGivenWSTransportWhenRemoteAddrCalled(t *testing.T) {
 	// Arrange

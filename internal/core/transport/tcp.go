@@ -17,10 +17,11 @@ import (
 // Per CLIENT_SPEC.md: [u32 BE frame_length][TLV message]
 // Handles partial reads correctly using io.ReadFull.
 type TCPTransport struct {
-	conn   net.Conn
-	addr   string
-	reader *bufio.Reader
-	closed atomic.Bool
+	conn         net.Conn
+	addr         string
+	reader       *bufio.Reader
+	closed       atomic.Bool
+	maxFrameSize atomic.Int64
 
 	writeMu sync.Mutex // Serializes writes (header + frame must be atomic)
 	readMu  sync.Mutex // Serializes reads (prevents interleaved partial reads)
@@ -39,11 +40,13 @@ func DialTCP(ctx context.Context, addr string) (Transport, error) {
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	return &TCPTransport{
+	trans := &TCPTransport{
 		conn:   conn,
 		addr:   addr,
 		reader: bufio.NewReader(conn),
-	}, nil
+	}
+	trans.SetMaxFrameSize(MaxFrameSize)
+	return trans, nil
 }
 
 // Write sends a length-prefixed frame: [u32 BE length][frame].
@@ -131,7 +134,7 @@ func (t *TCPTransport) Read(ctx context.Context) (frame []byte, retErr error) {
 	frameLen := binary.BigEndian.Uint32(lengthBuf[:])
 
 	// Validate frame size BEFORE allocating (prevents OOM)
-	if frameLen > uint32(MaxFrameSize) {
+	if uint64(frameLen) > uint64(t.frameSizeLimit()) {
 		return nil, ErrFrameTooLarge
 	}
 
@@ -160,6 +163,38 @@ func (t *TCPTransport) Close() error {
 // RemoteAddr returns the TCP address (host:port).
 func (t *TCPTransport) RemoteAddr() string {
 	return t.addr
+}
+
+// SetMaxFrameSize overrides the inbound frame size limit for this transport.
+func (t *TCPTransport) SetMaxFrameSize(bytes int) {
+	if bytes <= 0 {
+		bytes = MaxFrameSize
+	}
+	t.maxFrameSize.Store(int64(bytes))
+}
+
+func (t *TCPTransport) frameSizeLimit() int64 {
+	limit := t.maxFrameSize.Load()
+	if limit <= 0 {
+		return MaxFrameSize
+	}
+	return limit
+}
+
+// EnableKeepAlive configures TCP socket keepalive. It does not write protocol
+// heartbeat frames.
+func (t *TCPTransport) EnableKeepAlive(interval time.Duration) error {
+	tcpConn, ok := t.conn.(*net.TCPConn)
+	if !ok {
+		return nil
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if err := tcpConn.SetKeepAlive(true); err != nil {
+		return err
+	}
+	return tcpConn.SetKeepAlivePeriod(interval)
 }
 
 func writeAll(conn net.Conn, buf []byte) error {
