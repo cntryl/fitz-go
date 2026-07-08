@@ -1,15 +1,52 @@
 package stream
 
 import (
+	"context"
 	"errors"
 	"io"
 	"testing"
+	"sync"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type staleStreamTransport struct {
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newStaleStreamTransport() *staleStreamTransport {
+	return &staleStreamTransport{
+		closed: make(chan struct{}),
+	}
+}
+
+func (t *staleStreamTransport) Write(_ context.Context, _ []byte) error {
+	select {
+	case <-t.closed:
+		return connection.ErrConnectionClosed
+	default:
+		return nil
+	}
+}
+
+func (t *staleStreamTransport) Read(_ context.Context) ([]byte, error) {
+	return nil, connection.ErrConnectionClosed
+}
+
+func (t *staleStreamTransport) Close() error {
+	t.closeOnce.Do(func() {
+		close(t.closed)
+	})
+	return nil
+}
+
+func (t *staleStreamTransport) RemoteAddr() string {
+	return "stale-stream://transport"
+}
 
 // TestShouldMapStreamError tests error message mapping.
 func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testing.T) {
@@ -92,6 +129,22 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 		assert.ErrorAs(t, mapped, &domainErr)
 		assert.Equal(t, uint32(coreerrors.StreamSubscriptionLimit), uint32(domainErr.Code))
 	})
+}
+
+func TestShouldReturnStaleHandleGivenClosedConnectionWhenStreamSessionAppended(t *testing.T) {
+	conn := connection.New(newStaleStreamTransport(), connection.Config{Token: ""})
+	require.NoError(t, conn.Close())
+
+	s := &session{route: "stream://realm/area/resource", sessionID: 1, conn: conn}
+
+	_, appendErr := s.Append(context.Background(), 0, []byte{1})
+	require.ErrorIs(t, appendErr, connection.ErrStaleHandle)
+
+	commitErr := s.Commit(context.Background(), CommitModeBuffered)
+	require.ErrorIs(t, commitErr, connection.ErrStaleHandle)
+
+	rbErr := s.Rollback(context.Background())
+	require.ErrorIs(t, rbErr, connection.ErrStaleHandle)
 }
 
 // TestShouldDefineStreamOpcodes tests that Stream opcodes are properly defined.

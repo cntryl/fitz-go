@@ -3,12 +3,15 @@ package connection_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/internal/core/transport"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/assert"
@@ -607,6 +610,86 @@ func TestShouldPreserveResponseRoutingGivenConcurrentSameTypeRequestsWhenSendReq
 	require.NoError(t, got["second"].err)
 	assert.Equal(t, "resp:first", got["first"].resp)
 	assert.Equal(t, "resp:second", got["second"].resp)
+}
+
+func TestShouldClassifyRetryableErrorGivenErrorTypeWhenIsTransientRetryableCalled(t *testing.T) {
+	t.Run("context deadline is retryable", func(t *testing.T) {
+		assert.True(t, connection.IsTransientRetryable(context.DeadlineExceeded))
+	})
+
+	t.Run("connection closed is retryable", func(t *testing.T) {
+		assert.True(t, connection.IsTransientRetryable(connection.ErrConnectionClosed))
+	})
+
+	t.Run("transport error is retryable", func(t *testing.T) {
+		transportErr := &transport.TransportError{Op: "read", Cause: errors.New("socket")}
+		assert.True(t, connection.IsTransientRetryable(transportErr))
+	})
+
+	t.Run("retryable domain error is retryable", func(t *testing.T) {
+		err := coreerrors.NewDomainError(coreerrors.KvIsolationConflict, "isolation conflict")
+		assert.True(t, connection.IsTransientRetryable(err))
+	})
+
+	t.Run("non-retryable domain error is not retryable", func(t *testing.T) {
+		err := coreerrors.NewDomainError(coreerrors.KvInvalidMode, "invalid mode")
+		assert.False(t, connection.IsTransientRetryable(err))
+	})
+
+	t.Run("nil is not retryable", func(t *testing.T) {
+		assert.False(t, connection.IsTransientRetryable(nil))
+	})
+}
+
+func TestShouldStopRetryingGivenNonRetryableErrorWhenRunWithRetryCalled(t *testing.T) {
+	transport := &testkit.MockTransport{}
+	cfg := connection.DefaultConfig()
+	cfg.RetryEnabled = true
+	cfg.RetryMaxAttempts = 3
+	cfg.RetryBackoff = time.Millisecond
+	cfg.RetryMaxBackoff = 2 * time.Millisecond
+
+	conn := connection.New(transport, cfg)
+	attempts := 0
+	err := conn.RunWithRetry(context.Background(), func() error {
+		attempts++
+		return errors.New("non-retryable")
+	}, nil)
+
+	require.Error(t, err)
+	assert.Equal(t, 1, attempts)
+}
+
+func TestShouldRespectMaxAttemptsGivenRetryableErrorWhenRunWithRetryCalled(t *testing.T) {
+	transport := &testkit.MockTransport{}
+	cfg := connection.DefaultConfig()
+	cfg.RetryEnabled = true
+	cfg.RetryMaxAttempts = 2
+	cfg.RetryBackoff = time.Millisecond
+	cfg.RetryMaxBackoff = 2 * time.Millisecond
+
+	conn := connection.New(transport, cfg)
+	attempts := 0
+	err := conn.RunWithRetry(context.Background(), func() error {
+		attempts++
+		return connection.ErrConnectionClosed
+	}, nil)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, connection.ErrConnectionClosed)
+	assert.Equal(t, 2, attempts)
+}
+
+func TestShouldReturnStaleHandleGivenClosedConnectionWhenCheckLiveHandleCalled(t *testing.T) {
+	transport := &testkit.MockTransport{}
+	cfg := connection.DefaultConfig()
+	cfg.Token = ""
+	conn := connection.New(transport, cfg)
+	require.NoError(t, conn.Close())
+
+	err := conn.CheckLiveHandle()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, connection.ErrStaleHandle)
 }
 
 // Benchmarks
