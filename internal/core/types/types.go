@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // TokenProvider is a function that returns a JWT token for authentication.
@@ -29,83 +28,72 @@ var ErrInvalidRouteShape = errors.New("invalid route shape")
 // This validates the scheme prefix and rejects empty segments and wildcards.
 // Domain-specific helpers apply stricter segment-count or selector rules.
 func ValidateRoute(route string, expectedScheme string) error {
-	_, err := parseRouteSegments(route, expectedScheme)
-	return err
+	shape, err := scanRoute(route, expectedScheme)
+	if err != nil {
+		return err
+	}
+	if shape.wildcardIndex >= 0 {
+		return invalidRoute("wildcard not allowed in concrete route")
+	}
+	return nil
 }
 
 // ValidateConcreteRoute validates a concrete route with the expected scheme.
 // It allows any non-empty segment count but rejects wildcards.
 func ValidateConcreteRoute(route string, expectedScheme string) error {
-	segments, err := parseRouteSegments(route, expectedScheme)
+	shape, err := scanRoute(route, expectedScheme)
 	if err != nil {
 		return err
 	}
-	if len(segments) == 0 {
-		return invalidRoute("missing route path")
-	}
-	for _, segment := range segments {
-		if isWildcardSegment(segment) {
-			return invalidRoute("wildcard not allowed in concrete route")
-		}
+	if shape.wildcardIndex >= 0 {
+		return invalidRoute("wildcard not allowed in concrete route")
 	}
 	return nil
 }
 
 // ValidateFixedRoute validates an exact route with a required segment count.
 func ValidateFixedRoute(route string, expectedScheme string, segmentCount int) error {
-	segments, err := parseRouteSegments(route, expectedScheme)
+	shape, err := scanRoute(route, expectedScheme)
 	if err != nil {
 		return err
 	}
-	if len(segments) != segmentCount {
-		return invalidRoute("expected %d route segments, got %d", segmentCount, len(segments))
+	if shape.segmentCount != segmentCount {
+		return invalidRoute("expected %d route segments, got %d", segmentCount, shape.segmentCount)
 	}
-	for _, segment := range segments {
-		if isWildcardSegment(segment) {
-			return invalidRoute("wildcard not allowed in fixed route")
-		}
+	if shape.wildcardIndex >= 0 {
+		return invalidRoute("wildcard not allowed in fixed route")
 	}
 	return nil
 }
 
 // ValidateSelectorRoute validates exact-or-wildcard selector forms for a route.
 func ValidateSelectorRoute(route string, expectedScheme string, segmentCount int, allowRealmWildcard bool) error {
-	segments, err := parseRouteSegments(route, expectedScheme)
+	shape, err := scanRoute(route, expectedScheme)
 	if err != nil {
 		return err
 	}
-	if len(segments) != segmentCount {
-		return invalidRoute("expected %d selector segments, got %d", segmentCount, len(segments))
+	if shape.segmentCount != segmentCount {
+		return invalidRoute("expected %d selector segments, got %d", segmentCount, shape.segmentCount)
 	}
 	if segmentCount == 0 {
 		return invalidRoute("selector segment count must be positive")
 	}
-	if isWildcardSegment(segments[0]) {
+	if shape.wildcardIndex == 0 {
 		return invalidRoute("realm wildcard is not allowed")
 	}
-	wildcardIndex := -1
-	for index, segment := range segments {
-		if !isWildcardSegment(segment) {
-			continue
-		}
-		if segment != "*" {
-			return invalidRoute("only single-segment wildcards are allowed here")
-		}
-		wildcardIndex = index
-		break
-	}
-	if wildcardIndex == -1 {
+	if shape.wildcardIndex == -1 {
 		return nil
 	}
-	for _, segment := range segments[wildcardIndex:] {
-		if segment != "*" {
-			return invalidRoute("wildcards must form a terminal suffix")
-		}
+	if shape.hasDoubleWildcard {
+		return invalidRoute("only single-segment wildcards are allowed here")
 	}
-	if wildcardIndex == segmentCount-1 {
+	if !shape.wildcardsAreSuffix {
+		return invalidRoute("wildcards must form a terminal suffix")
+	}
+	if shape.wildcardIndex == segmentCount-1 {
 		return nil
 	}
-	if allowRealmWildcard && wildcardIndex == 1 {
+	if allowRealmWildcard && shape.wildcardIndex == 1 {
 		return nil
 	}
 	return invalidRoute("wildcard placement not allowed for this method")
@@ -123,59 +111,86 @@ func ValidateScheduleRoute(route string) error {
 // - schedule://realm/area/*
 // - schedule://realm/**
 func ValidateScheduleSelector(selector string) error {
-	segments, err := parseRouteSegments(selector, "schedule")
+	shape, err := scanRoute(selector, "schedule")
 	if err != nil {
 		return err
 	}
-	if len(segments) == 0 {
-		return invalidRoute("missing schedule selector path")
-	}
-	if isWildcardSegment(segments[0]) {
+	if shape.wildcardIndex == 0 {
 		return invalidRoute("realm wildcard is not allowed")
 	}
 
-	switch len(segments) {
+	switch shape.segmentCount {
 	case 2:
-		if segments[1] == "**" {
+		if shape.wildcardIndex == 1 && shape.hasDoubleWildcard {
 			return nil
 		}
 	case 3:
-		if segments[2] == "*" && noWildcardPrefix(segments[:2]) {
+		if shape.wildcardIndex == 2 && !shape.hasDoubleWildcard {
 			return nil
 		}
 	case 4:
-		if noWildcardPrefix(segments) {
+		if shape.wildcardIndex == -1 {
 			return nil
 		}
-		if segments[3] == "*" && noWildcardPrefix(segments[:3]) {
+		if shape.wildcardIndex == 3 && !shape.hasDoubleWildcard {
 			return nil
 		}
 	}
 	return invalidRoute("schedule selector wildcard placement not allowed")
 }
 
-func parseRouteSegments(route string, expectedScheme string) ([]string, error) {
+type scannedRoute struct {
+	segmentCount       int
+	wildcardIndex      int
+	hasDoubleWildcard  bool
+	wildcardsAreSuffix bool
+}
+
+// scanRoute validates a route in one pass without regular expressions,
+// split strings, or success-path heap allocation.
+func scanRoute(route string, expectedScheme string) (scannedRoute, error) {
+	shape := scannedRoute{wildcardIndex: -1, wildcardsAreSuffix: true}
 	if expectedScheme == "" {
-		return nil, invalidRoute("expected scheme is empty")
+		return shape, invalidRoute("expected scheme is empty")
 	}
-	prefix := expectedScheme + "://"
-	if !strings.HasPrefix(route, prefix) {
-		return nil, invalidRoute("expected %q scheme", expectedScheme)
+	prefixLen := len(expectedScheme)
+	if len(route) < prefixLen+3 || route[:prefixLen] != expectedScheme || route[prefixLen:prefixLen+3] != "://" {
+		return shape, invalidRoute("expected %q scheme", expectedScheme)
 	}
-	path := strings.TrimPrefix(route, prefix)
-	if path == "" {
-		return nil, invalidRoute("missing route path")
+	start := prefixLen + 3
+	if start == len(route) {
+		return shape, invalidRoute("missing route path")
 	}
-	segments := strings.Split(path, "/")
-	for _, segment := range segments {
-		if segment == "" {
-			return nil, invalidRoute("empty route segment")
+	segmentStart := start
+	for index := start; index <= len(route); index++ {
+		if index != len(route) && route[index] != '/' {
+			continue
 		}
-		if strings.Contains(segment, "*") && !isWildcardSegment(segment) {
-			return nil, invalidRoute("wildcards must occupy a full path segment")
+		if index == segmentStart {
+			return shape, invalidRoute("empty route segment")
 		}
+		segmentLen := index - segmentStart
+		wildcard := segmentLen == 1 && route[segmentStart] == '*'
+		doubleWildcard := segmentLen == 2 && route[segmentStart] == '*' && route[segmentStart+1] == '*'
+		if !wildcard && !doubleWildcard {
+			for cursor := segmentStart; cursor < index; cursor++ {
+				if route[cursor] == '*' {
+					return shape, invalidRoute("wildcards must occupy a full path segment")
+				}
+			}
+			if shape.wildcardIndex >= 0 {
+				shape.wildcardsAreSuffix = false
+			}
+		} else {
+			if shape.wildcardIndex == -1 {
+				shape.wildcardIndex = shape.segmentCount
+			}
+			shape.hasDoubleWildcard = shape.hasDoubleWildcard || doubleWildcard
+		}
+		shape.segmentCount++
+		segmentStart = index + 1
 	}
-	return segments, nil
+	return shape, nil
 }
 
 func invalidRoute(format string, args ...any) error {
@@ -183,17 +198,4 @@ func invalidRoute(format string, args ...any) error {
 		return ErrInvalidRouteShape
 	}
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalidRouteShape}, args...)...)
-}
-
-func isWildcardSegment(segment string) bool {
-	return segment == "*" || segment == "**"
-}
-
-func noWildcardPrefix(segments []string) bool {
-	for _, segment := range segments {
-		if isWildcardSegment(segment) {
-			return false
-		}
-	}
-	return true
 }
