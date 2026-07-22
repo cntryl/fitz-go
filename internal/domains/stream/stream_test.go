@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
-	"testing"
 	"sync"
+	"testing"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
