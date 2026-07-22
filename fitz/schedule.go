@@ -8,11 +8,19 @@ import (
 )
 
 type ScheduleEntry struct {
-	ID      string
-	Route   string
-	Cron    string
-	Payload []byte
+	ID           string
+	Route        string
+	Cron         string
+	DeliveryMode ScheduleDeliveryMode
+	Payload      []byte
 }
+
+type ScheduleDeliveryMode = internalschedule.ScheduleDeliveryMode
+
+const (
+	ScheduleDeliveryBroadcast = internalschedule.ScheduleDeliveryBroadcast
+	ScheduleDeliverySingle    = internalschedule.ScheduleDeliverySingle
+)
 
 type ScheduleNotification struct {
 	Payload []byte
@@ -32,7 +40,7 @@ func (s *ScheduleSubscription) Unsubscribe() {
 }
 
 type ScheduleClient interface {
-	Create(ctx context.Context, route string, cronExpr string, payload []byte) (id string, err error)
+	Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (id string, err error)
 	Cancel(ctx context.Context, route string) error
 	List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error)
 	ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error)
@@ -45,8 +53,8 @@ type scheduleClient struct {
 }
 
 // Create creates or updates a schedule for the route.
-func (c *scheduleClient) Create(ctx context.Context, route string, cronExpr string, payload []byte) (string, error) {
-	return c.inner.Create(ctx, route, cronExpr, payload)
+func (c *scheduleClient) Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (string, error) {
+	return c.inner.Create(ctx, route, cronExpr, deliveryMode, payload)
 }
 
 // Cancel removes a schedule by route.
@@ -76,10 +84,11 @@ func copyScheduleEntries(entries []internalschedule.ScheduleEntry) []ScheduleEnt
 	publicEntries := make([]ScheduleEntry, 0, len(entries))
 	for _, entry := range entries {
 		publicEntries = append(publicEntries, ScheduleEntry{
-			ID:      entry.ID,
-			Route:   entry.Route,
-			Cron:    entry.Cron,
-			Payload: entry.Payload,
+			ID:           entry.ID,
+			Route:        entry.Route,
+			Cron:         entry.Cron,
+			DeliveryMode: entry.DeliveryMode,
+			Payload:      entry.Payload,
 		})
 	}
 	return publicEntries
@@ -129,5 +138,6 @@ func (c *scheduleClient) WaitForNotifications(ctx context.Context, route string)
 }
 
 var (
-	ErrScheduleNotFound = internalschedule.ErrScheduleNotFound
+	ErrScheduleNotFound            = internalschedule.ErrScheduleNotFound
+	ErrScheduleInvalidDeliveryMode = internalschedule.ErrScheduleInvalidDeliveryMode
 )

@@ -1291,7 +1291,7 @@ func TestConformanceSuite(t *testing.T) {
 			ev = append(ev, "subscribed to schedule route")
 
 			// Create a schedule
-			scheduleID, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("cs021-payload"))
+			scheduleID, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", fitz.ScheduleDeliveryBroadcast, []byte("cs021-payload"))
 			if err != nil {
 				sub.Unsubscribe()
 				return VerdictFail, ev, fmt.Errorf("create: %w", err)

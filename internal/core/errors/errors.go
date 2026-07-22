@@ -68,6 +68,7 @@ const (
 	ScheduleInvalidTarget       = 7005
 	ScheduleInvalidSubscription = 7006
 	ScheduleSubscriptionLimit   = 7007
+	ScheduleInvalidDeliveryMode = 7008
 )
 
 // IsBackpressure returns true if the error code indicates backpressure
@@ -177,6 +178,8 @@ func (e ErrorCode) String() string {
 		return "schedule_invalid_subscription"
 	case ScheduleSubscriptionLimit:
 		return "schedule_subscription_limit"
+	case ScheduleInvalidDeliveryMode:
+		return "schedule_invalid_delivery_mode"
 
 	default:
 		return fmt.Sprintf("unknown_error_%d", e)

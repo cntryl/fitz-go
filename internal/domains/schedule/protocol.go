@@ -3,6 +3,7 @@ package schedule
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
@@ -22,7 +23,8 @@ const (
 // Domain-specific errors. Returned when the server rejects a schedule operation.
 //   - ErrScheduleNotFound: cancel or list referenced a schedule that does not exist.
 var (
-	ErrScheduleNotFound = errors.New("schedule not found")
+	ErrScheduleNotFound            = errors.New("schedule not found")
+	ErrScheduleInvalidDeliveryMode = errors.New("invalid schedule delivery mode")
 )
 
 // mapScheduleError maps a broker error to a domain-specific Go error.
@@ -36,6 +38,8 @@ func mapScheduleError(err error) error {
 		switch uint32(domainErr.Code) {
 		case coreerrors.ScheduleNotFound:
 			return ErrScheduleNotFound
+		case coreerrors.ScheduleInvalidDeliveryMode:
+			return fmt.Errorf("%w: %s", ErrScheduleInvalidDeliveryMode, domainErr.Message)
 		default:
 			return err
 		}
@@ -52,11 +56,12 @@ func mapScheduleError(err error) error {
 
 // Payload writer helpers per CLIENT_SPEC.md (flat concatenation, no nested TLV).
 
-// scheduleCreatePayloadWriter encodes CREATE request: [route_len][route][cron_len][cron][payload_len][payload]
-func scheduleCreatePayloadWriter(route string, cronExpr string, payload []byte) func(*bytes.Buffer) {
+// scheduleCreatePayloadWriter encodes CREATE request: [route_len][route][cron_len][cron][delivery_mode][payload_len][payload]
+func scheduleCreatePayloadWriter(route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		encoding.WriteString(buf, cronExpr)
+		buf.WriteByte(byte(deliveryMode))
 		encoding.WriteBytes(buf, payload)
 	}
 }

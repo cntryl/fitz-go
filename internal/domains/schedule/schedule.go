@@ -22,11 +22,19 @@ import (
 
 // ScheduleEntry represents a schedule returned by List (per CLIENT_SPEC: route, cron, payload).
 type ScheduleEntry struct {
-	ID      string // Route (spec uses route as identity)
-	Route   string
-	Cron    string
-	Payload []byte
+	ID           string // Route (spec uses route as identity)
+	Route        string
+	Cron         string
+	DeliveryMode ScheduleDeliveryMode
+	Payload      []byte
 }
+
+type ScheduleDeliveryMode uint8
+
+const (
+	ScheduleDeliveryBroadcast ScheduleDeliveryMode = iota
+	ScheduleDeliverySingle
+)
 
 // Notification is the payload delivered when a schedule fires (SCHEDULE_NOTIFY 705).
 type Notification struct {
@@ -56,7 +64,7 @@ func (s *Subscription) Unsubscribe() {
 // Client is the Schedule domain client interface.
 type Client interface {
 	// Create creates a cron-based schedule at the given route (upsert per spec). Returns the schedule route (identity).
-	Create(ctx context.Context, route string, cronExpr string, payload []byte) (id string, err error)
+	Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (id string, err error)
 
 	// Cancel cancels a schedule by route (route-based identity per CLIENT_SPEC).
 	Cancel(ctx context.Context, route string) error
@@ -139,7 +147,7 @@ func (c *client) currentConn() *connection.Connection {
 // Create per CLIENT_SPEC.md: Request [route_len][route][cron_len][cron][payload_len][payload].
 // Response: status=0 (success); optional [u8 has_schedule_id][string schedule_id] when present.
 // Returns route as identity (spec uses route-based identity).
-func (c *client) Create(ctx context.Context, route string, cronExpr string, payload []byte) (string, error) {
+func (c *client) Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (string, error) {
 	conn := c.currentConn()
 	ctx, span := conn.Tracer().Start(ctx, "fitz.schedule.Create", trace.WithAttributes(
 		attribute.String("fitz.route", route),
@@ -161,8 +169,11 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, payl
 		span.SetStatus(codes.Error, err.Error())
 		return "", err
 	}
+	if deliveryMode != ScheduleDeliveryBroadcast && deliveryMode != ScheduleDeliverySingle {
+		return "", ErrScheduleInvalidDeliveryMode
+	}
 
-	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreate, scheduleCreatePayloadWriter(route, cronExpr, payload))
+	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreate, scheduleCreatePayloadWriter(route, cronExpr, deliveryMode, payload))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -317,6 +328,14 @@ func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
 			return nil, fmt.Errorf("list response invalid cron: %w", err)
 		}
 		pos = newPos
+		if pos >= len(remaining) {
+			return nil, errors.New("list response missing delivery mode")
+		}
+		deliveryMode := ScheduleDeliveryMode(remaining[pos])
+		pos++
+		if deliveryMode != ScheduleDeliveryBroadcast && deliveryMode != ScheduleDeliverySingle {
+			return nil, fmt.Errorf("list response invalid delivery mode: %d", deliveryMode)
+		}
 		payloadBytes, newPos, err := connection.ReadBytes(remaining, pos)
 		if err != nil {
 			return nil, fmt.Errorf("list response invalid payload: %w", err)
@@ -325,10 +344,11 @@ func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
 		payloadCopy := make([]byte, len(payloadBytes))
 		copy(payloadCopy, payloadBytes)
 		entries = append(entries, ScheduleEntry{
-			ID:      routeStr,
-			Route:   routeStr,
-			Cron:    cronStr,
-			Payload: payloadCopy,
+			ID:           routeStr,
+			Route:        routeStr,
+			Cron:         cronStr,
+			DeliveryMode: deliveryMode,
+			Payload:      payloadCopy,
 		})
 	}
 }

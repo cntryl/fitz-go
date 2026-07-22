@@ -114,7 +114,7 @@ func TestShouldReturnServerScheduleIDGivenPresentWhenCreateCalled(t *testing.T) 
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleCreate, payload)
 
 	// Act
-	id, err := client.Create(context.Background(), "schedule://realm/area/resource/run", "0 0 * * *", []byte("payload"))
+	id, err := client.Create(context.Background(), "schedule://realm/area/resource/run", "0 0 * * *", ScheduleDeliveryBroadcast, []byte("payload"))
 
 	// Assert
 	require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestShouldReturnRouteGivenNoServerScheduleIDWhenCreateCalled(t *testing.T) 
 	route := "schedule://realm/area/resource/run"
 
 	// Act
-	id, err := client.Create(context.Background(), route, "0 0 * * *", []byte("payload"))
+	id, err := client.Create(context.Background(), route, "0 0 * * *", ScheduleDeliveryBroadcast, []byte("payload"))
 
 	// Assert
 	require.NoError(t, err)
@@ -139,7 +139,7 @@ func TestShouldRejectInvalidCronBeforeSendingRequestWhenCreateCalled(t *testing.
 	client, transport := newStartedScheduleClient(t)
 	route := "schedule://realm/area/resource/run"
 
-	_, err := client.Create(context.Background(), route, "not a cron", []byte("payload"))
+	_, err := client.Create(context.Background(), route, "not a cron", ScheduleDeliveryBroadcast, []byte("payload"))
 
 	require.Error(t, err)
 	var domainErr *coreerrors.DomainError
@@ -161,10 +161,12 @@ func TestShouldParseEntriesGivenValidListResponseWhenListCalled(t *testing.T) {
 	connection.WriteU8(buf, 1)
 	connection.WriteString(buf, "schedule://realm/area/one/run")
 	connection.WriteString(buf, "0 0 * * *")
+	connection.WriteU8(buf, byte(ScheduleDeliveryBroadcast))
 	connection.WriteBytes(buf, []byte("first"))
 	connection.WriteU8(buf, 1)
 	connection.WriteString(buf, "schedule://realm/area/two/run")
 	connection.WriteString(buf, "*/5 * * * *")
+	connection.WriteU8(buf, byte(ScheduleDeliverySingle))
 	connection.WriteBytes(buf, []byte("second"))
 	connection.WriteU8(buf, 0)
 	payload := append([]byte(nil), buf.Bytes()...)
@@ -179,7 +181,22 @@ func TestShouldParseEntriesGivenValidListResponseWhenListCalled(t *testing.T) {
 	assert.Equal(t, uint64(2), totalCount)
 	require.Len(t, entries, 2)
 	assert.Equal(t, "schedule://realm/area/one/run", entries[0].Route)
+	assert.Equal(t, ScheduleDeliveryBroadcast, entries[0].DeliveryMode)
+	assert.Equal(t, ScheduleDeliverySingle, entries[1].DeliveryMode)
 	assert.Equal(t, []byte("second"), entries[1].Payload)
+}
+
+func TestShouldRejectUnknownDeliveryModeBeforeSendingWhenCreateCalled(t *testing.T) {
+	client, transport := newStartedScheduleClient(t)
+
+	_, err := client.Create(context.Background(), "schedule://realm/area/resource/run", "0 0 * * *", ScheduleDeliveryMode(2), nil)
+
+	require.ErrorIs(t, err, ErrScheduleInvalidDeliveryMode)
+	select {
+	case frame := <-transport.writes:
+		t.Fatalf("unexpected request write: %x", frame)
+	default:
+	}
 }
 
 func TestShouldReturnErrorGivenShortListResponseWhenListCalled(t *testing.T) {
@@ -212,7 +229,7 @@ func TestShouldReturnErrorGivenTruncatedEntryWhenListCalled(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, entries)
 	assert.Equal(t, uint64(0), totalCount)
-	assert.ErrorContains(t, err, "invalid payload")
+	assert.ErrorContains(t, err, "missing delivery mode")
 }
 
 func TestShouldReturnErrorGivenTrailingBytesAfterTerminatorWhenListCalled(t *testing.T) {

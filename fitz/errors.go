@@ -70,6 +70,7 @@ const (
 	ErrCodeScheduleInvalidTarget       = uint32(coreerrors.ScheduleInvalidTarget)
 	ErrCodeScheduleInvalidSubscription = uint32(coreerrors.ScheduleInvalidSubscription)
 	ErrCodeScheduleSubscriptionLimit   = uint32(coreerrors.ScheduleSubscriptionLimit)
+	ErrCodeScheduleInvalidDeliveryMode = uint32(coreerrors.ScheduleInvalidDeliveryMode)
 )
 
 // DomainError is a server-returned error carrying a numeric code and message.

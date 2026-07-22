@@ -24,7 +24,7 @@ func TestShouldCreateScheduleGivenValidCronExpressionWhenCreateCalled(t *testing
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		id, err := f.Client().Schedule().Create(ctx, f.UniqueRoute("schedule"), "*/5 * * * *", []byte("task-payload"))
+		id, err := f.Client().Schedule().Create(ctx, f.UniqueRoute("schedule"), "*/5 * * * *", fitz.ScheduleDeliveryBroadcast, []byte("task-payload"))
 		require.NoError(t, err)
 		assert.NotEmpty(t, id)
 	})
@@ -37,7 +37,7 @@ func TestShouldRejectCreateGivenInvalidCronSyntaxWhenCreateCalled(t *testing.T) 
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		_, err := f.Client().Schedule().Create(ctx, f.UniqueRoute("schedule"), "not a cron", []byte("payload"))
+		_, err := f.Client().Schedule().Create(ctx, f.UniqueRoute("schedule"), "not a cron", fitz.ScheduleDeliveryBroadcast, []byte("payload"))
 		testkit.AssertDomainErrorCode(t, err, coreerrors.ScheduleInvalidCron)
 	})
 }
@@ -50,7 +50,7 @@ func TestShouldCancelScheduleGivenExistingScheduleWhenCancelCalled(t *testing.T)
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("schedule")
-		_, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("weekly"))
+		_, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", fitz.ScheduleDeliveryBroadcast, []byte("weekly"))
 		require.NoError(t, err)
 		require.NoError(t, f.Client().Schedule().Cancel(ctx, route))
 	})
@@ -64,9 +64,9 @@ func TestShouldListSchedulesGivenMultipleSchedulesWhenListCalled(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("schedule")
-		_, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte("s1"))
+		_, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", fitz.ScheduleDeliveryBroadcast, []byte("s1"))
 		require.NoError(t, err)
-		_, err = f.Client().Schedule().Create(ctx, route, "0 12 * * *", []byte("s2"))
+		_, err = f.Client().Schedule().Create(ctx, route, "0 12 * * *", fitz.ScheduleDeliveryBroadcast, []byte("s2"))
 		require.NoError(t, err)
 
 		entries, totalCount, err := f.Client().Schedule().List(ctx, 0, 100)
@@ -123,7 +123,7 @@ func TestShouldListSchedulesGivenWildcardSelectorWhenListBySelectorCalled(t *tes
 		otherRoute := fmt.Sprintf("schedule://%s/%s-alt/three/run", realm, area)
 
 		for _, route := range append(append([]string{}, matchingRoutes...), otherRoute) {
-			_, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", []byte(route))
+			_, err := f.Client().Schedule().Create(ctx, route, "0 9 * * 1", fitz.ScheduleDeliveryBroadcast, []byte(route))
 			require.NoError(t, err)
 		}
 
@@ -201,7 +201,7 @@ func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *te
 	}
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		id, createErr := f.Client().Schedule().Create(ctx, route, "* * * * *", payload)
+		id, createErr := f.Client().Schedule().Create(ctx, route, "* * * * *", fitz.ScheduleDeliveryBroadcast, payload)
 		require.NoError(t, createErr)
 		createdIDs = append(createdIDs, id)
 
@@ -259,7 +259,7 @@ func TestShouldRestoreScheduleSubscriptionGivenLiveDisconnectWhenReconnectEnable
 	}
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		id, createErr := actor.Client().Schedule().Create(ctx, route, "* * * * *", payload)
+		id, createErr := actor.Client().Schedule().Create(ctx, route, "* * * * *", fitz.ScheduleDeliveryBroadcast, payload)
 		require.NoError(t, createErr)
 		createdIDs = append(createdIDs, id)
 

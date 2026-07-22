@@ -171,7 +171,7 @@ func BenchmarkEncodeScheduleCreate(b *testing.B) {
 	route := "schedule://acme/jobs/backup"
 	cronExpr := "0 0 * * *"
 	payload := []byte("backup-payload")
-	w := scheduleCreatePayloadWriter(route, cronExpr, payload)
+	w := scheduleCreatePayloadWriter(route, cronExpr, ScheduleDeliveryBroadcast, payload)
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	b.ReportAllocs()

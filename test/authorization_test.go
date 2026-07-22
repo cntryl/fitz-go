@@ -115,7 +115,7 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 				routeScheme: "schedule",
 				expected:    unauthorizedSchedule,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
-					_, err := client.Schedule().Create(ctx, route, "*/5 * * * *", []byte("payload"))
+					_, err := client.Schedule().Create(ctx, route, "*/5 * * * *", fitz.ScheduleDeliveryBroadcast, []byte("payload"))
 					return err
 				},
 			},
