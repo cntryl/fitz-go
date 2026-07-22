@@ -64,8 +64,9 @@ Use one control plane for request lifetime: `context.Context`.
 - RPC calls use context deadlines/cancellation only.
 - Schedule/Notice/Queue/Lease/Stream subscription handlers return `error`.
 - Streaming iterators should be closed when no longer needed.
-- Routes are opaque broker-owned values. The client checks only UTF-8 and the
-  65,535-byte wire limit; the broker owns grammar and authorization.
+- Clients validate route shape locally: scheme, segment count, empty segments,
+  and method-specific wildcard placement. Route existence, permissions,
+  authorization, realm semantics, and resource names remain broker-owned.
 
 Connection lifecycle is part of the stable public API:
 

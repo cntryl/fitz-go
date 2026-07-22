@@ -5,9 +5,10 @@ This document summarizes the production-facing contract of the public
 
 ## Routes
 
-Routes are opaque broker-owned values. The Go client checks only UTF-8 and the
-65,535-byte wire limit. It does not parse, validate, or normalize route or
-selector grammar; existence, permissions, and authorization remain broker-owned.
+The Go client validates route shape for ergonomics: scheme, path segment count,
+empty segments, and wildcard placement allowed for the called method. It does
+not validate route existence, permissions, authorization, realm semantics,
+resource names, or auth claims, and it does not normalize route strings.
 
 ## Lifecycle And Resilience
 

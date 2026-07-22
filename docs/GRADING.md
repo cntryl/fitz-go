@@ -37,7 +37,7 @@ Treat this report as the quality baseline for this repository.
 | REQ-PROTO-007 | T0 | **PASS** | Conformance is green for all scenarios; CS-008 cancellation race was fixed and P0 requirements pass. |
 | REQ-PROTO-008 | T0 | **PASS** | Auth rejection transitions to `ConnectionStateClosed`; reconnect is not triggered after auth failure. |
 | REQ-PROTO-009 | T0 | **PASS** | JWT is passed as opaque bytes. No parsing, signing, or validation anywhere in the client. |
-| REQ-PROTO-010 | T0 | **PASS** | Routes remain opaque broker-owned values. The client checks only UTF-8 and the 65,535-byte wire limit; route and selector grammar remain broker-owned. |
+| REQ-PROTO-010 | T0 | **PASS** | The client validates only route shape: scheme, segment count, empty segments, and method-specific wildcard placement. Route existence, permissions, authorization, realm semantics, resource names, and auth claims remain broker-owned. |
 | REQ-PROTO-011 | T1 | **PASS** | Error code domain mapping is correct internally. All 7 domain ranges (1000–7999) are correctly defined and used. |
 | REQ-PROTO-012 | T1 | **PASS** | Retryable vs. fatal classification is now exposed publicly via `fitz.IsRetryable(err error)`. |
 | REQ-PROTO-013 | T1 | **PASS** | `MaxTLVValueLen = 65535` enforced in encoder. Frame size is configurable (TCP/WS transports honour `MaxFrameSize`). |
