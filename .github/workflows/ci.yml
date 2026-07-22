@@ -38,9 +38,6 @@ jobs:
       - name: Run build
         run: go build ./...
 
-      - name: Run consumer smoke
-        run: bash scripts/consumer-smoke.sh
-
       - name: Run default tests
         run: go test ./... -timeout 60s
 

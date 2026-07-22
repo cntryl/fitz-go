@@ -218,13 +218,6 @@ Run the full suite with:
 ```bash
 go test ./...
 go test -tags=integration ./test ./test/conformance/...
-./scripts/consumer-smoke.sh
-```
-
-Or use the repo-local verification script:
-
-```powershell
-./scripts/verify.ps1
 ```
 
 Run pedantic lint and style checks directly with golangci-lint v2:
