@@ -32,7 +32,6 @@ const (
 	MessageTypeRpcUnsubscribeWorker uint16 = 301
 	MessageTypeRpcRequest           uint16 = 302
 	MessageTypeRpcResponse          uint16 = 303
-	MessageTypeRpcAck               uint16 = 304
 
 	// Lease Domain (400-499)
 	MessageTypeLeaseAcquire     uint16 = 400

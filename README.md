@@ -64,8 +64,8 @@ Use one control plane for request lifetime: `context.Context`.
 - RPC calls use context deadlines/cancellation only.
 - Schedule/Notice/Queue/Lease/Stream subscription handlers return `error`.
 - Streaming iterators should be closed when no longer needed.
-- Routes are opaque broker-owned values. The client validates route shape only
-  (scheme, segment count, empty segments, and allowed wildcard placement).
+- Routes are opaque broker-owned values. The client checks only UTF-8 and the
+  65,535-byte wire limit; the broker owns grammar and authorization.
 
 Connection lifecycle is part of the stable public API:
 
@@ -328,7 +328,7 @@ scenario coverage in `test/conformance`.
 | Control | 1 | CONNECT | CS-001, CS-002 |
 | KV | 100-108 | BEGIN, COMMIT, GET, PUT, INSERT, SCAN | CS-001, CS-003, CS-005, CS-006, CS-014, CS-015 |
 | Queue | 200, 202-204, 207-209 | ENQUEUE, RESERVE, EXTEND, COMPLETE, SUBSCRIBE | CS-016 (enqueue/reserve/complete lifecycle) |
-| RPC | 300-304 | SUBSCRIBE_WORKER, REQUEST, RESPONSE | CS-004, CS-006, CS-007, CS-008, CS-009 |
+| RPC | 300-303 | SUBSCRIBE_WORKER, UNSUBSCRIBE_WORKER, REQUEST, RESPONSE | CS-004, CS-006, CS-007, CS-008, CS-009 |
 | Lease | 400-403, 407-409 | ACQUIRE, RENEW, RELEASE, QUERY, NOTIFY | CS-017 (acquire/contention/release lifecycle) |
 | Notice | 500-504 | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, NOTIFY | CS-018 (subscribe/publish/deliver/unsubscribe) |
 | Stream | 600-609 | BEGIN, APPEND, COMMIT, READ, SUBSCRIBE | CS-011, CS-012, CS-013 |

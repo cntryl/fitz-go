@@ -5,11 +5,9 @@ This document summarizes the production-facing contract of the public
 
 ## Routes
 
-Routes are opaque broker-owned values. The Go client performs optional
-shape-only validation for ergonomics: scheme, path segment count, empty
-segments, and wildcard placement allowed for the called method. It does not
-validate route existence, permissions, realm semantics, resource names, auth
-claims, or normalize route strings.
+Routes are opaque broker-owned values. The Go client checks only UTF-8 and the
+65,535-byte wire limit. It does not parse, validate, or normalize route or
+selector grammar; existence, permissions, and authorization remain broker-owned.
 
 ## Lifecycle And Resilience
 

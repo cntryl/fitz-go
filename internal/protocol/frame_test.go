@@ -431,7 +431,7 @@ func TestShouldRouteDomainGivenMessageTypeWhenRouteDomainCalled(t *testing.T) {
 		{200, "queue"},
 		{204, "queue"},
 		{300, "rpc"},
-		{304, "rpc"},
+		{303, "rpc"},
 		{400, "lease"},
 		{403, "lease"},
 		{500, "notice"},

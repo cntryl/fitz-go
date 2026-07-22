@@ -104,22 +104,17 @@ func TestShouldDefineRPCOpcodesGivenConstantsWhenRead(t *testing.T) {
 		assert.Equal(t, uint16(303), RPCResponse)
 	})
 
-	t.Run("ack opcode", func(t *testing.T) {
-		assert.Equal(t, uint16(304), RPCAck)
-	})
-
 	t.Run("opcodes are sequential", func(t *testing.T) {
 		// Verify opcodes follow expected numbering
 		assert.Equal(t, RPCSubscribeWorker+1, RPCUnsubscribeWorker)
 		assert.Equal(t, RPCUnsubscribeWorker+1, RPCRequest)
 		assert.Equal(t, RPCRequest+1, RPCResponse)
-		assert.Equal(t, RPCResponse+1, RPCAck)
 	})
 
 	t.Run("all opcodes in 300 range", func(t *testing.T) {
-		// All RPC opcodes should be in the 300-304 range per CLIENT_SPEC.md
+		// RPC 304 is deliberately unsupported by the canonical contract.
 		assert.GreaterOrEqual(t, RPCSubscribeWorker, uint16(300))
-		assert.LessOrEqual(t, RPCAck, uint16(304))
+		assert.LessOrEqual(t, RPCResponse, uint16(303))
 	})
 }
 
@@ -425,8 +420,8 @@ func BenchmarkEncodeRPCResponse(b *testing.B) {
 	})
 }
 
-func BenchmarkParseRpcAckResponse(b *testing.B) {
-	// [status=0] (ack only)
+func BenchmarkParseStandardSuccessResponse(b *testing.B) {
+	// [status=0]
 	payload := []byte{0}
 	b.ReportAllocs()
 	b.ResetTimer()

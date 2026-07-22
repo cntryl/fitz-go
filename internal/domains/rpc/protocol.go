@@ -15,7 +15,6 @@ const (
 	RPCUnsubscribeWorker uint16 = 301
 	RPCRequest           uint16 = 302
 	RPCResponse          uint16 = 303
-	RPCAck               uint16 = 304
 )
 
 // Domain-specific errors. Returned when Call fails or the server rejects a request.
