@@ -271,3 +271,41 @@ func notifyPayloadWithLengths(lengths ...uint32) []byte {
 	}
 	return payload
 }
+
+func TestShouldDropResponseForUnregisteredWaiterWhenLaterRequestExists(t *testing.T) {
+	mux := NewMultiplexer()
+	defer func() { _ = mux.Close() }()
+
+	waiter1 := acquireRequestWaiter()
+	waiter2 := acquireRequestWaiter()
+	defer releaseRequestWaiter(waiter1)
+	defer releaseRequestWaiter(waiter2)
+
+	mux.RegisterRequestWaiter(100, waiter1, nil)
+	mux.RegisterRequestWaiter(100, waiter2, nil)
+
+	if !mux.AbandonRequestWaiter(100, waiter1) {
+		t.Fatal("expected first waiter to be unregistered")
+	}
+
+	mux.Dispatch(100, []byte("stale"))
+	mux.Dispatch(100, []byte("live"))
+
+	select {
+	case <-waiter1.ready:
+		t.Fatal("unregistered waiter should not receive a response")
+	default:
+	}
+
+	select {
+	case <-waiter2.ready:
+		if !waiter2.hasResponse {
+			t.Fatal("live waiter was signaled without a response")
+		}
+		if got := string(waiter2.response); got != "live" {
+			t.Fatalf("live waiter received %q, want %q", got, "live")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("live waiter did not receive response")
+	}
+}

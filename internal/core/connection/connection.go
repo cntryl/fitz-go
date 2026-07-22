@@ -722,6 +722,9 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		}
 		return waiter.response, nil
 	case <-ctx.Done():
+		if c.mux.AbandonRequestWaiter(msgType, waiter) {
+			releaseWaiter = true
+		}
 		span.RecordError(ctx.Err())
 		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()
@@ -843,6 +846,9 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		}
 		return waiter.response, nil
 	case <-ctx.Done():
+		if c.mux.AbandonRequestWaiter(msgType, waiter) {
+			releaseWaiter = true
+		}
 		span.RecordError(ctx.Err())
 		span.SetStatus(codes.Error, ctx.Err().Error())
 		return nil, ctx.Err()

@@ -282,57 +282,6 @@ func TestShouldMaintainFIFOOrderGivenSharedMessageTypeWhenDispatchCalled(t *test
 	assert.Equal(t, []byte("third"), <-ch3)
 }
 
-func TestShouldPreserveFIFOOrderingGivenOutOfOrderDispatchWhenSameMessageType(t *testing.T) {
-	mux := connection.NewMultiplexer()
-	defer closeQuietly(mux)
-
-	ch1 := make(chan []byte, 1)
-	ch2 := make(chan []byte, 1)
-
-	mux.RegisterRequest(100, ch1, nil)
-	mux.RegisterRequest(100, ch2, nil)
-
-	mux.Dispatch(100, []byte("second_response"))
-	mux.Dispatch(100, []byte("first_response"))
-
-	assert.Equal(t, []byte("first_response"), <-ch1)
-	assert.Equal(t, []byte("second_response"), <-ch2)
-}
-
-func TestShouldDropResponseForUnregisteredWaiterWhenLaterRequestExists(t *testing.T) {
-	mux := connection.NewMultiplexer()
-	defer closeQuietly(mux)
-
-	waiter1 := acquireRequestWaiter()
-	waiter2 := acquireRequestWaiter()
-	defer releaseRequestWaiter(waiter1)
-	defer releaseRequestWaiter(waiter2)
-
-	mux.RegisterRequestWaiter(100, waiter1, nil)
-	mux.RegisterRequestWaiter(100, waiter2, nil)
-
-	if !mux.UnregisterRequestWaiter(100, waiter1) {
-		t.Fatal("expected first waiter to be unregistered")
-	}
-
-	mux.Dispatch(100, []byte("stale"))
-	mux.Dispatch(100, []byte("live"))
-
-	select {
-	case <-waiter1.ready:
-		t.Fatal("unregistered waiter should not receive a response")
-	default:
-	}
-
-	select {
-	case <-waiter2.ready:
-		assert.True(t, waiter2.hasResponse)
-		assert.Equal(t, []byte("live"), waiter2.response)
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("live waiter did not receive response")
-	}
-}
-
 func TestShouldDropResponseAfterRequesterClosesGivenPendingRequest(t *testing.T) {
 	mux := connection.NewMultiplexer()
 	defer closeQuietly(mux)

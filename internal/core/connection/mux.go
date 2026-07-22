@@ -13,6 +13,7 @@ import (
 type pendingRequest struct {
 	waiter     *requestWaiter
 	cancelFunc context.CancelFunc
+	discard    bool
 }
 
 type requestWaiter struct {
@@ -110,14 +111,14 @@ func (q *requestQueue) pop() (pendingRequest, bool) {
 		if q.waiterIndex != nil {
 			delete(q.waiterIndex, req.waiter)
 		}
-		q.live--
 	}
+	q.live--
 	q.trimHead()
 	q.compactIfNeeded()
 	return req, true
 }
 
-func (q *requestQueue) removeWaiter(waiter *requestWaiter) (pendingRequest, bool) {
+func (q *requestQueue) removeWaiter(waiter *requestWaiter, preserveResponseSlot bool) (pendingRequest, bool) {
 	if q.waiterIndex == nil {
 		return pendingRequest{}, false
 	}
@@ -132,12 +133,18 @@ func (q *requestQueue) removeWaiter(waiter *requestWaiter) (pendingRequest, bool
 		return pendingRequest{}, false
 	}
 
-	q.items[idx] = pendingRequest{}
 	delete(q.waiterIndex, waiter)
-	q.live--
-	q.removed++
-	if idx == q.head {
-		q.trimHead()
+	if preserveResponseSlot {
+		// Preserve a tombstone so a late FIFO response is discarded instead of
+		// being delivered to the next request with the same message type.
+		q.items[idx] = pendingRequest{discard: true}
+	} else {
+		q.items[idx] = pendingRequest{}
+		q.live--
+		q.removed++
+		if idx == q.head {
+			q.trimHead()
+		}
 	}
 	q.compactIfNeeded()
 	return req, true
@@ -148,7 +155,7 @@ func (q *requestQueue) len() int {
 }
 
 func (q *requestQueue) trimHead() {
-	for q.head < len(q.items) && q.items[q.head].waiter == nil {
+	for q.head < len(q.items) && q.items[q.head].waiter == nil && !q.items[q.head].discard {
 		q.head++
 		if q.removed > 0 {
 			q.removed--
@@ -183,10 +190,12 @@ func (q *requestQueue) compact() {
 	waiterIndex := make(map[*requestWaiter]int, q.live)
 	for idx := q.head; idx < len(q.items); idx++ {
 		req := q.items[idx]
-		if req.waiter == nil {
+		if req.waiter == nil && !req.discard {
 			continue
 		}
-		waiterIndex[req.waiter] = len(items)
+		if req.waiter != nil {
+			waiterIndex[req.waiter] = len(items)
+		}
 		items = append(items, req)
 	}
 	for idx := range q.items {
@@ -301,7 +310,24 @@ func (m *Multiplexer) UnregisterRequestWaiter(msgType uint16, waiter *requestWai
 		return false
 	}
 
-	if _, ok := queue.removeWaiter(waiter); ok {
+	if _, ok := queue.removeWaiter(waiter, false); ok {
+		m.requestsInFlight.Add(-1)
+		return true
+	}
+	return false
+}
+
+// AbandonRequestWaiter removes a canceled request while preserving its FIFO
+// response slot so a late response cannot be delivered to a later request.
+func (m *Multiplexer) AbandonRequestWaiter(msgType uint16, waiter *requestWaiter) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	queue, exists := m.pending[msgType]
+	if !exists {
+		return false
+	}
+	if _, ok := queue.removeWaiter(waiter, true); ok {
 		m.requestsInFlight.Add(-1)
 		return true
 	}
@@ -367,6 +393,10 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	// Pop oldest pending request (FIFO order)
 	req, _ := queue.pop()
 	m.mu.Unlock()
+	if req.discard {
+		m.responsesDropped.Add(1)
+		return
+	}
 
 	m.requestsInFlight.Add(-1)
 	m.responsesTotal.Add(1)
