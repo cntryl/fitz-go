@@ -395,6 +395,10 @@ func (c *Connection) Start(ctx context.Context) error {
 			span.SetStatus(codes.Error, c.authError.Error())
 			return c.authError
 		}
+		if c.closed.Load() {
+			span.SetStatus(codes.Error, ErrConnectionClosed.Error())
+			return ErrConnectionClosed
+		}
 		span.SetStatus(codes.Error, ErrAuthenticationFailed.Error())
 		return ErrAuthenticationFailed
 
