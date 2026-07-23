@@ -11,6 +11,7 @@ linters:
   enable:
     - bodyclose
     - copyloopvar
+    - durationcheck
     - embeddedstructfieldcheck
     - errcheck
     - errorlint
@@ -22,9 +23,12 @@ linters:
     - noctx
     - nilerr
     - nilnesserr
+    - nolintlint
+    - reassign
     - staticcheck
     - unconvert
     - unused
+    - usetesting
     - wastedassign
     - whitespace
   disable:
@@ -48,6 +52,10 @@ linters:
         - G505 # legacy crypto import noise
     misspell:
       locale: US
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

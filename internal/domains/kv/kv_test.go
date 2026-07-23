@@ -1,4 +1,3 @@
-//nolint:gosec,unconvert
 package kv
 
 import (
