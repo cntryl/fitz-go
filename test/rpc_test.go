@@ -137,8 +137,10 @@ func TestShouldReturnTimeoutGivenNoWorkerResponseWhenRequestTimeout(t *testing.T
 		f.ConnectOrFail(ctx)
 		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
 		defer callCancel()
-		_, err := f.Client().RPC().Call(callCtx, f.UniqueRoute("rpc"), []byte("nobody-home"))
-		assert.Error(t, err)
+		iter, err := f.Client().RPC().Call(callCtx, f.UniqueRoute("rpc"), []byte("nobody-home"))
+		require.NoError(t, err)
+		assert.False(t, iter.Next())
+		assert.Error(t, iter.Err())
 	})
 }
 
@@ -240,7 +242,9 @@ func TestShouldUnregisterWorkerGivenActiveSubscriptionWhenDeregisterCalled(t *te
 		sub.Deregister()
 		deadCtx, deadCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer deadCancel()
-		_, err = fCaller.Client().RPC().Call(deadCtx, route, []byte("dead"))
-		assert.Error(t, err)
+		deadIter, err := fCaller.Client().RPC().Call(deadCtx, route, []byte("dead"))
+		require.NoError(t, err)
+		assert.False(t, deadIter.Next())
+		assert.Error(t, deadIter.Err())
 	})
 }

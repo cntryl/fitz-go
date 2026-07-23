@@ -233,7 +233,7 @@ func (f *TestFixture) UniqueRoute(scheme string) string {
 func (f *TestFixture) tokenProviderForMode() (fitz.TokenProvider, error) {
 	secret := os.Getenv(EnvBrokerJWTHMACSecret)
 	if secret == "" {
-		secret = "test-secret-key"
+		secret = "dev-test-secret"
 	}
 	audience := os.Getenv(EnvBrokerJWTAudience)
 	if audience == "" {

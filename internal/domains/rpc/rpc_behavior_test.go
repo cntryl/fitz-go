@@ -109,12 +109,12 @@ func rpcResponsePayload(sequence uint64, body []byte, streamEnd bool) []byte {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	encoding.WriteU64(buf, sequence)
-	encoding.WriteBytes(buf, body)
 	if streamEnd {
 		buf.WriteByte(1)
 	} else {
 		buf.WriteByte(0)
 	}
+	encoding.WriteBytes(buf, body)
 	return append([]byte(nil), buf.Bytes()...)
 }
 
@@ -122,7 +122,6 @@ func rpcWorkerPayload(route, replyRoute string, body []byte) []byte {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	encoding.WriteRoute(buf, route)
-	encoding.WriteRoute(buf, replyRoute)
 	encoding.WriteBytes(buf, body)
 	return append([]byte(nil), buf.Bytes()...)
 }
@@ -270,7 +269,7 @@ func TestShouldDispatchWorkerRequestGivenRegisteredWorkerWhenHandleWorkerRequest
 	case req := <-requests:
 		assert.Equal(t, correlationID, req.CorrelationID)
 		assert.Equal(t, route, req.Route)
-		assert.Equal(t, replyRoute, req.ReplyRoute)
+		assert.Empty(t, req.ReplyRoute)
 		assert.Equal(t, []byte("body"), req.Body)
 	case <-time.After(time.Second):
 		t.Fatal("worker request not delivered")

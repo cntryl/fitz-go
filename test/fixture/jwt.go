@@ -1,6 +1,7 @@
 package fixture
 
 import (
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -33,10 +34,14 @@ func GenerateScopedTestJWT(secret string, audience string, permissions []string)
 
 func generateTestJWT(secret string, audience string, expiresAt time.Time, permissions []string) (string, error) {
 	now := time.Now().Unix()
+	tenantID := os.Getenv("FITZ_BROKER_JWT_TENANT")
+	if tenantID == "" {
+		tenantID = "dev"
+	}
 	claims := jwtClaims{
 		Audience:    audience,
 		Subject:     "fitz-ts-tests",
-		TenantID:    "fitz-ts-tests",
+		TenantID:    tenantID,
 		Expires:     expiresAt.Unix(),
 		IssuedAt:    now,
 		Permissions: permissions,

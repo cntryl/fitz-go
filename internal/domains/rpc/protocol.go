@@ -61,10 +61,11 @@ func mapRPCError(err error) error {
 }
 
 // EncodeRPCSubscribeWorker encodes an RPC SUBSCRIBE_WORKER request per CLIENT_SPEC.md.
-// Wire format: [string worker_route]
+// Wire format: [string worker_route][u32 max_concurrent]
 func EncodeRPCSubscribeWorker(workerRoute string) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, workerRoute)
+		encoding.WriteU32(buf, 1)
 	}), nil
 }
 
@@ -77,30 +78,27 @@ func EncodeRPCUnsubscribeWorker(workerRoute string) ([]byte, error) {
 }
 
 // EncodeRPCRequest encodes an RPC REQUEST per CLIENT_SPEC.md.
-// Wire format: [bytes correlation_id][string route][string reply_route][bytes body]
-// where bytes = [u32 BE length][data] and string = [u32 BE length][data]
+// Wire format: [uuid16 correlation_id][string route][bytes body]
 func EncodeRPCRequest(correlationID [16]byte, route string, replyRoute string, body []byte) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
-		encoding.WriteBytes(buf, correlationID[:])
+		buf.Write(correlationID[:])
 		encoding.WriteRoute(buf, route)
-		encoding.WriteRoute(buf, replyRoute)
 		encoding.WriteBytes(buf, body)
 	}), nil
 }
 
 // EncodeRPCResponse encodes an RPC RESPONSE per CLIENT_SPEC.md.
-// Wire format: [bytes correlation_id][u64 sequence][bytes body][u8 stream_end]
-// where bytes = [u32 BE length][data]
+// Wire format: [uuid16 correlation_id][u64 sequence][u8 flags][bytes body]
 func EncodeRPCResponse(correlationID [16]byte, sequence uint64, body []byte, streamEnd bool) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
-		encoding.WriteBytes(buf, correlationID[:])
+		buf.Write(correlationID[:])
 		encoding.WriteU64(buf, sequence)
-		encoding.WriteBytes(buf, body)
 		if streamEnd {
 			buf.WriteByte(1)
 		} else {
 			buf.WriteByte(0)
 		}
+		encoding.WriteBytes(buf, body)
 	}), nil
 }
 
@@ -109,6 +107,7 @@ func EncodeRPCResponse(correlationID [16]byte, sequence uint64, body []byte, str
 func rpcSubscribeWorkerPayloadWriter(workerRoute string) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, workerRoute)
+		encoding.WriteU32(buf, 1)
 	}
 }
 
@@ -120,22 +119,21 @@ func rpcUnsubscribeWorkerPayloadWriter(workerRoute string) func(*bytes.Buffer) {
 
 func rpcRequestPayloadWriter(correlationID [16]byte, route string, replyRoute string, body []byte) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
-		encoding.WriteBytes(buf, correlationID[:])
+		buf.Write(correlationID[:])
 		encoding.WriteRoute(buf, route)
-		encoding.WriteRoute(buf, replyRoute)
 		encoding.WriteBytes(buf, body)
 	}
 }
 
 func rpcResponsePayloadWriter(correlationID [16]byte, sequence uint64, body []byte, streamEnd bool) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
-		encoding.WriteBytes(buf, correlationID[:])
+		buf.Write(correlationID[:])
 		encoding.WriteU64(buf, sequence)
-		encoding.WriteBytes(buf, body)
 		if streamEnd {
 			buf.WriteByte(1)
 		} else {
 			buf.WriteByte(0)
 		}
+		encoding.WriteBytes(buf, body)
 	}
 }

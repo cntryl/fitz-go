@@ -61,8 +61,10 @@ func TestShouldReturnExpectedDomainErrorsGivenRejectedOperations(t *testing.T) {
 			callCtx, callCancel := context.WithTimeout(ctx, time.Second)
 			defer callCancel()
 
-			_, err := f1.Client().RPC().Call(callCtx, f1.UniqueRoute("rpc"), []byte("nobody"))
-			require.Error(t, err)
+			iter, err := f1.Client().RPC().Call(callCtx, f1.UniqueRoute("rpc"), []byte("nobody"))
+			require.NoError(t, err)
+			require.False(t, iter.Next())
+			require.Error(t, iter.Err())
 		})
 	})
 }

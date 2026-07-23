@@ -116,12 +116,6 @@ func performHandshake(conn net.Conn, u *url.URL, ctx context.Context) (reader *b
 	if u.RawQuery != "" {
 		path += "?" + u.RawQuery
 	}
-	originScheme := "http"
-	if u.Scheme == "wss" {
-		originScheme = "https"
-	}
-	origin := originScheme + "://" + u.Host
-
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
 			return nil, fmt.Errorf("set deadline: %w", err)
@@ -136,13 +130,12 @@ func performHandshake(conn net.Conn, u *url.URL, ctx context.Context) (reader *b
 	req := fmt.Sprintf(
 		"GET %s HTTP/1.1\r\n"+
 			"Host: %s\r\n"+
-			"Origin: %s\r\n"+
 			"Upgrade: websocket\r\n"+
 			"Connection: Upgrade\r\n"+
 			"Sec-WebSocket-Key: %s\r\n"+
 			"Sec-WebSocket-Version: 13\r\n"+
 			"\r\n",
-		path, u.Host, origin, key,
+		path, u.Host, key,
 	)
 
 	// Send upgrade request

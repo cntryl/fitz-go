@@ -143,7 +143,7 @@ func newUnauthorizedClient(t *testing.T, transport fixture.TransportType, permis
 
 	secret := os.Getenv(fixture.EnvBrokerJWTHMACSecret)
 	if secret == "" {
-		secret = "test-secret-key"
+		secret = "dev-test-secret"
 	}
 	audience := os.Getenv(fixture.EnvBrokerJWTAudience)
 	if audience == "" {

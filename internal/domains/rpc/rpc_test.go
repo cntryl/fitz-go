@@ -147,6 +147,7 @@ func TestShouldEncodeRPCSubscribeWorkerGivenWorkerRouteWhenEncodeRPCSubscribeWor
 		// Verify route length prefix
 		routeLen := binary.BigEndian.Uint32(payload[0:4])
 		assert.Equal(t, uint32(len(route)), routeLen)
+		assert.Equal(t, uint32(1), binary.BigEndian.Uint32(payload[4+len(route):]))
 	})
 
 	t.Run("empty route", func(t *testing.T) {
@@ -275,8 +276,7 @@ func TestShouldEncodeRPCResponseGivenCorrelationAndBodyWhenEncodeRPCResponseCall
 		require.NoError(t, err)
 		require.NotNil(t, payload)
 		require.Greater(t, len(payload), 20)
-		// Last byte should be 0 (stream_end = false)
-		assert.Equal(t, byte(0), payload[len(payload)-1])
+		assert.Equal(t, byte(0), payload[24])
 	})
 
 	t.Run("response with stream end", func(t *testing.T) {
@@ -291,8 +291,7 @@ func TestShouldEncodeRPCResponseGivenCorrelationAndBodyWhenEncodeRPCResponseCall
 		// Assert
 		require.NoError(t, err)
 		require.NotNil(t, payload)
-		// Last byte should be 1 (stream_end = true)
-		assert.Equal(t, byte(1), payload[len(payload)-1])
+		assert.Equal(t, byte(1), payload[24])
 	})
 
 	t.Run("response with empty body", func(t *testing.T) {

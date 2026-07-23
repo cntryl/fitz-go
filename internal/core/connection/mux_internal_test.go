@@ -162,7 +162,7 @@ func TestShouldDropMalformedRpcResponseGivenShortCorrelationPayloadWhenDispatchC
 		called = true
 	})
 
-	for payloadLen := 4; payloadLen < 20; payloadLen++ {
+	for payloadLen := 0; payloadLen < 16; payloadLen++ {
 		mux.Dispatch(protocol.MessageTypeRpcResponse, make([]byte, payloadLen))
 	}
 
@@ -233,12 +233,8 @@ func TestShouldDropMalformedNotifyFrameGivenUint32LengthOverflowWhenDispatchCall
 	}
 }
 
-func rpcWorkerRequestPayloadForTest(route string, replyRoute string, body []byte) []byte {
-	payload := make([]byte, 0, 20+4+len(route)+4+len(replyRoute)+4+len(body))
-
-	corrLen := make([]byte, 4)
-	binary.BigEndian.PutUint32(corrLen, 16)
-	payload = append(payload, corrLen...)
+func rpcWorkerRequestPayloadForTest(route string, _ string, body []byte) []byte {
+	payload := make([]byte, 0, 16+4+len(route)+4+len(body))
 	payload = append(payload, make([]byte, 16)...)
 
 	writeTLVString := func(value string) {
@@ -257,7 +253,6 @@ func rpcWorkerRequestPayloadForTest(route string, replyRoute string, body []byte
 	}
 
 	writeTLVString(route)
-	writeTLVString(replyRoute)
 	writeTLVBytes(body)
 	return payload
 }

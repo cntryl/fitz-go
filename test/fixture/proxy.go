@@ -159,7 +159,6 @@ func (p *DisconnectProxy) pipeWebSocketPair(clientConn net.Conn, backendConn net
 		return
 	}
 
-	header = rewriteWebSocketOrigin(header, proxyOriginForBackend(p.backendAddr))
 	if _, err := backendConn.Write(header); err != nil {
 		cleanup()
 		return
@@ -189,46 +188,6 @@ func readHTTPHeader(reader *bufio.Reader) ([]byte, error) {
 			return header, nil
 		}
 	}
-}
-
-func rewriteWebSocketOrigin(header []byte, origin string) []byte {
-	if origin == "" {
-		return header
-	}
-
-	text := string(header)
-	lines := strings.Split(text, "\r\n")
-	replaced := false
-	insertAt := len(lines) - 2
-	for i, line := range lines {
-		if strings.HasPrefix(strings.ToLower(line), "origin:") {
-			lines[i] = "Origin: " + origin
-			replaced = true
-			break
-		}
-		if strings.HasPrefix(strings.ToLower(line), "host:") {
-			insertAt = i + 1
-		}
-	}
-	if !replaced {
-		next := append([]string{}, lines[:insertAt]...)
-		next = append(next, "Origin: "+origin)
-		next = append(next, lines[insertAt:]...)
-		lines = next
-	}
-	return []byte(strings.Join(lines, "\r\n"))
-}
-
-func proxyOriginForBackend(backendAddr string) string {
-	backendURL, err := url.Parse(backendAddr)
-	if err != nil {
-		return ""
-	}
-	scheme := "http"
-	if backendURL.Scheme == "wss" {
-		scheme = "https"
-	}
-	return scheme + "://" + backendURL.Host
 }
 
 func proxyBackendHost(t *testing.T, transport TransportType, backendAddr string) string {

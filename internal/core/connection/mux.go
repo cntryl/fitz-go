@@ -357,7 +357,7 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 		return
 	}
 	if msgType == 302 {
-		// RPC worker requests have a fixed TLV shape: [u32 len=16][16-byte correlation_id][route][reply_route][body].
+		// RPC worker requests have the shape [uuid16 correlation_id][route][body].
 		// Route those explicitly so an in-flight 302 call cannot steal an inbound worker request.
 		if m.looksLikeRpcWorkerRequest(payload) {
 			m.handleRpcRequest(payload)
@@ -502,36 +502,32 @@ func (m *Multiplexer) handleRpcRequest(payload []byte) {
 }
 
 func (m *Multiplexer) looksLikeRpcWorkerRequest(payload []byte) bool {
-	if len(payload) < 20 {
+	if len(payload) < 24 {
 		return false
 	}
-	corrLen := binary.BigEndian.Uint32(payload[0:4])
-	return corrLen == 16 && len(payload) >= 4+int(corrLen)
+	routeLen := int(binary.BigEndian.Uint32(payload[16:20]))
+	bodyLenOffset := 20 + routeLen
+	if routeLen < 1 || bodyLenOffset > len(payload)-4 {
+		return false
+	}
+	bodyLen := int(binary.BigEndian.Uint32(payload[bodyLenOffset : bodyLenOffset+4]))
+	return bodyLenOffset+4+bodyLen == len(payload)
 }
 
 // handleRpcResponse processes RPC RESPONSE messages (async delivery).
-// Per server rpc_codec.rs: [bytes correlation_id][u64 seq][bytes body][u8 stream_end]
-// where "bytes" = [u32 BE len][data] (TLV bytes format)
+// Per server rpc_codec.rs: [uuid16 correlation_id][u64 seq][u8 flags][bytes body].
 func (m *Multiplexer) handleRpcResponse(msgType uint16, payload []byte) {
-	// Need at least [u32 len=16][16 bytes uuid] = 20 bytes for correlation_id
-	if len(payload) < 20 {
+	if len(payload) < 16 {
 		m.dropFrame(msgType, payload, "rpc response missing correlation_id")
 		return
 	}
 
-	// Parse correlation_id as TLV bytes: [u32 BE len][16 bytes UUID]
-	corrLen := binary.BigEndian.Uint32(payload[0:4])
-	if corrLen != 16 || len(payload) < 4+int(corrLen) {
-		m.dropFrame(msgType, payload, "rpc response invalid correlation_id")
-		return
-	}
-
 	var correlationID [16]byte
-	copy(correlationID[:], payload[4:20])
+	copy(correlationID[:], payload[:16])
 
 	// Call registered handler with remaining payload (seq + body + stream_end)
 	if handler := m.rpcResponseHandler(); handler != nil {
-		handler(correlationID, payload[20:])
+		handler(correlationID, payload[16:])
 	}
 }
 

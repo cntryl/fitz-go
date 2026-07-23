@@ -210,18 +210,14 @@ func (c *client) initRPCHandler() {
 }
 
 // handleRPCRequest handles incoming RPC REQUEST frames (302) forwarded to this worker.
-// Payload: [u32 BE corrLen=16][16 bytes correlation_id][route][reply_route][body] (TLV).
+// Payload: [uuid16 correlation_id][route][body].
 func (c *client) handleRPCRequest(payload []byte) {
-	if len(payload) < 20 {
-		return
-	}
-	corrLen := binary.BigEndian.Uint32(payload[0:4])
-	if corrLen != 16 || len(payload) < 20 {
+	if len(payload) < 16 {
 		return
 	}
 	var correlationID [16]byte
-	copy(correlationID[:], payload[4:20])
-	c.handleWorkerRequest(correlationID, payload[20:])
+	copy(correlationID[:], payload[:16])
+	c.handleWorkerRequest(correlationID, payload[16:])
 }
 
 // handleRPCResponse handles incoming RPC RESPONSE frames (303).
@@ -240,13 +236,19 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 
 	if isCall {
 		// This is a response to our Call
-		// Parse: [u64 sequence][bytes body][u8 stream_end]
+		// Parse: [u64 sequence][u8 flags][bytes body]
 		offset := 0
 		if offset+8 > len(payload) {
 			return
 		}
 		seq := binary.BigEndian.Uint64(payload[offset : offset+8])
 		offset += 8
+
+		if offset >= len(payload) {
+			return
+		}
+		streamEnd := payload[offset]&1 != 0
+		offset++
 
 		// body is TLV bytes: [u32 len][data]
 		if offset+4 > len(payload) {
@@ -261,9 +263,14 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		body := payload[offset : offset+int(bodyLen)]
 		offset += int(bodyLen)
 
-		streamEnd := false
-		if offset < len(payload) {
-			streamEnd = payload[offset] == 1
+		if streamEnd && len(body) > 0 && body[0] == 1 {
+			if _, _, terminalErr := connection.ParseStandardResponse(body); terminalErr != nil {
+				c.mu.Lock()
+				delete(c.pendingRPCs, correlationID)
+				c.mu.Unlock()
+				stream.fail(mapRPCError(terminalErr))
+				return
+			}
 		}
 
 		if !streamEnd || len(body) > 0 {
@@ -280,10 +287,9 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 }
 
 // handleWorkerRequest processes an incoming request for a registered worker.
-// Server forwards REQUEST payload: [bytes correlation_id][string route][string reply_route][bytes body]
-// where bytes/string = [u32 BE len][data] (TLV format)
+// Server forwards REQUEST payload: [uuid16 correlation_id][string route][bytes body].
 // Note: correlationID was already parsed by the mux, but the remaining payload
-// contains [string route][string reply_route][bytes body] after the correlation_id.
+// contains [string route][bytes body] after the correlation_id.
 func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 	offset := 0
 
@@ -298,18 +304,6 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 	}
 	route := string(payload[offset : offset+int(routeLen)])
 	offset += int(routeLen)
-
-	// Parse reply_route (TLV string: [u32 len][string])
-	if offset+4 > len(payload) {
-		return
-	}
-	replyRouteLen := binary.BigEndian.Uint32(payload[offset : offset+4])
-	offset += 4
-	if offset+int(replyRouteLen) > len(payload) {
-		return
-	}
-	replyRoute := string(payload[offset : offset+int(replyRouteLen)])
-	offset += int(replyRouteLen)
 
 	// Parse body (TLV bytes: [u32 len][data])
 	if offset+4 > len(payload) {
@@ -334,7 +328,7 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 	req := InboundRequest{
 		CorrelationID: correlationID,
 		Route:         route,
-		ReplyRoute:    replyRoute,
+		ReplyRoute:    "",
 		Body:          body,
 	}
 
@@ -357,10 +351,9 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 		w.sendEnd()
 	}, trace.WithAttributes(
 		attribute.String("fitz.route", route),
-		attribute.String("fitz.reply_route", replyRoute),
 	)) {
 		if log := c.conn.Logger(); log != nil {
-			log.Warn("rpc worker handler dropped", "route", route, "reply_route", replyRoute, "reason", "async handler queue full")
+			log.Warn("rpc worker handler dropped", "route", route, "reason", "async handler queue full")
 		}
 	}
 }
@@ -451,8 +444,9 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 	c.pendingRPCs[correlationID] = stream
 	c.mu.Unlock()
 
-	// Build request with writer path
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcRequest, rpcRequestPayloadWriter(correlationID, route, "", body))
+	// RPC requests are one-way submissions; responses arrive asynchronously as
+	// message type 303 frames correlated by the UUID above.
+	err = c.conn.SendFireAndForgetWithWriter(ctx, protocol.MessageTypeRpcRequest, rpcRequestPayloadWriter(correlationID, route, "", body))
 	if err != nil {
 		c.mu.Lock()
 		delete(c.pendingRPCs, correlationID)
@@ -461,27 +455,6 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("REQUEST failed: %w", err)
-	}
-
-	success, _, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		c.mu.Lock()
-		delete(c.pendingRPCs, correlationID)
-		c.mu.Unlock()
-		stream.close()
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("REQUEST failed: %w", mapRPCError(err))
-	}
-	if !success {
-		c.mu.Lock()
-		delete(c.pendingRPCs, correlationID)
-		c.mu.Unlock()
-		stream.close()
-		recordErr := errors.New("REQUEST failed: unexpected status")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return nil, recordErr
 	}
 
 	iterator := &rpcIterator{
