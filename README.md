@@ -338,3 +338,10 @@ Notes:
   requires up to 90 s for the next `* * * * *` tick.
 - Conformance scenarios focus on cross-language semantic parity; integration tests
   provide additional domain-specific operation coverage.
+
+## Managed leases
+
+`client.Lease().WithLease(ctx, route, ttlSecs, callback)` owns acquisition, renewal,
+callback cancellation, and release. Add `fitz.WithLeaseWait()` to retry typed contention.
+The callback must honor its context promptly; `context.Cause` reports caller cancellation
+or `fitz.ErrLeaseLost`. Low-level lease methods remain available and serialize token rotation.

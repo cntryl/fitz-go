@@ -25,8 +25,10 @@ type Lease struct {
 	Token     []byte
 	ExpiresAt int64
 
-	route string
-	conn  *connection.Connection
+	route  string
+	conn   *connection.Connection
+	opMu   sync.Mutex
+	closed bool
 }
 
 // Extend extends the lease TTL. Returns the new expiry timestamp.
@@ -40,27 +42,36 @@ func (l *Lease) ExtendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 }
 
 func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint64) (int64, error) {
+	l.opMu.Lock()
+	defer l.opMu.Unlock()
+	if l.closed {
+		return 0, connection.ErrStaleHandle
+	}
 	ctx, span := l.conn.Tracer().Start(ctx, "fitz.lease.Extend", trace.WithAttributes(
 		attribute.String("fitz.route", l.route),
 		attribute.Int("fitz.ttl_secs", int(ttlSecs)),
 	))
 	defer span.End()
 	if err := l.conn.CheckLiveHandle(); err != nil {
+		l.closed = true
 		return 0, err
 	}
 	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRenew, leaseRenewPayloadWriter(l.route, tokenToU64(token), ttlSecs))
 	if isLeaseHeldError(err) {
+		l.closed = true
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("EXTEND request failed: %w", err)
 	}
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
+		l.closed = true
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("EXTEND failed: %w", mapLeaseError(err))
 	}
 	if !success {
+		l.closed = true
 		recordErr := errors.New("EXTEND failed: unexpected status")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
@@ -71,6 +82,10 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 		newToken := binary.BigEndian.Uint64(remaining[0:8])
 		l.Token = make([]byte, 8)
 		binary.BigEndian.PutUint64(l.Token, newToken)
+	}
+	if len(remaining) < 8 {
+		l.closed = true
+		return 0, errors.New("EXTEND failed: response missing fencing token")
 	}
 	newExpiry := time.Now().Unix() + int64(ttlSecs)
 	l.ExpiresAt = newExpiry
@@ -88,6 +103,12 @@ func (l *Lease) ReleaseWithToken(ctx context.Context, token []byte) error {
 }
 
 func (l *Lease) releaseWithToken(ctx context.Context, token []byte) error {
+	l.opMu.Lock()
+	defer l.opMu.Unlock()
+	if l.closed {
+		return connection.ErrStaleHandle
+	}
+	l.closed = true
 	ctx, span := l.conn.Tracer().Start(ctx, "fitz.lease.Release", trace.WithAttributes(attribute.String("fitz.route", l.route)))
 	defer span.End()
 	if err := l.conn.CheckLiveHandle(); err != nil {
