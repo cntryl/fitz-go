@@ -24,7 +24,7 @@ type requestWaiter struct {
 }
 
 var requestWaiterPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &requestWaiter{ready: make(chan struct{}, 1)}
 	},
 }

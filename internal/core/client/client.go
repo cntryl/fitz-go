@@ -54,7 +54,7 @@ type pendingRPCCleaner interface {
 }
 
 type transportMaxFrameSizer interface {
-	SetMaxFrameSize(int)
+	SetMaxFrameSize(size int)
 }
 
 // LifecycleEvent describes a connection lifecycle transition emitted by the
@@ -189,14 +189,14 @@ func WithWriteTimeout(timeout time.Duration) Option {
 
 // WithMaxInFlightRequests sets the maximum number of concurrently admitted
 // outbound request operations on a connection.
-func WithMaxInFlightRequests(max int) Option {
-	return func(c *Config) { c.MaxInFlightRequests = max }
+func WithMaxInFlightRequests(limit int) Option {
+	return func(c *Config) { c.MaxInFlightRequests = limit }
 }
 
 // WithMaxRequestQueueSize sets how many outbound operations may wait for an
 // in-flight slot before new operations fail fast with ErrRequestQueueFull.
-func WithMaxRequestQueueSize(max int) Option {
-	return func(c *Config) { c.MaxRequestQueueSize = max }
+func WithMaxRequestQueueSize(limit int) Option {
+	return func(c *Config) { c.MaxRequestQueueSize = limit }
 }
 
 // WithAsyncHandlerTimeout sets the timeout used for detached async handler spans.
@@ -207,8 +207,8 @@ func WithAsyncHandlerTimeout(timeout time.Duration) Option {
 
 // WithAsyncHandlerMaxConcurrency sets the maximum number of concurrent
 // detached async handlers. A value <= 0 uses the default limit.
-func WithAsyncHandlerMaxConcurrency(max int) Option {
-	return func(c *Config) { c.AsyncHandlerMaxConcurrency = max }
+func WithAsyncHandlerMaxConcurrency(limit int) Option {
+	return func(c *Config) { c.AsyncHandlerMaxConcurrency = limit }
 }
 
 // WithReconnect enables/disables automatic reconnection.
@@ -446,6 +446,8 @@ func detectTransport(url string) TransportType {
 
 func transportTypeString(t TransportType) string {
 	switch t {
+	case TransportAuto:
+		return "auto"
 	case TransportWebSocket:
 		return "websocket"
 	case TransportTCP:
@@ -596,6 +598,8 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 		err   error
 	)
 	switch transportType {
+	case TransportAuto:
+		return nil, fmt.Errorf("unsupported transport type: %d", transportType)
 	case TransportWebSocket:
 		trans, err = dialWebSocketTransport(ctx, c.config.URL)
 	case TransportTCP:

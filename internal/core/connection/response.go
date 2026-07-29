@@ -197,7 +197,7 @@ func WriteUUID(buf *bytes.Buffer, uuid [16]byte) {
 
 // Buffer pool for efficiency (reduces allocations).
 var bufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new(bytes.Buffer)
 	},
 }

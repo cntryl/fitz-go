@@ -3,11 +3,11 @@
 package lease
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -381,7 +381,7 @@ func isLeaseHeldError(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return bytes.Contains([]byte(msg), []byte("held")) || bytes.Contains([]byte(msg), []byte("already"))
+	return strings.Contains(msg, "held") || strings.Contains(msg, "already")
 }
 
 // initNotifyHandler registers the NOTIFY handler on first use.

@@ -228,20 +228,16 @@ func TestShouldAllowConcurrentHandlerReplacementGivenNotifyDispatchWhenSetNotify
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for range 500 {
 			mux.SetNotifyHandler(protocol.MessageTypeNoticeNotify, func(subID uint64, route string, body []byte) {
 				delivered.Add(1)
 			})
 		}
 		close(done)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-done:
@@ -250,7 +246,7 @@ func TestShouldAllowConcurrentHandlerReplacementGivenNotifyDispatchWhenSetNotify
 				mux.Dispatch(protocol.MessageTypeNoticeNotify, payload)
 			}
 		}
-	}()
+	})
 
 	wg.Wait()
 	assert.Positive(t, delivered.Load())

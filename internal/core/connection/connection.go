@@ -1609,11 +1609,11 @@ func IsTransientRetryable(err error) bool {
 }
 
 type heartbeatSender interface {
-	SendHeartbeat(context.Context) error
+	SendHeartbeat(ctx context.Context) error
 }
 
 type keepAliveEnabler interface {
-	EnableKeepAlive(time.Duration) error
+	EnableKeepAlive(interval time.Duration) error
 }
 
 func (c *Connection) startHeartbeat() {
@@ -1644,10 +1644,7 @@ func (c *Connection) heartbeatLoop(sender heartbeatSender) {
 
 	for {
 		last := time.Unix(0, c.lastActivityUnix.Load())
-		delay := interval - time.Since(last)
-		if delay < 0 {
-			delay = 0
-		}
+		delay := max(interval-time.Since(last), 0)
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:

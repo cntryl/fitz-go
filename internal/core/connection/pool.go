@@ -14,7 +14,7 @@ type ByteSlicePool struct {
 func NewByteSlicePool() *ByteSlicePool {
 	return &ByteSlicePool{
 		pool: sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				// Start with 1KB default capacity
 				b := make([]byte, 0, 1024)
 				return &b

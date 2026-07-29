@@ -238,8 +238,8 @@ func (r *Registry[H]) rollbackRestore(entries []restoreEntry, wireUnsubscribe fu
 	}
 
 	var rollbackErr error
-	for idx := len(entries) - 1; idx >= 0; idx-- {
-		entry := entries[idx]
+	for _, v := range slices.Backward(entries) {
+		entry := v
 		if err := wireUnsubscribe(entry.pattern, entry.subID); err != nil {
 			rollbackErr = errors.Join(rollbackErr, err)
 		}

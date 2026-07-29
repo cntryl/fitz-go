@@ -12,13 +12,13 @@ const pooledBufferMaxCap = 64 * 1024
 
 // bufferPool provides buffer pooling for frame encoding
 var bufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new(bytes.Buffer)
 	},
 }
 
 var frameBufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &FrameBuffer{}
 	},
 }

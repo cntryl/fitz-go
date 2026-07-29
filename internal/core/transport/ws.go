@@ -360,10 +360,7 @@ func (w *WebSocketTransport) writeFrame(opcode byte, payload []byte, mask bool) 
 	if mask {
 		var scratch [1024]byte
 		for i := 0; i < len(payload); {
-			chunkLen := len(payload) - i
-			if chunkLen > len(scratch) {
-				chunkLen = len(scratch)
-			}
+			chunkLen := min(len(payload)-i, len(scratch))
 			for j := range chunkLen {
 				scratch[j] = payload[i+j] ^ maskKey[(i+j)%4]
 			}

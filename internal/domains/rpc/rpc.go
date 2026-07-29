@@ -8,6 +8,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
@@ -261,7 +263,6 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 			return
 		}
 		body := payload[offset : offset+int(bodyLen)]
-		offset += int(bodyLen)
 
 		if streamEnd && len(body) > 0 && body[0] == 1 {
 			if _, _, terminalErr := connection.ParseStandardResponse(body); terminalErr != nil {
@@ -602,17 +603,15 @@ func (c *client) ReplaceConnection(conn *connection.Connection) {
 func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	c.mu.Lock()
 	snapshot := make(map[string]RPCHandler, len(c.workers))
-	for route, handler := range c.workers {
-		snapshot[route] = handler
-	}
+	maps.Copy(snapshot, c.workers)
 	c.mu.Unlock()
 
 	restoredRoutes := make([]string, 0, len(snapshot))
 
 	for route := range snapshot {
 		if err := c.restoreSubscribeWorker(ctx, route); err != nil {
-			for idx := len(restoredRoutes) - 1; idx >= 0; idx-- {
-				c.rollbackRestoredWorker(restoredRoutes[idx])
+			for _, v := range slices.Backward(restoredRoutes) {
+				c.rollbackRestoredWorker(v)
 			}
 			return err
 		}
@@ -620,9 +619,7 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	}
 
 	c.mu.Lock()
-	for route, handler := range snapshot {
-		c.workers[route] = handler
-	}
+	maps.Copy(c.workers, snapshot)
 	c.mu.Unlock()
 	return nil
 }

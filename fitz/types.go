@@ -104,17 +104,17 @@ func WithWriteTimeout(timeout time.Duration) Option {
 
 // WithMaxInFlightRequests sets the maximum number of concurrently admitted
 // outbound request operations on a connection.
-func WithMaxInFlightRequests(max int) Option {
+func WithMaxInFlightRequests(limit int) Option {
 	return func(cfg *clientConfig) {
-		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithMaxInFlightRequests(max))
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithMaxInFlightRequests(limit))
 	}
 }
 
 // WithMaxRequestQueueSize sets how many outbound operations may wait for an
 // in-flight slot before new operations fail fast with ErrRequestQueueFull.
-func WithMaxRequestQueueSize(max int) Option {
+func WithMaxRequestQueueSize(limit int) Option {
 	return func(cfg *clientConfig) {
-		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithMaxRequestQueueSize(max))
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithMaxRequestQueueSize(limit))
 	}
 }
 
@@ -128,9 +128,9 @@ func WithAsyncHandlerTimeout(timeout time.Duration) Option {
 
 // WithAsyncHandlerMaxConcurrency sets the maximum number of concurrent detached
 // async handlers used by subscription callbacks and RPC worker handlers.
-func WithAsyncHandlerMaxConcurrency(max int) Option {
+func WithAsyncHandlerMaxConcurrency(limit int) Option {
 	return func(cfg *clientConfig) {
-		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithAsyncHandlerMaxConcurrency(max))
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithAsyncHandlerMaxConcurrency(limit))
 	}
 }
 
@@ -237,6 +237,8 @@ func WithMeter(meter metric.Meter) Option {
 
 func toCoreTransportType(transportType TransportType) coreclient.TransportType {
 	switch transportType {
+	case TransportAuto:
+		return coreclient.TransportAuto
 	case TransportWebSocket:
 		return coreclient.TransportWebSocket
 	case TransportTCP:
@@ -248,6 +250,8 @@ func toCoreTransportType(transportType TransportType) coreclient.TransportType {
 
 func fromCoreConnectionState(state connection.State) ConnectionState {
 	switch state {
+	case connection.StateDisconnected:
+		return ConnectionStateDisconnected
 	case connection.StateConnecting:
 		return ConnectionStateConnecting
 	case connection.StateConnected:

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -560,10 +561,8 @@ func scheduleSegments(route string) ([]string, bool) {
 	if len(segments) == 0 {
 		return nil, false
 	}
-	for _, segment := range segments {
-		if segment == "" {
-			return nil, false
-		}
+	if slices.Contains(segments, "") {
+		return nil, false
 	}
 	return segments, true
 }

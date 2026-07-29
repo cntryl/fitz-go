@@ -68,7 +68,7 @@ func parseCronExpression(expr string) error {
 }
 
 func (spec cronFieldSpec) validate(field string) error {
-	for _, part := range strings.Split(field, ",") {
+	for part := range strings.SplitSeq(field, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			return errors.New("empty list item")

@@ -88,12 +88,16 @@ func CloseQuietly[T interface{ Close() error }](value T) {
 }
 
 // RollbackQuietly rolls back a resource and discards the rollback error.
-func RollbackQuietly[T interface{ Rollback(context.Context) error }](ctx context.Context, value T) {
+func RollbackQuietly[T interface {
+	Rollback(ctx context.Context) error
+}](ctx context.Context, value T) {
 	_ = value.Rollback(ctx)
 }
 
 // ReleaseQuietly releases a resource and discards the release error.
-func ReleaseQuietly[T interface{ Release(context.Context) error }](ctx context.Context, value T) {
+func ReleaseQuietly[T interface {
+	Release(ctx context.Context) error
+}](ctx context.Context, value T) {
 	_ = value.Release(ctx)
 }
 
@@ -109,6 +113,7 @@ func TCPFrameWrapper(frame []byte) []byte {
 
 // AssertFrameValid performs basic validation on a frame.
 func AssertFrameValid(t *testing.T, frame []byte) {
+	t.Helper()
 	if len(frame) < 3 {
 		t.Fatalf("frame too short: %d bytes", len(frame))
 	}
@@ -127,6 +132,7 @@ func AssertFrameValid(t *testing.T, frame []byte) {
 
 // AssertLengthPrefix verifies and extracts TCP length prefix.
 func AssertLengthPrefix(t *testing.T, data []byte) uint32 {
+	t.Helper()
 	if len(data) < 4 {
 		t.Fatalf("insufficient data for TCP length prefix: %d bytes", len(data))
 	}
@@ -136,6 +142,7 @@ func AssertLengthPrefix(t *testing.T, data []byte) uint32 {
 // AssertPayloadStructure verifies payload format without decoding details.
 // Used to check that payload has minimum expected structure.
 func AssertPayloadStructure(t *testing.T, payload []byte, minSize int) {
+	t.Helper()
 	if len(payload) < minSize {
 		t.Errorf("payload too short: %d bytes (expected at least %d)", len(payload), minSize)
 	}
@@ -143,6 +150,7 @@ func AssertPayloadStructure(t *testing.T, payload []byte, minSize int) {
 
 // AssertRouteValid checks if a route string is valid.
 func AssertRouteValid(t *testing.T, route string) {
+	t.Helper()
 	if !strings.HasPrefix(route, "ftz://") {
 		t.Errorf("route missing ftz:// prefix: %s", route)
 	}
@@ -280,10 +288,10 @@ func generateRandomID(length int) string {
 // AssertDomainErrorCode asserts that err is a domain error with the given code.
 // If err is nil or not a *coreerrors.DomainError, the test fails.
 // Use this when the client surfaces server error codes so tests are stable against message text changes.
-func AssertDomainErrorCode(t testing.TB, err error, code coreerrors.ErrorCode) {
-	t.Helper()
-	require.Error(t, err, "expected a non-nil error")
+func AssertDomainErrorCode(tb testing.TB, err error, code coreerrors.ErrorCode) {
+	tb.Helper()
+	require.Error(tb, err, "expected a non-nil error")
 	var domainErr *coreerrors.DomainError
-	require.ErrorAs(t, err, &domainErr, "expected error to be *errors.DomainError, got: %T", err)
-	assert.Equal(t, code, domainErr.Code, "domain error code mismatch: message=%q", domainErr.Message)
+	require.ErrorAs(tb, err, &domainErr, "expected error to be *errors.DomainError, got: %T", err)
+	assert.Equal(tb, code, domainErr.Code, "domain error code mismatch: message=%q", domainErr.Message)
 }

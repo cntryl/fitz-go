@@ -162,7 +162,7 @@ func TestShouldDropMalformedRpcResponseGivenShortCorrelationPayloadWhenDispatchC
 		called = true
 	})
 
-	for payloadLen := 0; payloadLen < 16; payloadLen++ {
+	for payloadLen := range 16 {
 		mux.Dispatch(protocol.MessageTypeRpcResponse, make([]byte, payloadLen))
 	}
 
@@ -258,7 +258,8 @@ func rpcWorkerRequestPayloadForTest(route string, _ string, body []byte) []byte 
 }
 
 func notifyPayloadWithLengths(lengths ...uint32) []byte {
-	payload := make([]byte, 8)
+	payload := make([]byte, 0, 8+(4*len(lengths)))
+	payload = append(payload, make([]byte, 8)...)
 	for _, length := range lengths {
 		var lenBuf [4]byte
 		binary.BigEndian.PutUint32(lenBuf[:], length)

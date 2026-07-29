@@ -81,16 +81,14 @@ func TestShouldConfirmAuthenticationOnlyOnceGivenConcurrentCalls(t *testing.T) {
 	panicCh := make(chan any, 128)
 	var wg sync.WaitGroup
 	for range 128 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					panicCh <- recovered
 				}
 			}()
 			conn.confirmAuthentication()
-		}()
+		})
 	}
 	wg.Wait()
 	close(panicCh)

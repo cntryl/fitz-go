@@ -165,13 +165,17 @@ Integration tests target a running Fitz broker and are opt-in via the
 Use the local compose stack in [compose.yml](compose.yml):
 
 ```bash
-docker compose -f compose.yml up -d
+docker compose up -d
 ```
 
 That starts:
 
-- `fitz-auth` on `localhost:4091` and `ws://localhost:4090/ws`
-- `fitz-anon` on `localhost:4191` and `ws://localhost:4190/ws`
+- `fitz-auth` on loopback-only `localhost:4091` and `ws://localhost:4090/ws`
+- `fitz-anon` on loopback-only `localhost:4191` and `ws://localhost:4190/ws`
+
+Both services use `ghcr.io/cntryl/fitz:latest` and local storage volumes. Host
+ports are configurable through the `FITZ_AUTH_HOST_*` and
+`FITZ_ANON_HOST_*` variables.
 
 Anonymous broker example:
 
@@ -194,7 +198,7 @@ Auth-required broker example:
 export FITZ_BROKER_TCP_ADDR=localhost:4091
 export FITZ_BROKER_WS_ADDR=ws://localhost:4090/ws
 export FITZ_BROKER_AUTH_REQUIRED=true
-export FITZ_BROKER_JWT_HMAC_SECRET=test-secret-key
+export FITZ_BROKER_JWT_HMAC_SECRET=dev-test-secret
 export FITZ_BROKER_JWT_AUDIENCE=fitz
 go test -tags=integration ./test
 ```
@@ -321,18 +325,18 @@ scenario coverage in `test/conformance`.
 | --- | --- | --- | --- |
 | Control | 1 | CONNECT | CS-001, CS-002 |
 | KV | 100-108 | BEGIN, COMMIT, GET, PUT, INSERT, SCAN | CS-001, CS-003, CS-005, CS-006, CS-014, CS-015 |
-| Queue | 200, 202-204, 207-209 | ENQUEUE, RESERVE, EXTEND, COMPLETE, SUBSCRIBE | CS-016 (enqueue/reserve/complete lifecycle) |
-| RPC | 300-303 | SUBSCRIBE_WORKER, UNSUBSCRIBE_WORKER, REQUEST, RESPONSE | CS-004, CS-006, CS-007, CS-008, CS-009 |
-| Lease | 400-403, 407-409 | ACQUIRE, RENEW, RELEASE, QUERY, NOTIFY | CS-017 (acquire/contention/release lifecycle) |
-| Notice | 500-504 | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, NOTIFY | CS-018 (subscribe/publish/deliver/unsubscribe) |
-| Stream | 600-609 | BEGIN, APPEND, COMMIT, READ, SUBSCRIBE | CS-011, CS-012, CS-013 |
-| Schedule | 700-705 | CREATE, CANCEL, LIST, SUBSCRIBE, NOTIFY | CS-019 (create/subscribe/cancel lifecycle) |
+| Queue | 200, 202-204, 207-209 | ENQUEUE, RESERVE, EXTEND, COMPLETE, SUBSCRIBE | CS-018, CS-022 |
+| RPC | 300-303 | SUBSCRIBE_WORKER, UNSUBSCRIBE_WORKER, REQUEST, RESPONSE | CS-004, CS-006, CS-007, CS-008, CS-009, CS-017 |
+| Lease | 400-403, 407-409 | ACQUIRE, RENEW, RELEASE, QUERY, NOTIFY | CS-019 |
+| Notice | 500-504 | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, NOTIFY | CS-010, CS-020 |
+| Stream | 600-609 | BEGIN, APPEND, COMMIT, READ, SUBSCRIBE | CS-011, CS-012, CS-013, CS-016 |
+| Schedule | 700-705 | CREATE, CANCEL, LIST, SUBSCRIBE, NOTIFY | CS-021 |
 
 Notes:
 
 - Queue `201` (ENQUEUE_BATCH) is reserved by spec and intentionally not implemented.
-- CS-016–CS-019 are Go client additions beyond the 15-scenario cross-language spec, closing
-  coverage gaps for the four subscribe/notify-pattern domains.
+- CS-001–CS-017 are the shared cross-language suite. CS-018–CS-022 are Go
+  additions for Queue, Lease, Notice, Schedule, and queue reconnect coverage.
 - Schedule fire delivery (actual cron trigger) is covered in the integration suite
   (`TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires`), which
   requires up to 90 s for the next `* * * * *` tick.

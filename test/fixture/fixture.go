@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -153,8 +154,8 @@ func (f *TestFixture) Client() *fitz.Client {
 // This is automatically registered with t.Cleanup() during fixture creation.
 func (f *TestFixture) cleanup() {
 	// Run all cleanup functions in reverse order
-	for i := len(f.cleanupFuncs) - 1; i >= 0; i-- {
-		f.cleanupFuncs[i]()
+	for _, v := range slices.Backward(f.cleanupFuncs) {
+		v()
 	}
 
 	// Close client connection
@@ -294,12 +295,7 @@ func AuthModeForTestName(name string) AuthMode {
 }
 
 func containsPathSegment(name string, segment string) bool {
-	for _, part := range splitTestName(name) {
-		if part == segment {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(splitTestName(name), segment)
 }
 
 func splitTestName(name string) []string {

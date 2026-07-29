@@ -24,7 +24,7 @@ type DisconnectProxy struct {
 	closeOnce    sync.Once
 	mu           sync.Mutex
 	pairs        map[int64]proxyConnPair
-	nextPairID   int64
+	nextPairID   atomic.Int64
 }
 
 type proxyConnPair struct {
@@ -114,7 +114,7 @@ func (p *DisconnectProxy) acceptLoop() {
 			continue
 		}
 
-		pairID := atomic.AddInt64(&p.nextPairID, 1)
+		pairID := p.nextPairID.Add(1)
 		p.acceptedConn.Add(1)
 
 		p.mu.Lock()

@@ -2,8 +2,8 @@
 
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
-// Covers 21 scenarios: the 16 scenarios currently implemented from the
-// cross-language spec plus 5 Go-client scenarios (CS-018 through CS-022) added
+// Covers 22 scenarios: all 17 scenarios from the cross-language spec plus
+// 5 Go-client scenarios (CS-018 through CS-022) added
 // to close coverage gaps for Queue, Lease, Notice, Schedule, and reconnect
 // restoration behavior:
 //
@@ -245,7 +245,7 @@ func run(
 }
 
 // ---------------------------------------------------------------------------
-// TestMain â€” writes aggregate JSON after all scenarios
+// TestMain — writes aggregate JSON after all scenarios
 // ---------------------------------------------------------------------------
 
 func TestMain(m *testing.M) {
@@ -321,7 +321,7 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictPass, ev, nil
 			}
 
-			// Didn't fail on connect â€” check domain access
+			// Didn't fail on connect — check domain access
 			ev = append(ev, "connect did not error (TCP silent-close model)")
 			_, kvErr := f.Client().KV().Begin(ctx, uniqueRoute("kv"), fitz.KVDurabilitySync)
 			if kvErr != nil {
@@ -332,7 +332,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictPartial, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+		if r.Verdict != VerdictPass {
 			t.Errorf("CS-002: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -619,7 +619,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictPass, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+		if r.Verdict != VerdictPass {
 			t.Errorf("CS-008: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -662,7 +662,7 @@ func TestConformanceSuite(t *testing.T) {
 			closeQuietly(iter)
 
 			if iterErr == nil {
-				ev = append(ev, "WARNING: in-flight request succeeded despite disconnect (race â€” acceptable)")
+				ev = append(ev, "WARNING: in-flight request succeeded despite disconnect (race — acceptable)")
 				return VerdictPartial, ev, nil
 			}
 			ev = append(ev, fmt.Sprintf("in-flight request failed: %v", iterErr))
@@ -670,7 +670,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictPass, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+		if r.Verdict != VerdictPass {
 			t.Errorf("CS-009: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -749,7 +749,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictFail, ev, errors.New("subscription was not restored after reconnect")
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+		if r.Verdict != VerdictPass {
 			t.Errorf("CS-010: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -806,7 +806,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictPass, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+		if r.Verdict != VerdictPass {
 			t.Errorf("CS-011: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -848,7 +848,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictPass, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+		if r.Verdict != VerdictPass {
 			t.Errorf("CS-012: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -871,7 +871,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, "written first record at offset 0")
 
-			// append with wrong expected offset â€” server should reject
+			// append with wrong expected offset — server should reject
 			wrongSession, err := f.Client().Stream().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("second begin: %w", err)
@@ -1004,7 +1004,7 @@ func TestConformanceSuite(t *testing.T) {
 				if beginErr != nil {
 					ev = append(ev, fmt.Sprintf("in-flight begin failed: %v (expected)", beginErr))
 				} else {
-					ev = append(ev, "in-flight begin completed before close (race â€” acceptable)")
+					ev = append(ev, "in-flight begin completed before close (race — acceptable)")
 				}
 			case <-time.After(2 * time.Second):
 				ev = append(ev, "in-flight begin timed out waiting for result")
@@ -1015,6 +1015,89 @@ func TestConformanceSuite(t *testing.T) {
 		results.record(r)
 		if r.Verdict != VerdictPass {
 			t.Errorf("CS-015: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("CS-016_filtered_stream_replay", func(t *testing.T) {
+		r := run("CS-016", "filtered stream replay", "P1", func() (Verdict, []string, error) {
+			var ev []string
+			f := connectFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			route := uniqueRoute("stream")
+			session, err := f.Client().Stream().Begin(ctx, route)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("stream begin: %w", err)
+			}
+
+			alpha := "proj.alpha"
+			firstOffset, err := session.Append(ctx, 0, []byte("alpha"), &fitz.StreamAppendOptions{
+				Discriminator: &alpha,
+			})
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("append matching record: %w", err)
+			}
+
+			beta := "audit.beta"
+			secondOffset, err := session.Append(ctx, firstOffset+1, []byte("beta"), &fitz.StreamAppendOptions{
+				Discriminator: &beta,
+			})
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("append filtered record: %w", err)
+			}
+			if err := session.Commit(ctx, fitz.StreamCommitSync); err != nil {
+				return VerdictFail, ev, fmt.Errorf("stream commit: %w", err)
+			}
+
+			filter := &fitz.StreamFilterSet{
+				Clauses: []fitz.StreamFilterClause{{
+					Kind:  fitz.StreamFilterEquals,
+					Value: alpha,
+				}},
+			}
+			options := &fitz.StreamReadOptions{Filter: filter}
+			iter, err := f.Client().Stream().Read(ctx, route, 0, 10, options)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("filtered stream read: %w", err)
+			}
+			defer closeQuietly(iter)
+
+			var records []fitz.StreamRecord
+			for iter.Next() {
+				records = append(records, iter.Value())
+			}
+			if err := iter.Err(); err != nil {
+				return VerdictFail, ev, fmt.Errorf("iterate filtered stream: %w", err)
+			}
+			if len(records) != 1 || records[0].Offset != firstOffset || string(records[0].Body) != "alpha" {
+				return VerdictFail, ev, fmt.Errorf("unexpected filtered records: %+v", records)
+			}
+
+			page, err := f.Client().Stream().ReadPage(ctx, route, 0, 10, options)
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("filtered stream page: %w", err)
+			}
+			if page.Cursor.LastResourceOffset != secondOffset || page.Cursor.HasMore || len(page.Items) != 2 {
+				return VerdictFail, ev, fmt.Errorf("unexpected filtered page cursor/items: %+v", page)
+			}
+			if page.Items[0].Kind != fitz.StreamReadItemEvent ||
+				page.Items[0].Record == nil ||
+				page.Items[0].Record.Offset != firstOffset ||
+				page.Items[1].Kind != fitz.StreamReadItemFiltered ||
+				page.Items[1].Offset != secondOffset ||
+				page.Items[1].Reason == nil ||
+				*page.Items[1].Reason != fitz.StreamFilteredReasonServerFilter {
+				return VerdictFail, ev, fmt.Errorf("unexpected filtered page items: %+v", page.Items)
+			}
+
+			ev = append(ev, "filtered read returned only the matching discriminator")
+			ev = append(ev, "page cursor advanced across the server-filtered record")
+			return VerdictPass, ev, nil
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-016: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
@@ -1108,7 +1191,7 @@ func TestConformanceSuite(t *testing.T) {
 	})
 
 	// -------------------------------------------------------------------------
-	// CS-018 â€“ CS-022: Go-client scenarios not in the cross-language spec but
+	// CS-018–CS-022: Go-client scenarios not in the cross-language spec but
 	// required to close coverage gaps for Queue, Lease, Notice, Schedule, and
 	// reconnect restoration behavior.
 	// -------------------------------------------------------------------------
@@ -1160,7 +1243,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictPass, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+		if r.Verdict != VerdictPass {
 			t.Errorf("CS-018: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -1267,7 +1350,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictPass, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass && r.Verdict != VerdictPartial {
+		if r.Verdict != VerdictPass {
 			t.Errorf("CS-020: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -1281,7 +1364,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			route := uniqueRoute("schedule")
 
-			// Subscribe first â€” verify the subscription API is usable
+			// Subscribe first — verify the subscription API is usable
 			sub, err := f.Client().Schedule().Subscribe(ctx, route, func(_ context.Context, _ fitz.ScheduleNotification) error {
 				return nil
 			})

@@ -263,20 +263,20 @@ func (t *admissionBlockingTransport) RemoteAddr() string {
 	return "admission-blocking://transport"
 }
 
-func (t *admissionBlockingTransport) waitForRequestWrite(tst *testing.T, expected int) {
-	tst.Helper()
+func (transport *admissionBlockingTransport) waitForRequestWrite(t *testing.T, expected int) {
+	t.Helper()
 	deadline := time.After(time.Second)
 	for {
-		t.mu.Lock()
-		count := t.requestWrites
-		t.mu.Unlock()
+		transport.mu.Lock()
+		count := transport.requestWrites
+		transport.mu.Unlock()
 		if count >= expected {
 			return
 		}
 		select {
 		case <-deadline:
-			tst.Fatalf("timed out waiting for request write %d", expected)
-		case <-t.requestWriteCh:
+			t.Fatalf("timed out waiting for request write %d", expected)
+		case <-transport.requestWriteCh:
 		}
 	}
 }
@@ -566,8 +566,7 @@ func TestShouldPreserveResponseRoutingGivenConcurrentSameTypeRequestsWhenSendReq
 	cfg.Token = ""
 	conn := connection.New(transport, cfg)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	defer func() {
 		_ = conn.Close()
 	}()

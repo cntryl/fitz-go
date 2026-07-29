@@ -42,7 +42,30 @@ jobs:
         run: go test ./... -timeout 60s
 
       - name: Run broker acceptance tests
-        run: go test -tags=integration ./test ./test/conformance/... -timeout 10m
+        run: go test -count=1 -tags=integration ./test -timeout 10m
+
+      - name: Run conformance matrix
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          for transport in tcp ws; do
+            for auth_mode in anonymous valid_jwt; do
+              output="$PWD/artifacts/conformance-${transport}-${auth_mode}.json"
+              CONFORMANCE_TRANSPORT="$transport" \
+                CONFORMANCE_AUTH_MODE="$auth_mode" \
+                CONFORMANCE_OUTPUT="$output" \
+                go test -count=1 -tags=integration ./test/conformance/... \
+                  -run TestConformanceSuite -timeout 10m
+            done
+          done
+
+      - name: Upload conformance results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fitz-go-conformance-results
+          path: artifacts/conformance-*.json
+          if-no-files-found: warn
 
       - name: Stop broker stack
         if: always()
