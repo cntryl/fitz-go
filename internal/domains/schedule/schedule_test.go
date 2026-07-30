@@ -131,6 +131,10 @@ func TestShouldAcceptCronExpressionsGivenRepresentativeInputsWhenValidatedByCall
 	}
 }
 
+func TestShouldAcceptRangesAndListsGivenWeekdayHourConstraintsWhenCronValidated(t *testing.T) {
+	require.NoError(t, validateCronExpression("0,30 9-17 * * MON-FRI"))
+}
+
 func TestShouldRejectInvalidCronExpressionsGivenMalformedInputsWhenValidatedByCaller(t *testing.T) {
 	invalidExpressions := []string{
 		"not a cron",

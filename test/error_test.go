@@ -79,8 +79,6 @@ func TestShouldClassifyRetryabilityGivenErrorCodeWhenIsRetryableCalled(t *testin
 		{name: "stream read beyond watermark", code: fitz.ErrCodeStreamReadBeyondWatermark, want: true},
 		{name: "queue full", code: fitz.ErrCodeQueueFull, want: true},
 		{name: "lease held", code: fitz.ErrCodeLeaseHeld, want: true},
-		{name: "rpc timeout", code: fitz.ErrCodeRpcTimeout, want: true},
-		{name: "rpc no worker", code: fitz.ErrCodeRpcWorkerNotFound, want: true},
 		{name: "kv key not found", code: fitz.ErrCodeKvKeyNotFound, want: false},
 		{name: "schedule not found", code: fitz.ErrCodeScheduleNotFound, want: false},
 	}
@@ -92,4 +90,22 @@ func TestShouldClassifyRetryabilityGivenErrorCodeWhenIsRetryableCalled(t *testin
 			assert.Equal(t, tc.want, fitz.IsRetryable(errors.Join(errors.New("outer"), err)))
 		})
 	}
+}
+
+func TestShouldClassifyRetryableGivenRPCTimeoutWhenCallErrorEvaluated(t *testing.T) {
+	err := coreerrors.NewDomainError(fitz.ErrCodeRpcTimeout, "rpc timeout")
+
+	assert.True(t, fitz.IsRetryable(err))
+}
+
+func TestShouldClassifyRetryableGivenRPCWorkerNotFoundWhenCallErrorEvaluated(t *testing.T) {
+	err := coreerrors.NewDomainError(fitz.ErrCodeRpcWorkerNotFound, "rpc worker not found")
+
+	assert.True(t, fitz.IsRetryable(err))
+}
+
+func TestShouldClassifyFatalGivenRPCUnauthorizedWhenCallErrorEvaluated(t *testing.T) {
+	err := coreerrors.NewDomainError(uint32(unauthorizedRPC), "rpc unauthorized")
+
+	assert.False(t, fitz.IsRetryable(err))
 }
