@@ -60,13 +60,14 @@ func TestShouldValidateQueueRouteShapesGivenMethodSpecificHelpers(t *testing.T) 
 
 func TestShouldValidateNoticeRouteShapesGivenPublishAndSubscribe(t *testing.T) {
 	require.NoError(t, ValidateFixedRoute("notice://realm/area/resource", "notice", 3))
-	require.NoError(t, ValidateSelectorRoute("notice://realm/area/resource", "notice", 3, true))
-	require.NoError(t, ValidateSelectorRoute("notice://realm/area/*", "notice", 3, true))
-	require.NoError(t, ValidateSelectorRoute("notice://realm/*/*", "notice", 3, true))
+	require.NoError(t, ValidateNoticeSelector("notice://realm/area/resource"))
+	require.NoError(t, ValidateNoticeSelector("notice://realm/area/*"))
+	require.NoError(t, ValidateNoticeSelector("notice://realm/*/*"))
+	require.NoError(t, ValidateNoticeSelector("notice://realm/**"))
 
 	require.ErrorIs(t, ValidateFixedRoute("notice://realm/area/*", "notice", 3), ErrInvalidRouteShape)
-	require.ErrorIs(t, ValidateSelectorRoute("notice://realm/**", "notice", 3, true), ErrInvalidRouteShape)
-	require.ErrorIs(t, ValidateSelectorRoute("notice://realm/*/resource", "notice", 3, true), ErrInvalidRouteShape)
+	require.ErrorIs(t, ValidateNoticeSelector("notice://realm/*/resource"), ErrInvalidRouteShape)
+	require.ErrorIs(t, ValidateNoticeSelector("notice://*/**"), ErrInvalidRouteShape)
 }
 
 func TestShouldValidateStreamRouteShapesGivenMethodSpecificHelpers(t *testing.T) {

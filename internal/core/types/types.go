@@ -99,6 +99,19 @@ func ValidateSelectorRoute(route string, expectedScheme string, segmentCount int
 	return invalidRoute("wildcard placement not allowed for this method")
 }
 
+// ValidateNoticeSelector validates exact and wildcard Notice subscription forms,
+// including the canonical recursive notice://realm/** selector.
+func ValidateNoticeSelector(route string) error {
+	shape, err := scanRoute(route, "notice")
+	if err != nil {
+		return err
+	}
+	if shape.segmentCount == 2 && shape.wildcardIndex == 1 && shape.hasDoubleWildcard {
+		return nil
+	}
+	return ValidateSelectorRoute(route, "notice", 3, true)
+}
+
 // ValidateScheduleRoute validates that a schedule route is an exact
 // schedule://{realm}/{area}/{resource}/{operation} identifier.
 func ValidateScheduleRoute(route string) error {

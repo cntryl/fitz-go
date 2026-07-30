@@ -147,7 +147,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHa
 	if log := c.conn.Logger(); log != nil {
 		log.DebugContext(ctx, "notice.Subscribe", "pattern", pattern)
 	}
-	if err := types.ValidateSelectorRoute(pattern, "notice", 3, true); err != nil {
+	if err := types.ValidateNoticeSelector(pattern); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)

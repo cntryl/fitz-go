@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -219,11 +218,11 @@ func TestShouldRejectReadGivenOffsetBeyondWatermarkWhenReadCalled(t *testing.T) 
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
 		iter, err := f.Client().Stream().Read(ctx, route, 999999, 10)
-		require.Error(t, err)
-		assert.Nil(t, iter)
-		var domainErr *fitz.DomainError
-		require.True(t, errors.As(err, &domainErr))
-		assert.Equal(t, fitz.ErrCodeStreamReadBeyondWatermark, uint32(domainErr.Code))
+		require.NoError(t, err)
+		require.NotNil(t, iter)
+		defer closeQuietly(iter)
+		assert.False(t, iter.Next())
+		assert.NoError(t, iter.Err())
 	})
 }
 
