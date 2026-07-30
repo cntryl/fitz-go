@@ -610,33 +610,34 @@ func TestShouldPreserveResponseRoutingGivenConcurrentSameTypeRequestsWhenSendReq
 	assert.Equal(t, "resp:second", got["second"].resp)
 }
 
-func TestShouldClassifyRetryableErrorGivenErrorTypeWhenIsTransientRetryableCalled(t *testing.T) {
-	t.Run("context deadline is retryable", func(t *testing.T) {
-		assert.True(t, connection.IsTransientRetryable(context.DeadlineExceeded))
-	})
+func TestShouldClassifyRetryableGivenDeadlineExceededWhenRetryPolicyEvaluated(t *testing.T) {
+	assert.True(t, connection.IsTransientRetryable(context.DeadlineExceeded))
+}
 
-	t.Run("connection closed is retryable", func(t *testing.T) {
-		assert.True(t, connection.IsTransientRetryable(connection.ErrConnectionClosed))
-	})
+func TestShouldClassifyRetryableGivenConnectionClosedWhenRetryPolicyEvaluated(t *testing.T) {
+	assert.True(t, connection.IsTransientRetryable(connection.ErrConnectionClosed))
+}
 
-	t.Run("transport error is retryable", func(t *testing.T) {
-		transportErr := &transport.TransportError{Op: "read", Cause: errors.New("socket")}
-		assert.True(t, connection.IsTransientRetryable(transportErr))
-	})
+func TestShouldClassifyRetryableGivenTransportErrorWhenRetryPolicyEvaluated(t *testing.T) {
+	transportErr := &transport.TransportError{Op: "read", Cause: errors.New("socket")}
 
-	t.Run("retryable domain error is retryable", func(t *testing.T) {
-		err := coreerrors.NewDomainError(coreerrors.KvIsolationConflict, "isolation conflict")
-		assert.True(t, connection.IsTransientRetryable(err))
-	})
+	assert.True(t, connection.IsTransientRetryable(transportErr))
+}
 
-	t.Run("non-retryable domain error is not retryable", func(t *testing.T) {
-		err := coreerrors.NewDomainError(coreerrors.KvInvalidMode, "invalid mode")
-		assert.False(t, connection.IsTransientRetryable(err))
-	})
+func TestShouldClassifyRetryableGivenIsolationConflictWhenRetryPolicyEvaluated(t *testing.T) {
+	err := coreerrors.NewDomainError(coreerrors.KvIsolationConflict, "isolation conflict")
 
-	t.Run("nil is not retryable", func(t *testing.T) {
-		assert.False(t, connection.IsTransientRetryable(nil))
-	})
+	assert.True(t, connection.IsTransientRetryable(err))
+}
+
+func TestShouldClassifyFatalGivenInvalidModeWhenRetryPolicyEvaluated(t *testing.T) {
+	err := coreerrors.NewDomainError(coreerrors.KvInvalidMode, "invalid mode")
+
+	assert.False(t, connection.IsTransientRetryable(err))
+}
+
+func TestShouldClassifyFatalGivenNilErrorWhenRetryPolicyEvaluated(t *testing.T) {
+	assert.False(t, connection.IsTransientRetryable(nil))
 }
 
 func TestShouldStopRetryingGivenNonRetryableErrorWhenRunWithRetryCalled(t *testing.T) {

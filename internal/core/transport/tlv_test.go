@@ -46,7 +46,7 @@ func TestShouldDecodeUint64AndStringGivenEncodedTLVWhenDecoded(t *testing.T) {
 	require.Equal(t, "route1", r)
 }
 
-func TestShouldReturnErrorGivenTruncatedTLVWhenDecoding(t *testing.T) {
+func TestShouldRejectTruncatedTLVValueGivenIncompleteValueWhenDecoding(t *testing.T) {
 	// Arrange
 	b := []byte{TagRoute, 0x00, 0x05, 'a', 'b'}
 
@@ -54,7 +54,7 @@ func TestShouldReturnErrorGivenTruncatedTLVWhenDecoding(t *testing.T) {
 	_, err := NewTLVDecoder(b)
 
 	// Assert
-	require.Error(t, err)
+	require.EqualError(t, err, "truncated TLV: value exceeds remaining bytes")
 }
 
 func TestShouldReturnErrorGivenDuplicateTagWhenAddTagCalled(t *testing.T) {
