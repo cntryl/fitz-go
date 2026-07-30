@@ -168,7 +168,7 @@ func TestShouldRejectWildcardSubscribeGivenClientValidationWhenSubscribeCalled(t
 	})
 }
 
-func TestShouldDeliverScheduleNotificationGivenLiveBrokerWhenScheduleFires(t *testing.T) {
+func TestShouldFireEveryMinuteGivenWildcardCronWhenTimeAdvances(t *testing.T) {
 	f := fixture.NewTestFixture(t, fixture.TransportTCP)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

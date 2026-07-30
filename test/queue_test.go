@@ -206,7 +206,7 @@ func TestShouldRejectCompleteGivenExpiredLeaseWhenCompleteCalled(t *testing.T) {
 	})
 }
 
-func TestShouldReturnEmptyGivenNoMessagesWhenReceiveCalled(t *testing.T) {
+func TestShouldReturnEmptyGivenEmptyQueueWhenReserveCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

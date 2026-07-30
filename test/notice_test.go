@@ -155,3 +155,87 @@ func TestShouldMatchWildcardGivenPatternSubscriptionWhenPublishToConcreteRoute(t
 		}
 	})
 }
+
+func TestShouldNotMatchSingleStarGivenDifferentAreaWhenPublishCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrFail(ctx)
+		realm := f.UniqueRealm()
+		pattern := "notice://" + realm + "/expected/*"
+		concrete := "notice://" + realm + "/other/events"
+		received := make(chan fitz.NoticeMsg, 1)
+		sub, err := f.Client().Notice().Subscribe(ctx, pattern, func(_ context.Context, msg fitz.NoticeMsg) error {
+			received <- msg
+			return nil
+		})
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+
+		require.NoError(t, f.Client().Notice().Publish(ctx, concrete, []byte("single-star")))
+
+		select {
+		case msg := <-received:
+			t.Fatalf("single-star subscription unexpectedly matched %s", msg.Route)
+		case <-time.After(300 * time.Millisecond):
+		}
+	})
+}
+
+func TestShouldMatchDoubleStarGivenDifferentAreaWhenPublishCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrFail(ctx)
+		realm := f.UniqueRealm()
+		pattern := "notice://" + realm + "/**"
+		concrete := "notice://" + realm + "/other/events"
+		received := make(chan fitz.NoticeMsg, 1)
+		sub, err := f.Client().Notice().Subscribe(ctx, pattern, func(_ context.Context, msg fitz.NoticeMsg) error {
+			received <- msg
+			return nil
+		})
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+
+		require.NoError(t, f.Client().Notice().Publish(ctx, concrete, []byte("double-star")))
+
+		select {
+		case msg := <-received:
+			assert.Equal(t, concrete, msg.Route)
+		case <-time.After(5 * time.Second):
+			t.Fatal("double-star subscription did not match across areas")
+		}
+	})
+}
+
+func TestShouldIsolateRealmsGivenStagingSubscriptionWhenProdPublishCalled(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrFail(ctx)
+		stagingPattern := "notice://" + f.UniqueRealm() + "/**"
+		prodRoute := f.UniqueRoute("notice")
+		received := make(chan fitz.NoticeMsg, 1)
+		sub, err := f.Client().Notice().Subscribe(ctx, stagingPattern, func(_ context.Context, msg fitz.NoticeMsg) error {
+			received <- msg
+			return nil
+		})
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+
+		require.NoError(t, f.Client().Notice().Publish(ctx, prodRoute, []byte("prod")))
+
+		select {
+		case msg := <-received:
+			t.Fatalf("staging subscription unexpectedly received prod route %s", msg.Route)
+		case <-time.After(300 * time.Millisecond):
+		}
+	})
+}

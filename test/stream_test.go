@@ -203,7 +203,7 @@ func TestShouldGetMetadataGivenExistingStreamWhenMetadataCalled(t *testing.T) {
 	})
 }
 
-func TestShouldRejectReadGivenOffsetBeyondWatermarkWhenConsumeCalled(t *testing.T) {
+func TestShouldReturnEmptyGivenOffsetBeyondWatermarkWhenReadCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -218,17 +218,11 @@ func TestShouldRejectReadGivenOffsetBeyondWatermarkWhenConsumeCalled(t *testing.
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
 		iter, err := f.Client().Stream().Read(ctx, route, 999999, 10)
-		if err != nil {
-			assert.Error(t, err)
-			return
-		}
+		require.NoError(t, err)
+		require.NotNil(t, iter)
 		defer closeQuietly(iter)
-
-		for iter.Next() {
-		}
-		if iter.Err() != nil {
-			assert.Error(t, iter.Err())
-		}
+		assert.False(t, iter.Next())
+		assert.NoError(t, iter.Err())
 	})
 }
 
