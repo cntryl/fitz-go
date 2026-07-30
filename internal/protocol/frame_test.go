@@ -203,31 +203,36 @@ func TestShouldRoundTripFrameGivenEncodedPayloadWhenDecodeFrameCalled(t *testing
 	})
 }
 
-func TestShouldRejectFrameGivenTruncatedDataWhenDecodeFrameCalled(t *testing.T) {
-	t.Run("truncated in message type", func(t *testing.T) {
-		data := []byte{0xFF}
-		_, _, err := DecodeFrame(data)
-		require.Error(t, err)
-	})
+func TestShouldRejectTruncatedMessageTypeGivenIncompleteEscapeWhenDecodeFrameCalled(t *testing.T) {
+	data := []byte{0xFF}
 
-	t.Run("truncated in length field", func(t *testing.T) {
-		data := []byte{0x64, 0x00}
-		_, _, err := DecodeFrame(data)
-		require.Error(t, err)
-	})
+	_, _, err := DecodeFrame(data)
 
-	t.Run("truncated in payload", func(t *testing.T) {
-		data := []byte{0x64, 0x00, 0x10} // Says 16 bytes payload but only 0
-		_, _, err := DecodeFrame(data)
-		require.Error(t, err)
-	})
+	require.EqualError(t, err, "decode message type: insufficient data for escaped message type")
 }
 
-func TestShouldRejectFrameGivenTrailingBytesWhenDecodeFrameCalled(t *testing.T) {
+func TestShouldRejectTruncatedFrameGivenIncompleteLengthWhenDecodeFrameCalled(t *testing.T) {
+	data := []byte{0x64, 0x00}
+
+	_, _, err := DecodeFrame(data)
+
+	require.EqualError(t, err, "insufficient data for length field")
+}
+
+func TestShouldRejectTruncatedFrameGivenIncompletePayloadWhenDecodeFrameCalled(t *testing.T) {
+	data := []byte{0x64, 0x00, 0x10}
+
+	_, _, err := DecodeFrame(data)
+
+	require.EqualError(t, err, "insufficient data for payload: need 16, have 0")
+}
+
+func TestShouldRejectTrailingBytesGivenExtraFrameDataWhenDecodeFrameCalled(t *testing.T) {
 	encoded := append(EncodeFrame(100, []byte("hello")), 0x00)
+
 	_, _, err := DecodeFrame(encoded)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "trailing")
+
+	require.EqualError(t, err, "unexpected trailing bytes after frame payload")
 }
 
 func TestShouldHandleMaxSizePayloadGivenExactLimitWhenEncodeFrameCalled(t *testing.T) {
@@ -247,11 +252,11 @@ func TestShouldHandleMaxSizePayloadGivenExactLimitWhenEncodeFrameCalled(t *testi
 }
 
 func TestShouldRejectOversizePayloadGivenPayloadAboveLimitWhenEncodeFrameCalled(t *testing.T) {
-	// Arrange
 	payload := make([]byte, MaxPayloadSize+1)
 
-	// Act / Assert
-	assert.Nil(t, EncodeFrame(100, payload))
+	encoded := EncodeFrame(100, payload)
+
+	assert.Nil(t, encoded)
 }
 
 func TestShouldPreserveBinaryDataGivenFullByteRangeWhenDecodeFrameCalled(t *testing.T) {
