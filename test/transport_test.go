@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestShouldConnectViaTCPGivenValidAddressWhenTCPTransportUsed(t *testing.T) {
+func TestShouldAcceptAnonymousAccessGivenAuthDisabledWhenTCPConnectCalled(t *testing.T) {
 	f := fixture.NewTestFixture(t, fixture.TransportTCP)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -25,7 +26,7 @@ func TestShouldConnectViaTCPGivenValidAddressWhenTCPTransportUsed(t *testing.T) 
 	require.NotNil(t, f.Client())
 }
 
-func TestShouldConnectViaWebSocketGivenValidAddressWhenWebSocketTransportUsed(t *testing.T) {
+func TestShouldAcceptAnonymousAccessGivenAuthDisabledWhenWebSocketConnectCalled(t *testing.T) {
 	f := fixture.NewTestFixture(t, fixture.TransportWebSocket)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -33,14 +34,24 @@ func TestShouldConnectViaWebSocketGivenValidAddressWhenWebSocketTransportUsed(t 
 	require.NotNil(t, f.Client())
 }
 
-func TestShouldAuthenticateGivenValidJWTWhenAuthEnabledBrokerConfigured(t *testing.T) {
-	fixture.RunWithTransportsOnly(t, func(t *testing.T, transportType fixture.TransportType) {
-		f := fixture.NewTestFixture(t, transportType)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		f.ConnectWithAuthOrFail(ctx, fixture.AuthModeValidJWT)
-		require.NotNil(t, f.Client())
-	})
+func TestShouldConnectGivenValidJWTWhenTCPConnectSent(t *testing.T) {
+	f := fixture.NewTestFixture(t, fixture.TransportTCP)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	f.ConnectWithAuthOrFail(ctx, fixture.AuthModeValidJWT)
+
+	require.NotNil(t, f.Client())
+}
+
+func TestShouldConnectGivenValidJWTWhenWebSocketConnectSent(t *testing.T) {
+	f := fixture.NewTestFixture(t, fixture.TransportWebSocket)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	f.ConnectWithAuthOrFail(ctx, fixture.AuthModeValidJWT)
+
+	require.NotNil(t, f.Client())
 }
 
 func TestShouldConnectGivenJWTWithoutSchedulePermissionWhenConnectCalled(t *testing.T) {
@@ -104,6 +115,30 @@ func TestShouldRejectInvalidSignatureJWTGivenAuthEnabledBrokerConfiguredWhenConn
 
 		err := f.Connect(ctx)
 		require.Error(t, err)
+	})
+}
+
+func TestShouldNotRetryGivenAuthenticationRejectionWhenReconnectEnabled(t *testing.T) {
+	fixture.RunWithTransportsOnly(t, func(t *testing.T, transportType fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transportType)
+		f.SetAuthMode(fixture.AuthModeInvalidSignature)
+		var reconnectAttempts atomic.Int32
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := f.ConnectWithOptions(
+			ctx,
+			fitz.WithReconnect(true, 10*time.Millisecond, 3),
+			fitz.WithLifecycleHandler(func(event fitz.LifecycleEvent) {
+				if event.Event == "reconnect_start" {
+					reconnectAttempts.Add(1)
+				}
+			}),
+		)
+
+		require.Error(t, err)
+		time.Sleep(50 * time.Millisecond)
+		assert.Equal(t, int32(0), reconnectAttempts.Load())
 	})
 }
 
