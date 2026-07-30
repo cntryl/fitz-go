@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -247,6 +248,49 @@ func TestShouldClosePendingRPCsGivenClientShutdownWhenMonitorConnectionEnds(t *t
 	case <-time.After(time.Second):
 		t.Fatal("monitorConnection did not return during client shutdown")
 	}
+}
+
+func TestShouldStopReconnectGivenCloseDuringBackoffWhenCloseCalled(t *testing.T) {
+	originalDialTCP := dialTCPTransport
+	originalDialWS := dialWebSocketTransport
+	defer func() {
+		dialTCPTransport = originalDialTCP
+		dialWebSocketTransport = originalDialWS
+	}()
+
+	firstAttempt := make(chan struct{})
+	var attempts atomic.Int32
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		if attempts.Add(1) == 1 {
+			close(firstAttempt)
+		}
+		return nil, errors.New("broker unavailable")
+	}
+
+	c := NewClient("localhost:4091", nil)
+	c.config.ReconnectBackoff = time.Second
+	c.config.ReconnectMaxDelay = time.Second
+	c.config.MaxReconnects = 0
+	done := make(chan struct{})
+	go func() {
+		c.beginReconnect(connection.ErrConnectionClosed)
+		close(done)
+	}()
+
+	select {
+	case <-firstAttempt:
+	case <-time.After(time.Second):
+		t.Fatal("first reconnect attempt did not start")
+	}
+	require.NoError(t, c.Close())
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect loop did not stop after close")
+	}
+	assert.Equal(t, int32(1), attempts.Load())
+	assert.False(t, c.IsReconnecting())
 }
 
 func TestShouldAllowManualReconnectGivenConnectionLossWhenReconnectDisabled(t *testing.T) {
