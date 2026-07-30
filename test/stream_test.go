@@ -203,7 +203,7 @@ func TestShouldGetMetadataGivenExistingStreamWhenMetadataCalled(t *testing.T) {
 	})
 }
 
-func TestShouldRejectReadGivenOffsetBeyondWatermarkWhenReadCalled(t *testing.T) {
+func TestShouldReturnEmptyGivenOffsetBeyondWatermarkWhenReadCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
