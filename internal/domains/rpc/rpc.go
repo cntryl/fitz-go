@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
@@ -321,11 +323,9 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 	c.mu.Lock()
 	handler, ok := c.workers[route]
 	if !ok {
-		for pattern, candidate := range c.workers {
-			if types.RouteMatchesPattern(route, pattern) {
-				handler, ok = candidate, true
-				break
-			}
+		patterns := matchingWorkerPatterns(route, c.workers)
+		if len(patterns) > 0 {
+			handler, ok = c.workers[patterns[0]], true
 		}
 	}
 	c.mu.Unlock()
@@ -365,6 +365,56 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 			log.Warn("rpc worker handler dropped", "route", route, "reason", "async handler queue full")
 		}
 	}
+}
+
+type workerPatternSpecificity struct {
+	literals   int
+	singleStar int
+	doubleStar int
+	depth      int
+}
+
+func matchingWorkerPatterns(route string, workers map[string]RPCHandler) []string {
+	patterns := make([]string, 0, len(workers))
+	for pattern := range workers {
+		if types.RouteMatchesPattern(route, pattern) {
+			patterns = append(patterns, pattern)
+		}
+	}
+	sort.Slice(patterns, func(i, j int) bool {
+		left, right := scoreWorkerPattern(patterns[i]), scoreWorkerPattern(patterns[j])
+		if left.literals != right.literals {
+			return left.literals > right.literals
+		}
+		if left.singleStar != right.singleStar {
+			return left.singleStar > right.singleStar
+		}
+		if left.doubleStar != right.doubleStar {
+			return left.doubleStar < right.doubleStar
+		}
+		if left.depth != right.depth {
+			return left.depth > right.depth
+		}
+		return patterns[i] < patterns[j]
+	})
+	return patterns
+}
+
+func scoreWorkerPattern(pattern string) workerPatternSpecificity {
+	_, path, _ := strings.Cut(pattern, "://")
+	segments := strings.Split(path, "/")
+	score := workerPatternSpecificity{depth: len(segments)}
+	for _, segment := range segments {
+		switch segment {
+		case "*":
+			score.singleStar++
+		case "**":
+			score.doubleStar++
+		default:
+			score.literals++
+		}
+	}
+	return score
 }
 
 // RegisterWorker per CLIENT_SPEC.md:

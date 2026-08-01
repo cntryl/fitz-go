@@ -3,7 +3,6 @@ package fitz
 import (
 	"context"
 
-	coreiter "github.com/cntryl/fitz-go/internal/core/iter"
 	internalstream "github.com/cntryl/fitz-go/internal/domains/stream"
 )
 
@@ -206,68 +205,26 @@ func (c *streamClient) ReadWhenCommitted(ctx context.Context, route string, from
 	if batchSize == 0 {
 		batchSize = 1
 	}
-	helperCtx, cancel := context.WithCancel(ctx)
-	gate := NewWakeGate()
-	subscription, err := c.Subscribe(helperCtx, route, func(context.Context, StreamCommitNotification) error {
-		gate.Wake()
-		return nil
-	})
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	batches := make(chan []StreamRecord)
-	errCh := make(chan error, 1)
-	go func() {
-		defer close(batches)
-		defer close(errCh)
-		defer subscription.Unsubscribe()
-
-		offset := fromOffset
-		var version uint64
-		for {
-			page, err := c.ReadPage(helperCtx, route, offset, batchSize, opts...)
+	offset := fromOffset
+	return startManagedPollingIterator(ctx,
+		func(helperCtx context.Context, wake func()) (func(), error) {
+			subscription, err := c.Subscribe(helperCtx, route, func(context.Context, StreamCommitNotification) error { wake(); return nil })
 			if err != nil {
-				errCh <- err
-				return
+				return nil, err
 			}
-			if page == nil {
-				version, err = gate.WaitAfter(helperCtx, version)
-				if err != nil {
-					errCh <- err
-					return
-				}
-				continue
+			return subscription.Unsubscribe, nil
+		},
+		func(helperCtx context.Context) (managedPollResult[[]StreamRecord], error) {
+			page, err := c.ReadPage(helperCtx, route, offset, batchSize, opts...)
+			if err != nil || page == nil {
+				return managedPollResult[[]StreamRecord]{}, err
 			}
 			records := streamRecordsFromPage(page)
 			if len(page.Items) > 0 {
 				offset = page.Cursor.LastResourceOffset + 1
 			}
-			if len(records) > 0 {
-				select {
-				case batches <- records:
-					if page.Cursor.HasMore {
-						continue
-					}
-				case <-helperCtx.Done():
-					errCh <- helperCtx.Err()
-					return
-				}
-			}
-			if page.Cursor.HasMore {
-				continue
-			}
-
-			version, err = gate.WaitAfter(helperCtx, version)
-			if err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	return coreiter.NewChannelIterator[[]StreamRecord](batches, errCh, cancel), nil
+			return managedPollResult[[]StreamRecord]{value: records, emit: len(records) > 0, pollAgain: page.Cursor.HasMore}, nil
+		})
 }
 
 func streamRecordsFromPage(page *StreamReadPage) []StreamRecord {

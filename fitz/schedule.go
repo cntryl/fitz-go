@@ -3,7 +3,6 @@ package fitz
 import (
 	"context"
 
-	coreiter "github.com/cntryl/fitz-go/internal/core/iter"
 	internalschedule "github.com/cntryl/fitz-go/internal/domains/schedule"
 )
 
@@ -108,34 +107,16 @@ func (c *scheduleClient) Subscribe(ctx context.Context, pattern string, handler 
 
 // WaitForNotifications returns an iterator of schedule fire notifications.
 func (c *scheduleClient) WaitForNotifications(ctx context.Context, route string) (Iterator[ScheduleNotification], error) {
-	helperCtx, cancel := context.WithCancel(ctx)
-	notifications := make(chan ScheduleNotification, 16)
-	errCh := make(chan error, 1)
-
-	sub, err := c.Subscribe(helperCtx, route, func(handlerCtx context.Context, notification ScheduleNotification) error {
-		select {
-		case notifications <- notification:
-			return nil
-		case <-handlerCtx.Done():
-			return handlerCtx.Err()
-		case <-helperCtx.Done():
-			return helperCtx.Err()
-		}
-	})
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	go func() {
-		<-helperCtx.Done()
-		sub.Unsubscribe()
-		close(notifications)
-		errCh <- helperCtx.Err()
-		close(errCh)
-	}()
-
-	return coreiter.NewChannelIterator[ScheduleNotification](notifications, errCh, cancel), nil
+	return startManagedPushIterator(ctx, 16,
+		func(helperCtx context.Context, emit func(ScheduleNotification) error) (func(), error) {
+			subscription, err := c.Subscribe(helperCtx, route, func(_ context.Context, notification ScheduleNotification) error {
+				return emit(notification)
+			})
+			if err != nil {
+				return nil, err
+			}
+			return subscription.Unsubscribe, nil
+		})
 }
 
 var (

@@ -15,6 +15,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestShouldOrderMatchingWorkersBySpecificityThenLexically(t *testing.T) {
+	// Arrange
+	workers := map[string]RPCHandler{
+		"rpc://realm/**":            nil,
+		"rpc://realm/*/*":           nil,
+		"rpc://realm/area/*":        nil,
+		"rpc://realm/*/resource":    nil,
+		"rpc://realm/area/resource": nil,
+		"rpc://realm/area/**":       nil,
+		"rpc://realm/**/resource":   nil,
+	}
+
+	// Act
+	patterns := matchingWorkerPatterns("rpc://realm/area/resource", workers)
+
+	// Assert
+	require.Equal(t, []string{
+		"rpc://realm/area/resource",
+		"rpc://realm/*/resource",
+		"rpc://realm/area/*",
+		"rpc://realm/**/resource",
+		"rpc://realm/area/**",
+		"rpc://realm/*/*",
+		"rpc://realm/**",
+	}, patterns)
+}
+
 type scriptedRPCRestoreTransport struct {
 	mu      sync.Mutex
 	written [][]byte

@@ -1,9 +1,9 @@
 # fitz-go Grading Report
 
 **Assessed against:** [client-requirements.md](../../fitz/docs/clients/client-requirements.md)  
-**Assessment date:** May 24, 2026  
+**Assessment date:** August 1, 2026
 **Assessed commit:** main  
-**Conformance results:** `test/conformance/conformance-results.json` (tcp/anonymous, run 2026-05-23)
+**Conformance results:** fresh TCP and WebSocket artifacts under `test/conformance/` for anonymous and valid-JWT modes
 
 ---
 

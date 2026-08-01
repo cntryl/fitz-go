@@ -103,6 +103,17 @@ type leaseClient struct {
 	inner internallease.Client
 }
 
+type callbackOutcome struct {
+	err      error
+	panicVal any
+}
+
+type managedLeaseOutcome struct {
+	callbackErr   error
+	callbackPanic any
+	leaseLoss     error
+}
+
 // Acquire attempts to acquire a lease for the route.
 func (c *leaseClient) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Lease, error) {
 	lease, err := c.inner.Acquire(ctx, route, ttlSecs)
@@ -127,33 +138,38 @@ func (c *leaseClient) WithLease(ctx context.Context, route string, ttlSecs uint6
 		option(&options)
 	}
 
-	var lease *Lease
+	lease, err := c.acquireManagedLease(ctx, route, ttlSecs, options.wait)
+	if err != nil {
+		return err
+	}
+	outcome := c.superviseManagedLease(ctx, lease, ttlSecs, callback)
+	return finalizeManagedLease(ctx, lease, outcome)
+}
+
+func (c *leaseClient) acquireManagedLease(ctx context.Context, route string, ttlSecs uint64, wait bool) (*Lease, error) {
 	delay := 50 * time.Millisecond
 	for {
-		var err error
-		lease, err = c.Acquire(ctx, route, ttlSecs)
+		lease, err := c.Acquire(ctx, route, ttlSecs)
 		if err == nil {
-			break
+			return lease, nil
 		}
-		if !options.wait || (!errors.Is(err, ErrLeaseHeld) && !errors.Is(err, ErrLeaseQueued)) {
-			return err
+		if !wait || (!errors.Is(err, ErrLeaseHeld) && !errors.Is(err, ErrLeaseQueued)) {
+			return nil, err
 		}
 		timer := time.NewTimer(time.Duration(rand.Int64N(int64(delay) + 1)))
 		select {
 		case <-ctx.Done():
 			stopAndDrain(timer)
-			return context.Cause(ctx)
+			return nil, context.Cause(ctx)
 		case <-timer.C:
 		}
 		delay = min(delay*2, time.Second)
 	}
+}
 
+func (c *leaseClient) superviseManagedLease(ctx context.Context, lease *Lease, ttlSecs uint64, callback func(context.Context) error) managedLeaseOutcome {
 	callbackCtx, cancelCallback := context.WithCancelCause(ctx)
 	defer cancelCallback(nil)
-	type callbackOutcome struct {
-		err      error
-		panicVal any
-	}
 	callbackResult := make(chan callbackOutcome, 1)
 	go func() {
 		outcome := callbackOutcome{}
@@ -167,51 +183,49 @@ func (c *leaseClient) WithLease(ctx context.Context, route string, ttlSecs uint6
 	renewEvery := time.Duration(ttlSecs) * time.Second / 3
 	timer := time.NewTimer(renewEvery)
 	defer stopAndDrain(timer)
-	var callbackErr error
-	var callbackPanic any
-	var leaseLoss error
+	outcome := managedLeaseOutcome{}
 	parentDone := ctx.Done()
-	for callbackErr == nil && leaseLoss == nil {
+	for {
 		select {
-		case outcome := <-callbackResult:
-			callbackErr, callbackPanic = outcome.err, outcome.panicVal
-			goto completed
+		case callback := <-callbackResult:
+			outcome.callbackErr, outcome.callbackPanic = callback.err, callback.panicVal
+			return outcome
 		case <-parentDone:
 			cancelCallback(context.Cause(ctx))
 			parentDone = nil
 		case <-timer.C:
 			if _, err := lease.Extend(context.WithoutCancel(ctx), ttlSecs); err != nil {
-				leaseLoss = errors.Join(ErrLeaseLost, err)
-				cancelCallback(leaseLoss)
-				outcome := <-callbackResult
-				callbackErr, callbackPanic = outcome.err, outcome.panicVal
-				goto completed
+				outcome.leaseLoss = errors.Join(ErrLeaseLost, err)
+				cancelCallback(outcome.leaseLoss)
+				callback := <-callbackResult
+				outcome.callbackErr, outcome.callbackPanic = callback.err, callback.panicVal
+				return outcome
 			}
 			timer.Reset(renewEvery)
 		}
 	}
+}
 
-completed:
-	stopAndDrain(timer)
-	if leaseLoss != nil {
-		if callbackPanic != nil {
-			panic(callbackPanic)
+func finalizeManagedLease(ctx context.Context, lease *Lease, outcome managedLeaseOutcome) error {
+	if outcome.leaseLoss != nil {
+		if outcome.callbackPanic != nil {
+			panic(outcome.callbackPanic)
 		}
-		if callbackErr != nil && !errors.Is(callbackErr, context.Canceled) {
-			return errors.Join(leaseLoss, callbackErr)
+		if outcome.callbackErr != nil && !errors.Is(outcome.callbackErr, context.Canceled) {
+			return errors.Join(outcome.leaseLoss, outcome.callbackErr)
 		}
-		return leaseLoss
+		return outcome.leaseLoss
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	releaseErr := lease.Release(cleanupCtx)
 	cleanupCancel()
-	if callbackPanic != nil {
-		panic(callbackPanic)
+	if outcome.callbackPanic != nil {
+		panic(outcome.callbackPanic)
 	}
 	if ctx.Err() != nil {
-		return errors.Join(context.Cause(ctx), callbackErr, releaseErr)
+		return errors.Join(context.Cause(ctx), outcome.callbackErr, releaseErr)
 	}
-	return errors.Join(callbackErr, releaseErr)
+	return errors.Join(outcome.callbackErr, releaseErr)
 }
 
 func stopAndDrain(timer *time.Timer) {

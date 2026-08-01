@@ -3,7 +3,6 @@ package fitz
 import (
 	"context"
 
-	coreiter "github.com/cntryl/fitz-go/internal/core/iter"
 	internalqueue "github.com/cntryl/fitz-go/internal/domains/queue"
 )
 
@@ -143,50 +142,18 @@ func (c *queueClient) ReserveWhenAvailable(ctx context.Context, route string, le
 	if batchSize == 0 {
 		batchSize = 1
 	}
-	helperCtx, cancel := context.WithCancel(ctx)
-	gate := NewWakeGate()
-	subscription, err := c.Subscribe(helperCtx, route, func(context.Context, QueueAvailabilityNotification) error {
-		gate.Wake()
-		return nil
-	})
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	batches := make(chan []*QueueItem)
-	errCh := make(chan error, 1)
-	go func() {
-		defer close(batches)
-		defer close(errCh)
-		defer subscription.Unsubscribe()
-
-		var version uint64
-		for {
+	return startManagedPollingIterator(ctx,
+		func(helperCtx context.Context, wake func()) (func(), error) {
+			subscription, err := c.Subscribe(helperCtx, route, func(context.Context, QueueAvailabilityNotification) error { wake(); return nil })
+			if err != nil {
+				return nil, err
+			}
+			return subscription.Unsubscribe, nil
+		},
+		func(helperCtx context.Context) (managedPollResult[[]*QueueItem], error) {
 			reserved, err := c.Reserve(helperCtx, route, leaseSecs, batchSize)
-			if err != nil {
-				errCh <- err
-				return
-			}
-			if len(reserved) > 0 {
-				select {
-				case batches <- reserved:
-					continue
-				case <-helperCtx.Done():
-					errCh <- helperCtx.Err()
-					return
-				}
-			}
-
-			version, err = gate.WaitAfter(helperCtx, version)
-			if err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	return coreiter.NewChannelIterator[[]*QueueItem](batches, errCh, cancel), nil
+			return managedPollResult[[]*QueueItem]{value: reserved, emit: len(reserved) > 0, pollAgain: len(reserved) > 0}, err
+		})
 }
 
 func (c *queueClient) Subscribe(ctx context.Context, pattern string, handler QueueAvailabilityHandler) (*QueueSubscription, error) {

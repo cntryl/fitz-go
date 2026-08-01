@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Made overlapping local RPC worker selection deterministic: exact routes win,
+  followed by wildcard specificity and a lexical final tie-breaker.
+- Unified Queue, Stream, and Schedule iterator cancellation, wake, polling, and
+  cleanup internals without changing exported signatures or polling semantics.
+- Split managed Lease execution into acquisition, renewal supervision, and
+  release/error composition while preserving context causes and panic behavior.
 - Moved the broker-backed acceptance suite behind the `integration` build tag and split the release gate so the default `go test ./...` path stays fast while the broker matrix remains opt-in.
 
 ### Removed
