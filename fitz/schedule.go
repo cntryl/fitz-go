@@ -23,6 +23,7 @@ const (
 )
 
 type ScheduleNotification struct {
+	Route   string
 	Payload []byte
 }
 
@@ -97,7 +98,7 @@ func copyScheduleEntries(entries []internalschedule.ScheduleEntry) []ScheduleEnt
 // Subscribe registers a handler for schedule fire notifications.
 func (c *scheduleClient) Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error) {
 	sub, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notification internalschedule.Notification) error {
-		return handler(ctx, ScheduleNotification{Payload: notification.Payload})
+		return handler(ctx, ScheduleNotification{Route: notification.Route, Payload: notification.Payload})
 	})
 	if err != nil {
 		return nil, err

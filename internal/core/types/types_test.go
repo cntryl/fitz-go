@@ -141,3 +141,49 @@ func TestShouldValidateScheduleRouteShapesGivenConcreteAndSelectorContracts(t *t
 		require.ErrorIs(t, ValidateScheduleSelector(selector), ErrInvalidRouteShape, selector)
 	}
 }
+
+func TestShouldValidateRegistrationPatternsGivenSharedWildcardContract(t *testing.T) {
+	// Arrange
+	accepted := []string{
+		"queue://realm/area/resource",
+		"queue://realm/area/*",
+		"queue://realm/**",
+		"queue://*/area/resource",
+		"queue://**/resource",
+		"queue://realm/**/**",
+	}
+	rejected := []string{
+		"stream://realm/area/resource",
+		"queue://realm//resource",
+		"queue://realm/area/res*",
+		"queue://realm/area",
+		"queue://realm/area/resource/extra/**",
+	}
+
+	// Act and Assert
+	for _, pattern := range accepted {
+		require.NoError(t, ValidateRegistrationPattern(pattern, "queue", 3), pattern)
+	}
+	for _, pattern := range rejected {
+		require.ErrorIs(t, ValidateRegistrationPattern(pattern, "queue", 3), ErrInvalidRouteShape, pattern)
+	}
+}
+
+func TestShouldMatchConcreteRoutesGivenSharedWildcardContract(t *testing.T) {
+	// Arrange
+	cases := []struct {
+		route    string
+		pattern  string
+		expected bool
+	}{
+		{"rpc://acme/orders/v1/create", "rpc://*/orders/**", true},
+		{"rpc://acme/orders/create", "rpc://acme/**/**", true},
+		{"rpc://acme/create", "rpc://acme/**/orders", false},
+		{"queue://acme/app/jobs", "stream://**", false},
+	}
+
+	// Act and Assert
+	for _, testCase := range cases {
+		require.Equal(t, testCase.expected, RouteMatchesPattern(testCase.route, testCase.pattern))
+	}
+}

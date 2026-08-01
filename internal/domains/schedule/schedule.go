@@ -39,6 +39,7 @@ const (
 
 // Notification is the payload delivered when a schedule fires (SCHEDULE_NOTIFY 705).
 type Notification struct {
+	Route   string
 	Payload []byte
 }
 
@@ -101,12 +102,12 @@ func (c *client) initScheduleNotifyHandler() {
 	c.notifyHandlerInitOnce.Do(func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		c.currentConn().RegisterScheduleNotifyHandler(c.handleScheduleNotify)
+		c.currentConn().RegisterNotifyHandler(protocol.MessageTypeScheduleNotify, c.handleScheduleNotify)
 		c.notifyHandlerRegistered.Store(true)
 	})
 }
 
-func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
+func (c *client) handleScheduleNotify(subID uint64, route string, payload []byte) {
 	conn := c.currentConn()
 	handlers := c.subscriptions.Handlers(subID)
 	if len(handlers) == 0 {
@@ -116,6 +117,7 @@ func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
 	lifecycleCtx := conn.LifecycleContext()
 	for _, handler := range handlers {
 		msg := Notification{
+			Route:   route,
 			Payload: append([]byte(nil), payload...),
 		}
 		if !conn.LaunchAsyncHandler(lifecycleCtx, "fitz.schedule.handler", conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
@@ -126,7 +128,10 @@ func (c *client) handleScheduleNotify(subID uint64, payload []byte) {
 					log.Warn("schedule notify handler failed", "error", err)
 				}
 			}
-		}, trace.WithAttributes(attribute.Int64("fitz.subscription_id", int64(subID)))) {
+		}, trace.WithAttributes(
+			attribute.Int64("fitz.subscription_id", int64(subID)),
+			attribute.String("fitz.route", route),
+		)) {
 			if log := conn.Logger(); log != nil {
 				log.Warn("schedule notify handler dropped", "sub_id", subID, "reason", "async handler queue full")
 			}
@@ -405,7 +410,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Schedule
 		log.DebugContext(ctx, "schedule.Subscribe", "pattern", pattern)
 	}
 	c.initScheduleNotifyHandler()
-	if err := types.ValidateScheduleRoute(pattern); err != nil {
+	if err := types.ValidateRegistrationPattern(pattern, "schedule", 4); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid schedule route: %w", err)
@@ -452,7 +457,7 @@ func (c *client) ReplaceConnection(conn *connection.Connection) {
 	c.conn = conn
 	c.connMu.Unlock()
 	if c.notifyHandlerRegistered.Load() {
-		conn.RegisterScheduleNotifyHandler(c.handleScheduleNotify)
+		conn.RegisterNotifyHandler(protocol.MessageTypeScheduleNotify, c.handleScheduleNotify)
 	}
 }
 

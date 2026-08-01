@@ -24,6 +24,9 @@ const (
 	KvRealmMismatch       = 1008
 	KvBackendError        = 1009
 	KvTransactionAborted  = 1010
+	KvUnauthorized        = 1011
+	KvInvalidSubscription = 1012
+	KvSubscriptionLimit   = 1013
 
 	// Stream Domain (2000-2099)
 	StreamConcurrencyConflict = 2001
@@ -41,17 +44,21 @@ const (
 	NoticeTransportClosed   = 3004
 
 	// Queue Domain (4000-4099)
-	QueueInvalidToken    = 4001
-	QueueLeaseExpired    = 4002
-	QueueMessageNotFound = 4003
-	QueueNotFound        = 4004
-	QueueFull            = 4005 // Backpressure signal
+	QueueInvalidToken        = 4001
+	QueueLeaseExpired        = 4002
+	QueueMessageNotFound     = 4003
+	QueueNotFound            = 4004
+	QueueFull                = 4005 // Backpressure signal
+	QueueInvalidSubscription = 4010
+	QueueSubscriptionLimit   = 4011
 
 	// Lease Domain (5000-5099)
-	LeaseHeld         = 5001
-	LeaseInvalidFence = 5002
-	LeaseExpired      = 5003
-	LeaseNotFound     = 5004
+	LeaseHeld                     = 5001
+	LeaseInvalidFence             = 5002
+	LeaseExpired                  = 5003
+	LeaseNotFound                 = 5004
+	LeaseBadRequest               = 5008
+	LeaseInvalidSubscriptionRoute = 5010
 
 	// RPC Domain (6000-6099). 6004 = no workers for route or timeout before any reply (per CLIENT_ACCEPTANCE_CRITERIA).
 	RpcTimeout             = 6001
@@ -59,6 +66,8 @@ const (
 	RpcBackpressure        = 6003 // Backpressure signal
 	RpcRouteNotRegistered  = 6004
 	RpcCorrelationNotFound = 6005
+	RpcInvalidSubscription = 6012
+	RpcSubscriptionLimit   = 6013
 
 	// Schedule Domain (7000-7099)
 	ScheduleNotFound            = 7001
@@ -102,6 +111,12 @@ func (e ErrorCode) String() string {
 		return "backend_error"
 	case KvTransactionAborted:
 		return "transaction_aborted"
+	case KvUnauthorized:
+		return "kv_unauthorized"
+	case KvInvalidSubscription:
+		return "kv_invalid_subscription"
+	case KvSubscriptionLimit:
+		return "kv_subscription_limit"
 
 	// Stream errors
 	case StreamConcurrencyConflict:
@@ -140,6 +155,10 @@ func (e ErrorCode) String() string {
 		return "queue_not_found"
 	case QueueFull:
 		return "queue_full"
+	case QueueInvalidSubscription:
+		return "queue_invalid_subscription"
+	case QueueSubscriptionLimit:
+		return "queue_subscription_limit"
 
 	// Lease errors
 	case LeaseHeld:
@@ -150,6 +169,10 @@ func (e ErrorCode) String() string {
 		return "lease_expired"
 	case LeaseNotFound:
 		return "lease_not_found"
+	case LeaseBadRequest:
+		return "lease_bad_request"
+	case LeaseInvalidSubscriptionRoute:
+		return "lease_invalid_subscription_route"
 
 	// RPC errors
 	case RpcTimeout:
@@ -162,6 +185,10 @@ func (e ErrorCode) String() string {
 		return "rpc_route_not_registered"
 	case RpcCorrelationNotFound:
 		return "rpc_correlation_not_found"
+	case RpcInvalidSubscription:
+		return "rpc_invalid_subscription"
+	case RpcSubscriptionLimit:
+		return "rpc_subscription_limit"
 
 	// Schedule errors
 	case ScheduleNotFound:

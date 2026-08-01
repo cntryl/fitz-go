@@ -8,7 +8,10 @@ import (
 )
 
 type QueueAvailabilityNotification struct {
-	Route string
+	Route            string
+	ReadyMessages    uint64
+	DelayedMessages  uint64
+	InflightMessages uint64
 }
 
 type QueueAvailabilityHandler func(context.Context, QueueAvailabilityNotification) error
@@ -188,7 +191,12 @@ func (c *queueClient) ReserveWhenAvailable(ctx context.Context, route string, le
 
 func (c *queueClient) Subscribe(ctx context.Context, pattern string, handler QueueAvailabilityHandler) (*QueueSubscription, error) {
 	subscription, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notification internalqueue.AvailabilityNotification) error {
-		return handler(ctx, QueueAvailabilityNotification{Route: notification.Route})
+		return handler(ctx, QueueAvailabilityNotification{
+			Route:            notification.Route,
+			ReadyMessages:    notification.ReadyMessages,
+			DelayedMessages:  notification.DelayedMessages,
+			InflightMessages: notification.InflightMessages,
+		})
 	})
 	if err != nil {
 		return nil, err

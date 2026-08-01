@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // TokenProvider is a function that returns a JWT token for authentication.
@@ -153,16 +154,109 @@ func ValidateScheduleSelector(selector string) error {
 }
 
 type scannedRoute struct {
-	segmentCount       int
-	wildcardIndex      int
-	hasDoubleWildcard  bool
-	wildcardsAreSuffix bool
+	segmentCount        int
+	wildcardIndex       int
+	hasDoubleWildcard   bool
+	doubleWildcardCount int
+	wildcardsAreSuffix  bool
+}
+
+// ValidateRegistrationPattern validates the shared live-registration grammar.
+// A required segment count of zero keeps route depth flexible (Notice and RPC).
+func ValidateRegistrationPattern(route string, expectedScheme string, requiredSegments int) error {
+	shape, err := scanRoute(route, expectedScheme)
+	if err != nil {
+		return err
+	}
+	if requiredSegments < 0 {
+		return invalidRoute("required segment count cannot be negative")
+	}
+	if requiredSegments == 0 {
+		return nil
+	}
+	if shape.doubleWildcardCount == 0 {
+		if shape.segmentCount != requiredSegments {
+			return invalidRoute("pattern cannot match a %d-segment route", requiredSegments)
+		}
+		return nil
+	}
+	minimumSegments := shape.segmentCount - shape.doubleWildcardCount
+	if minimumSegments > requiredSegments {
+		return invalidRoute("pattern cannot match a %d-segment route", requiredSegments)
+	}
+	return nil
+}
+
+// RouteMatchesPattern reports whether a validated concrete route matches a
+// validated registration pattern using whole-segment * and ** semantics.
+func RouteMatchesPattern(route string, pattern string) bool {
+	routeScheme, _, routeOK := strings.Cut(route, "://")
+	patternScheme, _, patternOK := strings.Cut(pattern, "://")
+	if !routeOK || !patternOK || routeScheme != patternScheme {
+		return false
+	}
+	routeSegments := splitRouteSegments(route)
+	patternSegments := splitRouteSegments(pattern)
+	if len(routeSegments) == 0 || len(patternSegments) == 0 {
+		return false
+	}
+
+	routeIndex, patternIndex := 0, 0
+	lastDoubleWildcard := -1
+	lastDoubleMatch := 0
+	for routeIndex < len(routeSegments) {
+		if patternIndex < len(patternSegments) && (patternSegments[patternIndex] == "*" || patternSegments[patternIndex] == routeSegments[routeIndex]) {
+			patternIndex++
+			routeIndex++
+			continue
+		}
+		if patternIndex < len(patternSegments) && patternSegments[patternIndex] == "**" {
+			lastDoubleWildcard = patternIndex
+			lastDoubleMatch = routeIndex
+			patternIndex++
+			continue
+		}
+		if lastDoubleWildcard < 0 {
+			return false
+		}
+		lastDoubleMatch++
+		routeIndex = lastDoubleMatch
+		patternIndex = lastDoubleWildcard + 1
+	}
+	for patternIndex < len(patternSegments) && patternSegments[patternIndex] == "**" {
+		patternIndex++
+	}
+	return patternIndex == len(patternSegments)
+}
+
+func splitRouteSegments(route string) []string {
+	for index := 0; index+2 < len(route); index++ {
+		if route[index:index+3] == "://" {
+			return splitSegments(route[index+3:])
+		}
+	}
+	return nil
+}
+
+func splitSegments(path string) []string {
+	segments := make([]string, 0, 4)
+	start := 0
+	for index := 0; index <= len(path); index++ {
+		if index == len(path) || path[index] == '/' {
+			segments = append(segments, path[start:index])
+			start = index + 1
+		}
+	}
+	return segments
 }
 
 // scanRoute validates a route in one pass without regular expressions,
 // split strings, or success-path heap allocation.
 func scanRoute(route string, expectedScheme string) (scannedRoute, error) {
 	shape := scannedRoute{wildcardIndex: -1, wildcardsAreSuffix: true}
+	if len(route) > 65_535 {
+		return shape, invalidRoute("route exceeds the 65,535-byte TLV value limit")
+	}
 	if expectedScheme == "" {
 		return shape, invalidRoute("expected scheme is empty")
 	}
@@ -199,6 +293,9 @@ func scanRoute(route string, expectedScheme string) (scannedRoute, error) {
 				shape.wildcardIndex = shape.segmentCount
 			}
 			shape.hasDoubleWildcard = shape.hasDoubleWildcard || doubleWildcard
+			if doubleWildcard {
+				shape.doubleWildcardCount++
+			}
 		}
 		shape.segmentCount++
 		segmentStart = index + 1

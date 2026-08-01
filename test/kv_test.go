@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,43 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestShouldDeliverConcreteRouteGivenWildcardKVSubscriptionWhenTransactionCommits(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		// Arrange
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		f.ConnectOrFail(ctx)
+		uniqueParts := strings.Split(strings.TrimPrefix(f.UniqueRoute("kv"), "kv://"), "/")
+		realm := uniqueParts[0]
+		uniqueArea := uniqueParts[len(uniqueParts)-1]
+		route := "kv://" + realm + "/" + uniqueArea + "/resource"
+		pattern := "kv://" + realm + "/" + uniqueArea + "/**"
+		received := make(chan fitz.KVChangeNotification, 1)
+		subscription, err := f.Client().KV().Subscribe(ctx, pattern, func(_ context.Context, notification fitz.KVChangeNotification) error {
+			received <- notification
+			return nil
+		})
+		require.NoError(t, err)
+		defer subscription.Unsubscribe()
+
+		// Act
+		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		require.NoError(t, err)
+		require.NoError(t, tx.Put(ctx, []byte("key"), []byte("value")))
+		require.NoError(t, tx.Commit(ctx))
+
+		// Assert
+		select {
+		case notification := <-received:
+			assert.Equal(t, route, notification.Route)
+			assert.Equal(t, uint64(1), notification.MutationCount)
+		case <-ctx.Done():
+			t.Fatal("KV change notification was not delivered")
+		}
+	})
+}
 
 func TestShouldOpenAndCommitTransactionGivenValidRouteWhenBeginCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {

@@ -52,9 +52,9 @@ Treat this report as the quality baseline for this repository.
 | Req ID | Tier | Grade | Finding |
 |--------|------|-------|---------|
 | REQ-API-001 | T0 | **PASS** | All 7 domain accessors present: `client.KV()`, `.Queue()`, `.Notice()`, `.RPC()`, `.Lease()`, `.Stream()`, `.Schedule()`. |
-| REQ-API-002 | T0 | **PASS** | All operations per domain are present. KV: Begin/Get/Put/Insert/Delete/DeleteRange/Scan/Commit/Rollback. Queue: Enqueue/Reserve/Extend/Complete. Notice: Publish/Subscribe/Unsubscribe. RPC: RegisterWorker/Call. Lease: Acquire/Extend/Release/Query. Stream: Begin/Append/Commit/Rollback/Read/Peek/Metadata/Subscribe/Unsubscribe. Schedule: Create/Cancel/List/ListBySelector/Subscribe/Unsubscribe. |
+| REQ-API-002 | T0 | **PASS** | All operations per domain are present. KV: Begin/Get/Put/Insert/Delete/DeleteRange/Scan/Subscribe/Unsubscribe/Commit/Rollback. Queue: Enqueue/Reserve/Extend/Complete. Notice: Publish/Subscribe/Unsubscribe. RPC: RegisterWorker/Call. Lease: Acquire/Extend/Release/Query/Subscribe/Unsubscribe. Stream: Begin/Append/Commit/Rollback/Read/Peek/Metadata/Subscribe/Unsubscribe. Schedule: Create/Cancel/List/ListBySelector/Subscribe/Unsubscribe. |
 | REQ-API-003 | T0 | **PASS** | `QueueClient.Subscribe(ctx, pattern, handler) (*QueueSubscription, error)` + `QueueSubscription.Unsubscribe()`. |
-| REQ-API-004 | T0 | **PASS** | `LeaseClient.Subscribe(ctx, pattern, handler) (*LeaseSubscription, error)` + `LeaseSubscription.Unsubscribe()`. |
+| REQ-API-004 | T0 | **PASS** | `LeaseClient.Subscribe(ctx, route, handler) (*LeaseSubscription, error)` accepts an exact three-segment Lease route; `LeaseSubscription.Unsubscribe()` removes it. |
 | REQ-API-005 | T0 | **PASS** | `ScheduleClient.List(ctx, offset, limit) ([]ScheduleEntry, uint64, error)` — returns paginated entries + total count. |
 | REQ-API-006 | T0 | **PASS** | `ScheduleClient.ListBySelector(ctx, selector, offset, limit) ([]ScheduleEntry, uint64, error)` present. |
 | REQ-API-007 | T0 | **PASS** | `ConnectionState` type with 6 named constants + `client.State() ConnectionState`. |

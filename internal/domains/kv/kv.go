@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/reconnect"
+	"github.com/cntryl/fitz-go/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/internal/core/types"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -24,6 +27,7 @@ type Client interface {
 	// Begin opens a transaction scoped to the provided route.
 	// Durability is explicit; optional functional options can configure mode.
 	Begin(ctx context.Context, route string, durability uint8, opts ...BeginOption) (Tx, error)
+	Subscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error)
 }
 
 // BeginOption configures transaction BEGIN parameters.
@@ -43,21 +47,30 @@ func WithMode(mode uint8) BeginOption {
 
 // client is a concrete implementation of Client using the connection layer.
 type client struct {
-	mu   sync.RWMutex
-	conn *connection.Connection
+	mu                      sync.RWMutex
+	conn                    *connection.Connection
+	subscriptions           *subscriptions.Registry[ChangeHandler]
+	notifyHandlerInitOnce   sync.Once
+	notifyHandlerRegistered atomic.Bool
 }
 
 // NewClient creates a new KV domain client backed by the provided connection.
 func NewClient(conn *connection.Connection) Client {
 	return &client{
-		conn: conn,
+		conn:          conn,
+		subscriptions: subscriptions.NewRegistry[ChangeHandler](),
 	}
 }
+
+var _ reconnect.DomainRestorer = (*client)(nil)
 
 func (c *client) ReplaceConnection(conn *connection.Connection) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.conn = conn
+	if c.notifyHandlerRegistered.Load() {
+		conn.RegisterNotifyHandler(protocol.MessageTypeKvNotify, c.handleNotify)
+	}
 }
 
 func (c *client) currentConnection() *connection.Connection {

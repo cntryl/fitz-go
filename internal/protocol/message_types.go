@@ -17,6 +17,9 @@ const (
 	MessageTypeKvDelete      uint16 = 106
 	MessageTypeKvDeleteRange uint16 = 107
 	MessageTypeKvScan        uint16 = 108
+	MessageTypeKvSubscribe   uint16 = 109
+	MessageTypeKvUnsubscribe uint16 = 110
+	MessageTypeKvNotify      uint16 = 111 // Server -> Client only
 
 	// Queue Domain (200-299). 201 = ENQUEUE_BATCH is reserved per CLIENT_SPEC; do not use.
 	MessageTypeQueueEnqueue     uint16 = 200

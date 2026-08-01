@@ -4,9 +4,9 @@ package queue
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,7 +34,10 @@ type QueueItem struct {
 
 // AvailabilityNotification represents an availability notification from the queue.
 type AvailabilityNotification struct {
-	Route string
+	Route            string
+	ReadyMessages    uint64
+	DelayedMessages  uint64
+	InflightMessages uint64
 }
 
 // AvailabilityHandler is called when availability notification arrives.
@@ -402,13 +405,19 @@ func (c *client) initNotifyHandler() {
 
 // handleNotify is called by the mux when a NOTIFY (209) frame arrives.
 func (c *client) handleNotify(subID uint64, route string, payload []byte) {
+	if len(payload) != 24 {
+		return
+	}
 	handlers := c.subscriptions.Handlers(subID)
 	if len(handlers) == 0 {
 		return
 	}
 
 	notif := AvailabilityNotification{
-		Route: publicQueueRoute(route),
+		Route:            route,
+		ReadyMessages:    binary.BigEndian.Uint64(payload[0:8]),
+		DelayedMessages:  binary.BigEndian.Uint64(payload[8:16]),
+		InflightMessages: binary.BigEndian.Uint64(payload[16:24]),
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 
@@ -433,14 +442,14 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 }
 
 // Subscribe registers a handler for availability notifications.
-// Pattern should be a wildcard pattern (e.g., "queue://realm/area/resource/*" or "queue://realm/area/resource").
+// Pattern may be exact or use whole-segment wildcards (e.g., "queue://realm/area/*" or "queue://realm/**").
 func (c *client) Subscribe(ctx context.Context, pattern string, handler AvailabilityHandler) (*Subscription, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.queue.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.DebugContext(ctx, "queue.Subscribe", "pattern", pattern)
 	}
-	if err := types.ValidateSelectorRoute(pattern, "queue", 3, true); err != nil {
+	if err := types.ValidateRegistrationPattern(pattern, "queue", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -472,7 +481,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
 	ctx := c.conn.LifecycleContext()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(wireWatchPattern(sub.pattern)))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(sub.pattern))
 	if err != nil {
 		return
 	}
@@ -496,7 +505,7 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 			return c.subscribeWire(ctx, pattern)
 		},
 		func(pattern string, _ uint64) error {
-			resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(wireWatchPattern(pattern)))
+			resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueUnsubscribe, unsubscribePayloadWriter(pattern))
 			if err != nil {
 				return err
 			}
@@ -510,7 +519,7 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 }
 
 func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, error) {
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueSubscribe, subscribePayloadWriter(wireWatchPattern(pattern)))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueSubscribe, subscribePayloadWriter(pattern))
 	if err != nil {
 		return 0, fmt.Errorf("subscribe request failed: %w", err)
 	}
@@ -529,17 +538,6 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 	}
 	c.conn.AddSubscriptions(1)
 	return subID, nil
-}
-
-func wireWatchPattern(pattern string) string {
-	if strings.HasSuffix(pattern, "/ready") {
-		return pattern
-	}
-	return pattern + "/ready"
-}
-
-func publicQueueRoute(route string) string {
-	return strings.TrimSuffix(route, "/ready")
 }
 
 func parseSubscriptionID(remaining []byte) (uint64, error) {

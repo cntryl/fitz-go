@@ -320,6 +320,14 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 
 	c.mu.Lock()
 	handler, ok := c.workers[route]
+	if !ok {
+		for pattern, candidate := range c.workers {
+			if types.RouteMatchesPattern(route, pattern) {
+				handler, ok = candidate, true
+				break
+			}
+		}
+	}
 	c.mu.Unlock()
 
 	if !ok {
@@ -370,7 +378,7 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 	}
 
 	// Validate route format
-	if err := types.ValidateConcreteRoute(route, "rpc"); err != nil {
+	if err := types.ValidateRegistrationPattern(route, "rpc", 0); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)

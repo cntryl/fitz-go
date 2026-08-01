@@ -344,16 +344,9 @@ func TestShouldDispatchHandlersGivenIncomingNotifyFramesWhenStartCalled(t *testi
 		WriteBytes(buf, payload)
 		return append([]byte(nil), buf.Bytes()...)
 	}
-	schedulePayload := func(subID uint64, payload []byte) []byte {
-		buf := GetBuffer()
-		defer PutBuffer(buf)
-		WriteU64BE(buf, subID)
-		WriteBytes(buf, payload)
-		return append([]byte(nil), buf.Bytes()...)
-	}
 	noticeFrame := protocol.EncodeFrameOwned(protocol.MessageTypeNoticeNotify, notifyPayload(7, "notice://realm/area/resource", []byte("hello")))
 	defer noticeFrame.Release()
-	scheduleFrame := protocol.EncodeFrameOwned(protocol.MessageTypeScheduleNotify, schedulePayload(9, []byte("run")))
+	scheduleFrame := protocol.EncodeFrameOwned(protocol.MessageTypeScheduleNotify, notifyPayload(9, "schedule://realm/area/resource/run", []byte("run")))
 	defer scheduleFrame.Release()
 	transport := testkit.NewMockTransport()
 	transport.SetReadFrames([][]byte{
@@ -368,8 +361,8 @@ func TestShouldDispatchHandlersGivenIncomingNotifyFramesWhenStartCalled(t *testi
 			noticeSeen <- struct{}{}
 		}
 	})
-	conn.RegisterScheduleNotifyHandler(func(subID uint64, payload []byte) {
-		if subID == 9 && string(payload) == "run" {
+	conn.RegisterNotifyHandler(protocol.MessageTypeScheduleNotify, func(subID uint64, route string, payload []byte) {
+		if subID == 9 && route == "schedule://realm/area/resource/run" && string(payload) == "run" {
 			scheduleSeen <- struct{}{}
 		}
 	})

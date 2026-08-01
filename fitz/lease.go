@@ -84,7 +84,7 @@ type LeaseClient interface {
 	Acquire(ctx context.Context, route string, ttlSecs uint64) (*Lease, error)
 	WithLease(ctx context.Context, route string, ttlSecs uint64, callback func(context.Context) error, opts ...WithLeaseOption) error
 	Query(ctx context.Context, route string) (*LeaseInfo, error)
-	Subscribe(ctx context.Context, pattern string, handler LeaseChangeHandler) (*LeaseSubscription, error)
+	Subscribe(ctx context.Context, route string, handler LeaseChangeHandler) (*LeaseSubscription, error)
 }
 
 type leaseExecutionOptions struct {
@@ -237,9 +237,9 @@ func (c *leaseClient) Query(ctx context.Context, route string) (*LeaseInfo, erro
 	}, nil
 }
 
-// Subscribe registers a lease change handler for the route pattern.
-func (c *leaseClient) Subscribe(ctx context.Context, pattern string, handler LeaseChangeHandler) (*LeaseSubscription, error) {
-	subscription, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notif internallease.ChangeNotification) error {
+// Subscribe registers a lease change handler for one exact route.
+func (c *leaseClient) Subscribe(ctx context.Context, route string, handler LeaseChangeHandler) (*LeaseSubscription, error) {
+	subscription, err := c.inner.Subscribe(ctx, route, func(ctx context.Context, notif internallease.ChangeNotification) error {
 		return handler(ctx, LeaseChangeNotification{Route: notif.Route})
 	})
 	if err != nil {

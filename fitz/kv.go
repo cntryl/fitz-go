@@ -62,6 +62,24 @@ type KVTx interface {
 
 type KVClient interface {
 	Begin(ctx context.Context, route string, durability KVDurabilityMode, opts ...KVBeginOption) (KVTx, error)
+	Subscribe(ctx context.Context, pattern string, handler KVChangeHandler) (*KVSubscription, error)
+}
+
+type KVChangeNotification struct {
+	Route         string
+	MutationCount uint64
+}
+
+type KVChangeHandler func(context.Context, KVChangeNotification) error
+
+type KVSubscription struct {
+	inner *internalkv.Subscription
+}
+
+func (s *KVSubscription) Unsubscribe() {
+	if s != nil && s.inner != nil {
+		s.inner.Unsubscribe()
+	}
 }
 
 type kvClient struct {
@@ -97,6 +115,21 @@ func (c *kvClient) Begin(ctx context.Context, route string, durability KVDurabil
 		return nil, err
 	}
 	return &kvTx{inner: tx}, nil
+}
+
+// Subscribe registers a KV change handler for an exact route or a whole-segment wildcard pattern.
+// Each notification reports the concrete three-segment KV route that changed.
+func (c *kvClient) Subscribe(ctx context.Context, pattern string, handler KVChangeHandler) (*KVSubscription, error) {
+	subscription, err := c.inner.Subscribe(ctx, pattern, func(ctx context.Context, notification internalkv.ChangeNotification) error {
+		return handler(ctx, KVChangeNotification{
+			Route:         notification.Route,
+			MutationCount: notification.MutationCount,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &KVSubscription{inner: subscription}, nil
 }
 
 // Get reads a single key from the active transaction.

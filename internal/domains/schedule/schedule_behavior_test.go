@@ -309,11 +309,12 @@ func TestShouldDispatchNotificationGivenMatchingSubscriptionWhenHandleScheduleNo
 	require.NoError(t, err)
 
 	// Act
-	client.handleScheduleNotify(7, []byte("run"))
+	client.handleScheduleNotify(7, "schedule://realm/area/resource/run", []byte("run"))
 
 	// Assert
 	select {
 	case msg := <-received:
+		assert.Equal(t, "schedule://realm/area/resource/run", msg.Route)
 		assert.Equal(t, []byte("run"), msg.Payload)
 	case <-time.After(time.Second):
 		t.Fatal("schedule notification not delivered")
@@ -345,7 +346,7 @@ func TestShouldFanOutHandlersGivenDuplicatePatternWhenSubscribeCalled(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, sub1.subID, sub2.subID)
 
-	client.handleScheduleNotify(42, []byte("fire"))
+	client.handleScheduleNotify(42, "schedule://realm/area/resource/run", []byte("fire"))
 
 	select {
 	case msg := <-first:
@@ -381,7 +382,7 @@ func TestShouldContinueFanOutGivenHandlerErrorWhenHandleScheduleNotifyCalled(t *
 	})
 	require.NoError(t, err)
 
-	client.handleScheduleNotify(77, []byte("still-delivered"))
+	client.handleScheduleNotify(77, "schedule://realm/area/resource/run", []byte("still-delivered"))
 
 	select {
 	case msg := <-received:

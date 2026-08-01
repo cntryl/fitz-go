@@ -387,7 +387,7 @@ func TestShouldDispatchQueueNotifyGivenQueuePayloadWhenNotifyHandlerRegistered(t
 		}{subID: subID, route: route, body: copied}
 	})
 
-	route := "queue://realm/area/resource/ready"
+	route := "queue://realm/area/resource"
 	payload := make([]byte, 8+4+len(route)+24)
 	offset := 0
 	binary.BigEndian.PutUint64(payload[offset:offset+8], 99)

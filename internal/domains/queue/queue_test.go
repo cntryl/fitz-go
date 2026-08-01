@@ -468,26 +468,6 @@ func TestShouldRejectMalformedQueueReservePayloadWhenParseReserveItemsCalled(t *
 	})
 }
 
-func TestShouldWireQueueSubscribePatternGivenBaseRouteWhenWireWatchPatternCalled(t *testing.T) {
-	t.Run("appends ready suffix for base route", func(t *testing.T) {
-		assert.Equal(t, "queue://acme/app/tasks/ready", wireWatchPattern("queue://acme/app/tasks"))
-	})
-
-	t.Run("preserves existing ready route", func(t *testing.T) {
-		assert.Equal(t, "queue://acme/app/tasks/ready", wireWatchPattern("queue://acme/app/tasks/ready"))
-	})
-}
-
-func TestShouldPublicizeQueueNotificationRouteGivenReadyRouteWhenPublicQueueRouteCalled(t *testing.T) {
-	t.Run("strips ready suffix", func(t *testing.T) {
-		assert.Equal(t, "queue://acme/app/tasks", publicQueueRoute("queue://acme/app/tasks/ready"))
-	})
-
-	t.Run("keeps non-ready route unchanged", func(t *testing.T) {
-		assert.Equal(t, "queue://acme/app/tasks", publicQueueRoute("queue://acme/app/tasks"))
-	})
-}
-
 // TestShouldMapQueueError tests error message mapping.
 func TestShouldMapQueueErrorGivenBrokerMessageWhenMapQueueErrorCalled(t *testing.T) {
 	t.Run("map invalid token", func(t *testing.T) {

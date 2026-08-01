@@ -147,7 +147,7 @@ type ChangeHandler func(ctx context.Context, notif ChangeNotification) error
 // Call Unsubscribe to stop receiving and release the subscription.
 type Subscription struct {
 	subID   uint64
-	pattern string
+	route   string
 	client  *client
 	handler ChangeHandler
 }
@@ -171,7 +171,7 @@ type Client interface {
 
 	// Subscribe registers a handler for lease change notifications (released or expired).
 	// Returns a Subscription that can be used to unsubscribe.
-	Subscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error)
+	Subscribe(ctx context.Context, route string, handler ChangeHandler) (*Subscription, error)
 }
 
 // LeaseInfo holds lease query results per CLIENT_SPEC.md QUERY response.
@@ -429,21 +429,21 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 }
 
 // Subscribe registers a handler for lease change notifications.
-// Pattern must be an exact lease route (lease://realm/area/resource).
-func (c *client) Subscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error) {
-	ctx, span := c.conn.Tracer().Start(ctx, "fitz.lease.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
+// Route must be an exact lease route (lease://realm/area/resource).
+func (c *client) Subscribe(ctx context.Context, route string, handler ChangeHandler) (*Subscription, error) {
+	ctx, span := c.conn.Tracer().Start(ctx, "fitz.lease.Subscribe", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
-		log.DebugContext(ctx, "lease.Subscribe", "pattern", pattern)
+		log.DebugContext(ctx, "lease.Subscribe", "route", route)
 	}
-	if err := types.ValidateFixedRoute(pattern, "lease", 3); err != nil {
+	if err := types.ValidateFixedRoute(route, "lease", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	c.initNotifyHandler()
 
-	sub, err := c.subscribe(ctx, pattern, handler)
+	sub, err := c.subscribe(ctx, route, handler)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -461,7 +461,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
 	ctx := c.conn.LifecycleContext()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseUnsubscribe, unsubscribePayloadWriter(sub.pattern))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseUnsubscribe, unsubscribePayloadWriter(sub.route))
 	if err != nil {
 		return
 	}
@@ -483,13 +483,13 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	c.mu.RLock()
 	snapshot := make([]*Subscription, 0, len(c.subscriptions))
 	for _, sub := range c.subscriptions {
-		snapshot = append(snapshot, &Subscription{pattern: sub.pattern, handler: sub.handler, client: c})
+		snapshot = append(snapshot, &Subscription{route: sub.route, handler: sub.handler, client: c})
 	}
 	c.mu.RUnlock()
 
 	restored := make(map[uint64]*Subscription, len(snapshot))
 	for _, sub := range snapshot {
-		restoredSub, err := c.restoreSubscribe(ctx, sub.pattern, sub.handler)
+		restoredSub, err := c.restoreSubscribe(ctx, sub.route, sub.handler)
 		if err != nil {
 			for _, restoredSub := range restored {
 				c.rollbackRestoredSubscription(restoredSub)
@@ -505,8 +505,8 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	return nil
 }
 
-func (c *client) restoreSubscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error) {
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseSubscribe, subscribePayloadWriter(pattern))
+func (c *client) restoreSubscribe(ctx context.Context, route string, handler ChangeHandler) (*Subscription, error) {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseSubscribe, subscribePayloadWriter(route))
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
@@ -530,7 +530,7 @@ func (c *client) restoreSubscribe(ctx context.Context, pattern string, handler C
 
 	return &Subscription{
 		subID:   subID,
-		pattern: pattern,
+		route:   route,
 		client:  c,
 		handler: handler,
 	}, nil
@@ -543,7 +543,7 @@ func (c *client) rollbackRestoredSubscription(sub *Subscription) {
 	c.conn.AddSubscriptions(-1)
 
 	ctx := c.conn.LifecycleContext()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseUnsubscribe, unsubscribePayloadWriter(sub.pattern))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseUnsubscribe, unsubscribePayloadWriter(sub.route))
 	if err != nil {
 		return
 	}
@@ -552,8 +552,8 @@ func (c *client) rollbackRestoredSubscription(sub *Subscription) {
 	}
 }
 
-func (c *client) subscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error) {
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseSubscribe, subscribePayloadWriter(pattern))
+func (c *client) subscribe(ctx context.Context, route string, handler ChangeHandler) (*Subscription, error) {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseSubscribe, subscribePayloadWriter(route))
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
@@ -577,7 +577,7 @@ func (c *client) subscribe(ctx context.Context, pattern string, handler ChangeHa
 
 	sub := &Subscription{
 		subID:   subID,
-		pattern: pattern,
+		route:   route,
 		client:  c,
 		handler: handler,
 	}

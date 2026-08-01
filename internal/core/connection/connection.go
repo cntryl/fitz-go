@@ -1024,11 +1024,6 @@ func (c *Connection) RegisterNotifyHandler(msgType uint16, handler func(subID ui
 	c.mux.SetNotifyHandler(msgType, handler)
 }
 
-// RegisterScheduleNotifyHandler registers handler for Schedule NOTIFY messages (705).
-func (c *Connection) RegisterScheduleNotifyHandler(handler func(subID uint64, payload []byte)) {
-	c.mux.SetScheduleNotifyHandler(handler)
-}
-
 // RegisterRPCRequestHandler registers handler for RPC REQUEST messages (302).
 func (c *Connection) RegisterRPCRequestHandler(handler func(payload []byte)) {
 	c.mux.SetRPCRequestHandler(handler)

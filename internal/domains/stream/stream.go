@@ -896,14 +896,14 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 }
 
 // Subscribe registers a handler for stream commit notifications.
-// Pattern should be a wildcard pattern (e.g., "stream://realm/area/resource/available").
+// Pattern may be exact or use whole-segment wildcards (e.g., "stream://realm/area/*" or "stream://realm/**").
 func (c *client) Subscribe(ctx context.Context, pattern string, handler CommitHandler) (*Subscription, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.DebugContext(ctx, "stream.Subscribe", "pattern", pattern)
 	}
-	if err := types.ValidateSelectorRoute(pattern, "stream", 3, true); err != nil {
+	if err := types.ValidateRegistrationPattern(pattern, "stream", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)

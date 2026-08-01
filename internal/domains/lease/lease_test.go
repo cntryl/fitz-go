@@ -299,8 +299,8 @@ func TestShouldPreserveLocalSubscriptionsGivenRestoreFailureWithReusedSubIDWhenR
 	c := &client{
 		conn: conn,
 		subscriptions: map[uint64]*Subscription{
-			1: {subID: 1, pattern: "lease://realm/area/alpha", client: nil, handler: handlerAlpha},
-			2: {subID: 2, pattern: "lease://realm/area/bravo", client: nil, handler: handlerBravo},
+			1: {subID: 1, route: "lease://realm/area/alpha", client: nil, handler: handlerAlpha},
+			2: {subID: 2, route: "lease://realm/area/bravo", client: nil, handler: handlerBravo},
 		},
 	}
 
@@ -321,11 +321,11 @@ func TestShouldPreserveLocalSubscriptionsGivenRestoreFailureWithReusedSubIDWhenR
 	defer c.mu.RUnlock()
 	alpha, ok := c.subscriptions[1]
 	require.True(t, ok)
-	assert.Equal(t, "lease://realm/area/alpha", alpha.pattern)
+	assert.Equal(t, "lease://realm/area/alpha", alpha.route)
 	assert.NotNil(t, alpha.handler)
 	bravo, ok := c.subscriptions[2]
 	require.True(t, ok)
-	assert.Equal(t, "lease://realm/area/bravo", bravo.pattern)
+	assert.Equal(t, "lease://realm/area/bravo", bravo.route)
 	assert.NotNil(t, bravo.handler)
 	assert.Len(t, c.subscriptions, 2)
 }

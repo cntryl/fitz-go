@@ -851,6 +851,7 @@ func (c *Client) beginReconnect(cause error) {
 
 func (c *Client) restoreDomainSubscriptions(ctx context.Context) error {
 	for _, candidate := range []any{
+		c.kvClient,
 		c.noticeClient,
 		c.queueClient,
 		c.rpcClient,

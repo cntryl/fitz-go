@@ -62,7 +62,7 @@ func main() {
 Use one control plane for request lifetime: `context.Context`.
 
 - RPC calls use context deadlines/cancellation only.
-- Schedule/Notice/Queue/Lease/Stream subscription handlers return `error`.
+- KV/Schedule/Notice/Queue/Lease/Stream subscription handlers return `error`.
 - Streaming iterators should be closed when no longer needed.
 - Clients validate route shape locally: scheme, segment count, empty segments,
   and method-specific wildcard placement. Route existence, permissions,
@@ -83,7 +83,7 @@ Reconnect guarantees:
 - Automatic reconnect is enabled by default after the first successful
   `Connect`; `fitz.WithReconnect(false, ..., ...)` disables it.
 - `fitz.WithReconnect(..., maxAttempts=0)` means unlimited reconnect attempts.
-- Notice, stream, lease, queue, and schedule subscriptions are restored after reconnect.
+- KV, notice, stream, lease, queue, and schedule subscriptions are restored after reconnect.
 - RPC worker registrations are restored after reconnect.
 - `Close()` is idempotent and permanently ends reconnect activity.
 
