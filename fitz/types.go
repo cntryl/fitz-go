@@ -51,7 +51,8 @@ const (
 )
 
 // LifecycleEvent is emitted by WithLifecycleHandler for connection lifecycle
-// transitions. Event names match fitz-ts.
+// transitions. Shared names match fitz-ts; reconnect_scheduled and
+// reconnect_exhausted are Go-specific extensions.
 type LifecycleEvent struct {
 	Event     string
 	State     ConnectionState
@@ -137,7 +138,7 @@ func WithAsyncHandlerMaxConcurrency(limit int) Option {
 // WithReconnect controls the automatic reconnect behavior. When enabled, the
 // client will attempt to re-establish the transport connection using exponential
 // backoff starting at backoff, doubling up to the ceiling configured by
-// WithReconnectMaxDelay (default 30s), up to maxAttempts times (0 = unlimited).
+// WithReconnectMaxDelay (default 5s), up to maxAttempts times (0 = unlimited).
 func WithReconnect(enabled bool, backoff time.Duration, maxAttempts int) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReconnect(enabled, backoff, maxAttempts))
@@ -146,7 +147,7 @@ func WithReconnect(enabled bool, backoff time.Duration, maxAttempts int) Option 
 
 // WithReconnectMaxDelay sets the ceiling for exponential reconnect backoff.
 // After each failed attempt the delay grows (with jitter) until it reaches
-// this maximum. Defaults to 30s.
+// this maximum. Defaults to 5s.
 func WithReconnectMaxDelay(d time.Duration) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReconnectMaxDelay(d))

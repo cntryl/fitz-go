@@ -6,6 +6,12 @@ import (
 	internalstream "github.com/cntryl/fitz-go/internal/domains/stream"
 )
 
+var (
+	ErrStreamNotFound  = internalstream.ErrStreamNotFound
+	ErrStreamConflict  = internalstream.ErrStreamConflict
+	ErrStreamReadError = internalstream.ErrStreamReadError
+)
+
 type StreamFilterClauseKind = internalstream.StreamFilterClauseKind
 
 const (

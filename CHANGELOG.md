@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Added `Client.ConnectWhenReady(ctx)` for context-bounded startup retry.
+- Breaking: `ScheduleDeliveryMode` is now a distinct public type. Convert internal or numeric values explicitly when crossing package boundaries.
+- Exported the existing Notice, Stream, and RPC sentinel errors for `errors.Is`.
 - Made overlapping local RPC worker selection deterministic: exact routes win,
   followed by wildcard specificity and a lexical final tie-breaker.
 - Unified Queue, Stream, and Schedule iterator cancellation, wake, polling, and

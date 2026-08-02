@@ -6,6 +6,12 @@ import (
 	internalrpc "github.com/cntryl/fitz-go/internal/domains/rpc"
 )
 
+var (
+	ErrNoWorkers       = internalrpc.ErrNoWorkers
+	ErrRPCTimeout      = internalrpc.ErrRPCTimeout
+	ErrRPCBackpressure = internalrpc.ErrRPCBackpressure
+)
+
 type RPCInboundRequest struct {
 	Route         string
 	ReplyRoute    string

@@ -8,10 +8,10 @@ import (
 )
 
 // Error code constants mirror the canonical Fitz server error registry.
-// Use these with DomainError.Code() for code-based error handling:
+// Use these with the DomainError.Code field for code-based error handling:
 //
 //	var de *DomainError
-//	if errors.As(err, &de) && de.Code() == ErrCodeKvKeyNotFound {
+//	if errors.As(err, &de) && de.Code == ErrCodeKvKeyNotFound {
 //	    // handle missing key
 //	}
 const (
@@ -87,7 +87,7 @@ const (
 //
 //	var de *DomainError
 //	if errors.As(err, &de) {
-//	    fmt.Printf("server error %d: %s\n", de.Code(), de.Message())
+//	    fmt.Printf("server error %d: %s\n", de.Code, de.Message)
 //	}
 type DomainError = coreerrors.DomainError
 

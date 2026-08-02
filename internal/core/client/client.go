@@ -58,7 +58,8 @@ type transportMaxFrameSizer interface {
 }
 
 // LifecycleEvent describes a connection lifecycle transition emitted by the
-// core client. Event names match fitz-ts.
+// core client. Shared names match fitz-ts; reconnect_scheduled and
+// reconnect_exhausted are Go-specific extensions.
 type LifecycleEvent struct {
 	Event     string
 	State     connection.State
@@ -425,6 +426,43 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 	c.emitLifecycle("connect_succeeded", transportType, 0, nil)
 	return nil
+}
+
+// ConnectWhenReady retries the initial one-shot Connect operation with the
+// reconnect policy. The supplied context bounds the complete readiness wait.
+func (c *Client) ConnectWhenReady(ctx context.Context) error {
+	initialBackoff := c.config.ReconnectBackoff
+	if initialBackoff <= 0 {
+		initialBackoff = 250 * time.Millisecond
+	}
+	maxDelay := c.config.ReconnectMaxDelay
+	if maxDelay <= 0 {
+		maxDelay = 5 * time.Second
+	}
+	backoff := retry.BackoffConfig{
+		InitialDelay: initialBackoff,
+		MaxDelay:     maxDelay,
+		Multiplier:   2,
+		JitterFactor: 0.1,
+	}
+	maxAttempts := c.config.MaxReconnects
+	for attempt := 1; maxAttempts <= 0 || attempt <= maxAttempts; attempt++ {
+		err := c.Connect(ctx)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, connection.ErrAuthenticationFailed) || errors.Is(err, connection.ErrConnectionClosed) || ctx.Err() != nil {
+			return err
+		}
+		timer := time.NewTimer(retry.CalculateDelay(backoff, attempt-1))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return fmt.Errorf("connect attempts exhausted")
 }
 
 // Dial connects to a Fitz server and returns a ready-to-use client.

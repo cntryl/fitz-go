@@ -14,11 +14,11 @@ type ScheduleEntry struct {
 	Payload      []byte
 }
 
-type ScheduleDeliveryMode = internalschedule.ScheduleDeliveryMode
+type ScheduleDeliveryMode uint8
 
 const (
-	ScheduleDeliveryBroadcast = internalschedule.ScheduleDeliveryBroadcast
-	ScheduleDeliverySingle    = internalschedule.ScheduleDeliverySingle
+	ScheduleDeliveryBroadcast ScheduleDeliveryMode = iota
+	ScheduleDeliverySingle
 )
 
 type ScheduleNotification struct {
@@ -54,7 +54,7 @@ type scheduleClient struct {
 
 // Create creates or updates a schedule for the route.
 func (c *scheduleClient) Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (string, error) {
-	return c.inner.Create(ctx, route, cronExpr, deliveryMode, payload)
+	return c.inner.Create(ctx, route, cronExpr, internalschedule.ScheduleDeliveryMode(deliveryMode), payload)
 }
 
 // Cancel removes a schedule by route.
@@ -87,7 +87,7 @@ func copyScheduleEntries(entries []internalschedule.ScheduleEntry) []ScheduleEnt
 			ID:           entry.ID,
 			Route:        entry.Route,
 			Cron:         entry.Cron,
-			DeliveryMode: entry.DeliveryMode,
+			DeliveryMode: ScheduleDeliveryMode(entry.DeliveryMode),
 			Payload:      entry.Payload,
 		})
 	}

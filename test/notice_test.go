@@ -220,8 +220,9 @@ func TestShouldIsolateRealmsGivenStagingSubscriptionWhenProdPublishCalled(t *tes
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		stagingPattern := "notice://" + f.UniqueRealm() + "/**"
-		prodRoute := f.UniqueRoute("notice")
+		stagingRealm := f.UniqueRealm()
+		stagingPattern := "notice://" + stagingRealm + "/**"
+		prodRoute := "notice://" + stagingRealm + "-prod/area/resource"
 		received := make(chan fitz.NoticeMsg, 1)
 		sub, err := f.Client().Notice().Subscribe(ctx, stagingPattern, func(_ context.Context, msg fitz.NoticeMsg) error {
 			received <- msg

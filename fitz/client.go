@@ -46,6 +46,13 @@ func (c *Client) Connect(ctx context.Context) error {
 	return c.inner.Connect(ctx)
 }
 
+// ConnectWhenReady retries initial connection attempts using the configured
+// reconnect backoff and attempt limit. The context owns the total wait, and
+// authentication failures terminate immediately.
+func (c *Client) ConnectWhenReady(ctx context.Context) error {
+	return c.inner.ConnectWhenReady(ctx)
+}
+
 // Close tears down the underlying transport connection and releases all
 // in-flight request state. It is safe to call more than once.
 func (c *Client) Close() error {

@@ -347,6 +347,35 @@ func TestShouldAllowManualReconnectGivenConnectionLossWhenReconnectDisabled(t *t
 	assert.Equal(t, []byte("token-1"), connectPayload)
 }
 
+func TestShouldConnectGivenDelayedStartupWhenConnectWhenReadyCalled(t *testing.T) {
+	// Arrange
+	originalDialTCP := dialTCPTransport
+	defer func() { dialTCPTransport = originalDialTCP }()
+	readyTransport := newScriptedTransport()
+	var attempts atomic.Int32
+	dialTCPTransport = func(context.Context, string) (transport.Transport, error) {
+		if attempts.Add(1) == 1 {
+			return nil, errors.New("broker unavailable")
+		}
+		return readyTransport, nil
+	}
+	client := NewClient("localhost:4091", nil)
+	client.config.ReconnectBackoff = time.Millisecond
+	client.config.ReconnectMaxDelay = time.Millisecond
+	client.config.MaxReconnects = 3
+	client.config.AuthSettleDelay = time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	// Act
+	err := client.ConnectWhenReady(ctx)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), attempts.Load())
+	require.NoError(t, client.Close())
+}
+
 func TestShouldReturnNilWithoutRedialGivenExistingConnectionWhenConnectCalled(t *testing.T) {
 	originalDialTCP := dialTCPTransport
 	defer func() {

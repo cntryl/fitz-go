@@ -6,6 +6,12 @@ import (
 	internalnotice "github.com/cntryl/fitz-go/internal/domains/notice"
 )
 
+var (
+	ErrNoticeRouteInvalid = internalnotice.ErrNoticeRouteInvalid
+	ErrNoticeTimeout      = internalnotice.ErrNoticeTimeout
+	ErrNoticeSendFailed   = internalnotice.ErrNoticeSendFailed
+)
+
 type NoticeMsg struct {
 	Route string
 	Body  []byte
