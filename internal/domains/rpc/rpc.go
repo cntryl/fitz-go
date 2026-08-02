@@ -159,14 +159,15 @@ func generateCorrelationID() ([16]byte, error) {
 // Subscription represents an active worker registration.
 // Call Unsubscribe to stop receiving requests and release the registration.
 type Subscription struct {
-	route  string
-	client *client
+	route   string
+	version uint64
+	client  *client
 }
 
 // Unsubscribe removes this worker registration.
 func (s *Subscription) Unsubscribe() {
 	if s.client != nil {
-		s.client.unsubscribeWorker(s.route)
+		s.client.unsubscribeWorker(s.route, s.version)
 	}
 }
 
@@ -183,18 +184,21 @@ type Client interface {
 type client struct {
 	conn *connection.Connection
 
-	mu          sync.Mutex
-	workers     map[string]RPCHandler // route -> handler
-	pendingRPCs map[[16]byte]*responseStream
-	initialized bool
+	mu                sync.Mutex
+	workers           map[string]RPCHandler // route -> handler
+	workerVersions    map[string]uint64
+	nextWorkerVersion uint64
+	pendingRPCs       map[[16]byte]*responseStream
+	initialized       bool
 }
 
 // NewClient creates a new RPC domain client.
 func NewClient(conn *connection.Connection) Client {
 	c := &client{
-		conn:        conn,
-		workers:     make(map[string]RPCHandler),
-		pendingRPCs: make(map[[16]byte]*responseStream),
+		conn:           conn,
+		workers:        make(map[string]RPCHandler),
+		workerVersions: make(map[string]uint64),
+		pendingRPCs:    make(map[[16]byte]*responseStream),
 	}
 	return c
 }
@@ -433,6 +437,12 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
+	c.mu.Lock()
+	_, alreadyRegistered := c.workers[route]
+	c.mu.Unlock()
+	if alreadyRegistered {
+		return nil, fmt.Errorf("worker route %q is already registered", route)
+	}
 
 	c.initRPCHandler()
 
@@ -446,9 +456,14 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 }
 
 // unsubscribeWorker removes a worker registration.
-func (c *client) unsubscribeWorker(route string) {
+func (c *client) unsubscribeWorker(route string, version uint64) {
 	c.mu.Lock()
+	if c.workerVersions[route] != version {
+		c.mu.Unlock()
+		return
+	}
 	delete(c.workers, route)
+	delete(c.workerVersions, route)
 	c.mu.Unlock()
 
 	ctx := c.conn.LifecycleContext()
@@ -720,7 +735,10 @@ func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCH
 	}
 
 	c.mu.Lock()
+	c.nextWorkerVersion++
+	version := c.nextWorkerVersion
 	c.workers[route] = handler
+	c.workerVersions[route] = version
 	c.mu.Unlock()
-	return &Subscription{route: route, client: c}, nil
+	return &Subscription{route: route, version: version, client: c}, nil
 }

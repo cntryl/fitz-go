@@ -25,9 +25,36 @@ type StreamFilterClause = internalstream.StreamFilterClause
 
 type StreamFilterSet = internalstream.StreamFilterSet
 
-type StreamAppendOptions = internalstream.StreamAppendOptions
+type streamAppendConfig struct {
+	discriminator *string
+}
 
-type StreamReadOptions = internalstream.StreamReadOptions
+type StreamAppendOption func(*streamAppendConfig)
+
+func WithStreamDiscriminator(discriminator string) StreamAppendOption {
+	return func(cfg *streamAppendConfig) {
+		cfg.discriminator = &discriminator
+	}
+}
+
+type streamReadConfig struct {
+	maxBytes *uint64
+	filter   *StreamFilterSet
+}
+
+type StreamReadOption func(*streamReadConfig)
+
+func WithStreamMaxBytes(maxBytes uint64) StreamReadOption {
+	return func(cfg *streamReadConfig) {
+		cfg.maxBytes = &maxBytes
+	}
+}
+
+func WithStreamFilter(filter StreamFilterSet) StreamReadOption {
+	return func(cfg *streamReadConfig) {
+		cfg.filter = &filter
+	}
+}
 
 type StreamFilteredReason = internalstream.FilteredReason
 
@@ -119,16 +146,16 @@ func (s *StreamSubscription) Unsubscribe() {
 }
 
 type StreamSession interface {
-	Append(ctx context.Context, expectedOffset uint64, body []byte, opts ...*StreamAppendOptions) (offset uint64, err error)
+	Append(ctx context.Context, expectedOffset uint64, body []byte, opts ...StreamAppendOption) (offset uint64, err error)
 	Commit(ctx context.Context, mode StreamCommitMode) error
 	Rollback(ctx context.Context) error
 }
 
 type StreamClient interface {
 	Begin(ctx context.Context, route string) (StreamSession, error)
-	Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (Iterator[StreamRecord], error)
-	ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (*StreamReadPage, error)
-	ReadWhenCommitted(ctx context.Context, route string, fromOffset uint64, batchSize uint64, opts ...*StreamReadOptions) (Iterator[[]StreamRecord], error)
+	Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...StreamReadOption) (Iterator[StreamRecord], error)
+	ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...StreamReadOption) (*StreamReadPage, error)
+	ReadWhenCommitted(ctx context.Context, route string, fromOffset uint64, batchSize uint64, opts ...StreamReadOption) (Iterator[[]StreamRecord], error)
 	Peek(ctx context.Context, route string) (*StreamRecord, error)
 	Metadata(ctx context.Context, route string) (*StreamMetadata, error)
 	Subscribe(ctx context.Context, pattern string, handler StreamCommitHandler) (*StreamSubscription, error)
@@ -157,8 +184,9 @@ func (c *streamClient) Begin(ctx context.Context, route string) (StreamSession, 
 }
 
 // Read returns an iterator of records starting at fromOffset.
-func (c *streamClient) Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (Iterator[StreamRecord], error) {
-	iter, err := c.inner.Read(ctx, route, fromOffset, limit, opts...)
+func (c *streamClient) Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...StreamReadOption) (Iterator[StreamRecord], error) {
+	config := applyStreamReadOptions(opts)
+	iter, err := c.inner.Read(ctx, route, fromOffset, limit, config)
 	if err != nil {
 		return nil, err
 	}
@@ -166,8 +194,9 @@ func (c *streamClient) Read(ctx context.Context, route string, fromOffset uint64
 }
 
 // ReadPage returns a page containing events and filtered markers.
-func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (*StreamReadPage, error) {
-	page, err := c.inner.ReadPage(ctx, route, fromOffset, limit, opts...)
+func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...StreamReadOption) (*StreamReadPage, error) {
+	config := applyStreamReadOptions(opts)
+	page, err := c.inner.ReadPage(ctx, route, fromOffset, limit, config)
 	if err != nil || page == nil {
 		return nil, err
 	}
@@ -207,7 +236,7 @@ func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset ui
 
 // ReadWhenCommitted yields non-empty record batches. Commit notifications only
 // wake the loop; ReadPage remains authoritative.
-func (c *streamClient) ReadWhenCommitted(ctx context.Context, route string, fromOffset uint64, batchSize uint64, opts ...*StreamReadOptions) (Iterator[[]StreamRecord], error) {
+func (c *streamClient) ReadWhenCommitted(ctx context.Context, route string, fromOffset uint64, batchSize uint64, opts ...StreamReadOption) (Iterator[[]StreamRecord], error) {
 	if batchSize == 0 {
 		batchSize = 1
 	}
@@ -302,8 +331,20 @@ func (c *streamClient) Subscribe(ctx context.Context, pattern string, handler St
 }
 
 // Append writes a record in the active stream session.
-func (s *streamSession) Append(ctx context.Context, expectedOffset uint64, body []byte, opts ...*StreamAppendOptions) (offset uint64, err error) {
-	return s.inner.Append(ctx, expectedOffset, body, opts...)
+func (s *streamSession) Append(ctx context.Context, expectedOffset uint64, body []byte, opts ...StreamAppendOption) (offset uint64, err error) {
+	cfg := &streamAppendConfig{}
+	for _, option := range opts {
+		option(cfg)
+	}
+	return s.inner.Append(ctx, expectedOffset, body, &internalstream.StreamAppendOptions{Discriminator: cfg.discriminator})
+}
+
+func applyStreamReadOptions(options []StreamReadOption) *internalstream.StreamReadOptions {
+	cfg := &streamReadConfig{}
+	for _, option := range options {
+		option(cfg)
+	}
+	return &internalstream.StreamReadOptions{MaxBytes: cfg.maxBytes, Filter: cfg.filter}
 }
 
 // Commit finalizes the active stream session.

@@ -129,15 +129,15 @@ defer sub.Unsubscribe()
 Stream replay pattern:
 
 ```go
-filter := &fitz.StreamFilterSet{Clauses: []fitz.StreamFilterClause{{Kind: fitz.StreamFilterEquals, Value: "proj.alpha"}}}
+filter := fitz.StreamFilterSet{Clauses: []fitz.StreamFilterClause{{Kind: fitz.StreamFilterEquals, Value: "proj.alpha"}}}
 
-records, err := client.Stream().Read(ctx, "stream://realm/area/events", 0, 100, &fitz.StreamReadOptions{Filter: filter})
+records, err := client.Stream().Read(ctx, "stream://realm/area/events", 0, 100, fitz.WithStreamFilter(filter))
 if err != nil {
 	panic(err)
 }
 defer records.Close()
 
-page, err := client.Stream().ReadPage(ctx, "stream://realm/area/events", 0, 100, &fitz.StreamReadOptions{Filter: filter})
+page, err := client.Stream().ReadPage(ctx, "stream://realm/area/events", 0, 100, fitz.WithStreamFilter(filter))
 if err != nil {
 	panic(err)
 }

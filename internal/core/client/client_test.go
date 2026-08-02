@@ -323,9 +323,9 @@ func TestShouldAllowManualReconnectGivenConnectionLossWhenReconnectDisabled(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	require.NoError(t, c.Connect(ctx))
-	t.Cleanup(func() {
+	defer func() {
 		_ = c.Close()
-	})
+	}()
 
 	initialConn := c.currentConnection()
 	require.NotNil(t, initialConn)

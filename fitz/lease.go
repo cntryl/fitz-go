@@ -197,8 +197,11 @@ func (c *leaseClient) superviseManagedLease(ctx context.Context, lease *Lease, t
 			if _, err := lease.Extend(context.WithoutCancel(ctx), ttlSecs); err != nil {
 				outcome.leaseLoss = errors.Join(ErrLeaseLost, err)
 				cancelCallback(outcome.leaseLoss)
-				callback := <-callbackResult
-				outcome.callbackErr, outcome.callbackPanic = callback.err, callback.panicVal
+				select {
+				case callback := <-callbackResult:
+					outcome.callbackErr, outcome.callbackPanic = callback.err, callback.panicVal
+				default:
+				}
 				return outcome
 			}
 			timer.Reset(renewEvery)

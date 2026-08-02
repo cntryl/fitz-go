@@ -76,15 +76,15 @@ func TestShouldReadMatchingDiscriminatorRecordsGivenFilterWhenReadCalled(t *test
 		require.NoError(t, err)
 
 		alpha := "proj.alpha"
-		_, err = sess.Append(ctx, 0, []byte("alpha"), &fitz.StreamAppendOptions{Discriminator: &alpha})
+		_, err = sess.Append(ctx, 0, []byte("alpha"), fitz.WithStreamDiscriminator(alpha))
 		require.NoError(t, err)
 		beta := "audit.beta"
-		_, err = sess.Append(ctx, 1, []byte("beta"), &fitz.StreamAppendOptions{Discriminator: &beta})
+		_, err = sess.Append(ctx, 1, []byte("beta"), fitz.WithStreamDiscriminator(beta))
 		require.NoError(t, err)
 		require.NoError(t, sess.Commit(ctx, fitz.StreamCommitSync))
 
 		filter := &fitz.StreamFilterSet{Clauses: []fitz.StreamFilterClause{{Kind: fitz.StreamFilterEquals, Value: "proj.alpha"}}}
-		iter, err := f.Client().Stream().Read(ctx, route, 0, 10, &fitz.StreamReadOptions{Filter: filter})
+		iter, err := f.Client().Stream().Read(ctx, route, 0, 10, fitz.WithStreamFilter(*filter))
 		require.NoError(t, err)
 		defer closeQuietly(iter)
 
@@ -96,7 +96,7 @@ func TestShouldReadMatchingDiscriminatorRecordsGivenFilterWhenReadCalled(t *test
 		require.Len(t, bodies, 1)
 		assert.Equal(t, []byte("alpha"), bodies[0])
 
-		page, err := f.Client().Stream().ReadPage(ctx, route, 0, 10, &fitz.StreamReadOptions{Filter: filter})
+		page, err := f.Client().Stream().ReadPage(ctx, route, 0, 10, fitz.WithStreamFilter(*filter))
 		require.NoError(t, err)
 		require.NotNil(t, page)
 		assert.Equal(t, uint64(1), page.Cursor.LastResourceOffset)

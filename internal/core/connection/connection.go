@@ -119,7 +119,7 @@ type Connection struct {
 // Config contains connection configuration.
 type Config struct {
 	Token                      string
-	AuthSettleDelay            time.Duration // CONNECT silent-success settle window (default 500ms)
+	AuthSettleDelay            time.Duration // Optional CONNECT rejection-observation window.
 	ReadTimeout                time.Duration // Default 30s (per-read timeout)
 	WriteTimeout               time.Duration // Default 10s
 	MaxInFlightRequests        int           // Default 256 concurrently admitted outbound requests
@@ -180,9 +180,6 @@ func New(trans transport.Transport, cfg Config) *Connection {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Apply defaults
-	if cfg.AuthSettleDelay == 0 {
-		cfg.AuthSettleDelay = 500 * time.Millisecond
-	}
 	if cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = 30 * time.Second
 	}

@@ -1032,17 +1032,13 @@ func TestConformanceSuite(t *testing.T) {
 			}
 
 			alpha := "proj.alpha"
-			firstOffset, err := session.Append(ctx, 0, []byte("alpha"), &fitz.StreamAppendOptions{
-				Discriminator: &alpha,
-			})
+			firstOffset, err := session.Append(ctx, 0, []byte("alpha"), fitz.WithStreamDiscriminator(alpha))
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("append matching record: %w", err)
 			}
 
 			beta := "audit.beta"
-			secondOffset, err := session.Append(ctx, firstOffset+1, []byte("beta"), &fitz.StreamAppendOptions{
-				Discriminator: &beta,
-			})
+			secondOffset, err := session.Append(ctx, firstOffset+1, []byte("beta"), fitz.WithStreamDiscriminator(beta))
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("append filtered record: %w", err)
 			}
@@ -1056,7 +1052,7 @@ func TestConformanceSuite(t *testing.T) {
 					Value: alpha,
 				}},
 			}
-			options := &fitz.StreamReadOptions{Filter: filter}
+			options := fitz.WithStreamFilter(*filter)
 			iter, err := f.Client().Stream().Read(ctx, route, 0, 10, options)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("filtered stream read: %w", err)

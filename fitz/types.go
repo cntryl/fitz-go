@@ -154,6 +154,13 @@ func WithReconnectMaxDelay(d time.Duration) Option {
 	}
 }
 
+// WithReconnectTimeout bounds the total duration of one automatic reconnect loop.
+func WithReconnectTimeout(timeout time.Duration) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithReconnectTimeout(timeout))
+	}
+}
+
 // WithRetry controls automatic retries for replay-safe operations. maxAttempts
 // is the total number of attempts; values <= 0 use the default.
 func WithRetry(enabled bool, backoff time.Duration, maxAttempts int) Option {

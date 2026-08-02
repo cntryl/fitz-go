@@ -117,6 +117,7 @@ type Config struct {
 	ReconnectBackoff  time.Duration // initial interval; grows exponentially up to ReconnectMaxDelay
 	ReconnectMaxDelay time.Duration // ceiling for exponential backoff; default 5s
 	MaxReconnects     int           // 0 = unlimited
+	ReconnectTimeout  time.Duration // 0 = unlimited total reconnect duration
 
 	// Retry
 	RetryEnabled     bool
@@ -144,7 +145,7 @@ type Config struct {
 func defaultConfig() *Config {
 	return &Config{
 		TransportType:              TransportAuto,
-		AuthSettleDelay:            500 * time.Millisecond,
+		AuthSettleDelay:            20 * time.Millisecond,
 		ReadTimeout:                30 * time.Second,
 		WriteTimeout:               10 * time.Second,
 		MaxInFlightRequests:        256,
@@ -226,6 +227,11 @@ func WithReconnect(enabled bool, backoff time.Duration, maxAttempts int) Option 
 // this maximum. Defaults to 30s when not set.
 func WithReconnectMaxDelay(d time.Duration) Option {
 	return func(c *Config) { c.ReconnectMaxDelay = d }
+}
+
+// WithReconnectTimeout bounds the total duration of one automatic reconnect loop.
+func WithReconnectTimeout(timeout time.Duration) Option {
+	return func(c *Config) { c.ReconnectTimeout = timeout }
 }
 
 // WithRetry enables/disables automatic retries for the narrow allowlisted
@@ -809,15 +815,21 @@ func (c *Client) beginReconnect(cause error) {
 	if tracer == nil {
 		tracer = traceNoop.NewTracerProvider().Tracer("")
 	}
+	reconnectCtx := c.lifecycleCtx
+	cancelReconnect := func() {}
+	if c.config.ReconnectTimeout > 0 {
+		reconnectCtx, cancelReconnect = context.WithTimeout(c.lifecycleCtx, c.config.ReconnectTimeout)
+	}
+	defer cancelReconnect()
 
 	for attempt := 1; maxAttempts <= 0 || attempt <= maxAttempts; attempt++ {
-		if c.closed.Load() {
+		if c.closed.Load() || reconnectCtx.Err() != nil {
 			return
 		}
 		started := time.Now()
 		c.emitLifecycle("reconnect_start", transportType, attempt, cause)
 
-		attemptCtx, attemptSpan := tracer.Start(c.lifecycleCtx, "fitz.reconnect.attempt", trace.WithAttributes(
+		attemptCtx, attemptSpan := tracer.Start(reconnectCtx, "fitz.reconnect.attempt", trace.WithAttributes(
 			attribute.Int("fitz.attempt", attempt),
 			attribute.String("fitz.transport", transportTypeString(transportType)),
 		))
@@ -876,7 +888,7 @@ func (c *Client) beginReconnect(cause error) {
 
 		timer := time.NewTimer(retry.CalculateDelay(boCfg, attempt-1))
 		select {
-		case <-c.lifecycleCtx.Done():
+		case <-reconnectCtx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
