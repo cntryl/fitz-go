@@ -42,6 +42,37 @@ func TestShouldOrderMatchingWorkersBySpecificityThenLexically(t *testing.T) {
 	}, patterns)
 }
 
+func TestShouldReturnBrokerErrorGivenRejectedWorkerUnsubscribe(t *testing.T) {
+	transport := newScriptedRPCRestoreTransport()
+	conn := connection.New(transport, connection.Config{ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() { _ = conn.Close() })
+	client := NewClient(conn)
+	baseWrites := scriptedRPCWriteCount(transport)
+	go func() {
+		waitForRPCWrites(t, transport, baseWrites+1)
+		transport.enqueue(scriptedRPCFrame(t, protocol.MessageTypeRpcSubscribeWorker, rpcAckPayload()))
+		waitForRPCWrites(t, transport, baseWrites+2)
+		transport.enqueue(scriptedRPCFrame(t, protocol.MessageTypeRpcUnsubscribeWorker, rpcDomainErrorPayload(3002, "worker not found")))
+	}()
+	subscription, err := client.RegisterWorker(context.Background(), "rpc://realm/area/method", func(context.Context, InboundRequest, ResponseWriter) error { return nil })
+	require.NoError(t, err)
+
+	err = subscription.Unsubscribe()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worker not found")
+}
+
+func rpcDomainErrorPayload(code uint32, message string) []byte {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	buf.WriteByte(1)
+	connection.WriteU32BE(buf, code)
+	connection.WriteString(buf, message)
+	return append([]byte(nil), buf.Bytes()...)
+}
+
 type scriptedRPCRestoreTransport struct {
 	mu      sync.Mutex
 	written [][]byte

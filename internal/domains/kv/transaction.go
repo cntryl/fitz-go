@@ -456,6 +456,7 @@ func (t *transaction) Commit(ctx context.Context) error {
 	if err := t.checkWritable(); err != nil {
 		return err
 	}
+	t.committed.Store(true)
 
 	// Encode request
 	// Send request
@@ -473,9 +474,6 @@ func (t *transaction) Commit(ctx context.Context) error {
 		return errors.New("commit failed: unexpected status")
 	}
 
-	// Mark transaction as committed
-	t.committed.Store(true)
-
 	return nil
 }
 
@@ -486,13 +484,15 @@ func (t *transaction) Rollback(ctx context.Context) error {
 		attribute.Int64("fitz.tx_id", int64(t.txID)),
 	))
 	defer span.End()
-	// Validate state (allow rollback even if committed)
+	// Finalization is idempotent. A commit attempt is terminal even if the
+	// broker rejects it or the response is lost.
 	if err := t.conn.CheckLiveHandle(); err != nil {
 		return err
 	}
-	if t.rolledback.Load() {
-		return errors.New("transaction already rolled back")
+	if t.committed.Load() || t.rolledback.Load() {
+		return nil
 	}
+	t.rolledback.Store(true)
 
 	// Encode request
 	// Send request
@@ -509,9 +509,6 @@ func (t *transaction) Rollback(ctx context.Context) error {
 	if !success {
 		return errors.New("rollback failed: unexpected status")
 	}
-
-	// Mark transaction as rolled back
-	t.rolledback.Store(true)
 
 	return nil
 }

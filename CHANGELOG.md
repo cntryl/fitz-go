@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Breaking: `RPCWorkerRegistration.Deregister` now returns broker and transport errors instead of silently treating deregistration as best-effort.
+- KV commit attempts are terminal even when rejected or interrupted; subsequent rollback is an idempotent no-op.
 - Breaking: Queue reserve, Stream read, and Stream last wire items now require their concrete matched route. `QueueItem`, `StreamReadItem`, and `StreamRecord` expose it, and Queue reserves plus Stream reads/peeks accept arbitrary whole-segment patterns capable of matching three segments.
 - Breaking: domain errors require the typed code-and-message envelope; Queue's one-byte and string-only error decoders were removed.
 - Added `Client.ConnectWhenReady(ctx)` for context-bounded startup retry.

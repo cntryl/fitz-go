@@ -32,12 +32,13 @@ type RPCWorkerRegistration struct {
 }
 
 // Deregister removes this worker registration from the broker and stops
-// routing new requests to it. The deregistration is best-effort on the
-// broker side (the local handler map is cleared immediately).
-func (r *RPCWorkerRegistration) Deregister() {
+// routing new requests to it. The local handler is removed immediately; any
+// broker or transport failure is returned to the caller.
+func (r *RPCWorkerRegistration) Deregister() error {
 	if r != nil && r.inner != nil {
-		r.inner.Unsubscribe()
+		return r.inner.Unsubscribe()
 	}
+	return nil
 }
 
 type RPCResponseWriter interface {

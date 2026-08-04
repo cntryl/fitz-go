@@ -165,10 +165,11 @@ type Subscription struct {
 }
 
 // Unsubscribe removes this worker registration.
-func (s *Subscription) Unsubscribe() {
+func (s *Subscription) Unsubscribe() error {
 	if s.client != nil {
-		s.client.unsubscribeWorker(s.route, s.version)
+		return s.client.unsubscribeWorker(s.route, s.version)
 	}
+	return nil
 }
 
 // Client is the RPC domain client interface.
@@ -456,11 +457,11 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 }
 
 // unsubscribeWorker removes a worker registration.
-func (c *client) unsubscribeWorker(route string, version uint64) {
+func (c *client) unsubscribeWorker(route string, version uint64) error {
 	c.mu.Lock()
 	if c.workerVersions[route] != version {
 		c.mu.Unlock()
-		return
+		return nil
 	}
 	delete(c.workers, route)
 	delete(c.workerVersions, route)
@@ -468,13 +469,17 @@ func (c *client) unsubscribeWorker(route string, version uint64) {
 
 	ctx := c.conn.LifecycleContext()
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcUnsubscribeWorker, rpcUnsubscribeWorkerPayloadWriter(route))
-	// Unsubscribe is a best-effort teardown: the local worker map entry has
-	// already been removed above, so the client will stop routing new calls
-	// regardless of whether the broker ACKs the deregistration. Errors here
-	// do not constitute data loss — they only affect broker-side routing
-	// cleanup, which the broker recovers from via session expiry.
-	_ = resp
-	_ = err
+	if err != nil {
+		return fmt.Errorf("UNSUBSCRIBE_WORKER request failed: %w", err)
+	}
+	success, _, err := connection.ParseStandardResponse(resp)
+	if err != nil {
+		return fmt.Errorf("UNSUBSCRIBE_WORKER failed: %w", mapRPCError(err))
+	}
+	if !success {
+		return errors.New("UNSUBSCRIBE_WORKER failed: unexpected status")
+	}
+	return nil
 }
 
 // Call per CLIENT_SPEC.md:
