@@ -91,7 +91,7 @@ func TestShouldReturnStaleHandleGivenClosedConnectionWhenQueueItemCompleted(t *t
 	item := &QueueItem{
 		ID:    1,
 		Token: 2,
-		route: "queue://realm/area/resource",
+		Route: "queue://realm/area/resource",
 		conn:  conn,
 	}
 
@@ -296,56 +296,21 @@ func TestShouldParseQueueResponseGivenBrokerPayloadWhenParseQueueResponseCalled(
 		assert.Equal(t, []byte{0x01, 0x02, 0x03}, data)
 	})
 
-	t.Run("error with code - invalid token", func(t *testing.T) {
+	t.Run("rejects one-byte error code", func(t *testing.T) {
 		// Arrange
-		payload := []byte{0x01, queueErrCodeInvalidToken}
+		payload := []byte{0x01, 0x01}
 
 		// Act
 		success, _, err := parseQueueResponse(payload)
 
 		// Assert
 		assert.False(t, success)
-		assert.Equal(t, ErrInvalidToken, err)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrInvalidToken)
 	})
 
-	t.Run("error with code - lease expired", func(t *testing.T) {
+	t.Run("rejects string-only error", func(t *testing.T) {
 		// Arrange
-		payload := []byte{0x01, queueErrCodeLeaseExpired}
-
-		// Act
-		success, _, err := parseQueueResponse(payload)
-
-		// Assert
-		assert.False(t, success)
-		assert.Equal(t, ErrLeaseExpiredQ, err)
-	})
-
-	t.Run("error with code - not found", func(t *testing.T) {
-		// Arrange
-		payload := []byte{0x01, queueErrCodeNotFound}
-
-		// Act
-		success, _, err := parseQueueResponse(payload)
-
-		// Assert
-		assert.False(t, success)
-		assert.Equal(t, ErrMessageNotFound, err)
-	})
-
-	t.Run("error with code - queue not found", func(t *testing.T) {
-		// Arrange
-		payload := []byte{0x01, queueErrCodeQueueNotFound}
-
-		// Act
-		success, _, err := parseQueueResponse(payload)
-
-		// Assert
-		assert.False(t, success)
-		assert.Equal(t, ErrQueueNotFound, err)
-	})
-
-	t.Run("error with message", func(t *testing.T) {
-		// Arrange — string error path is mapped to sentinels
 		errMsg := "queue is full"
 		msgBytes := []byte(errMsg)
 		payload := make([]byte, 5+len(msgBytes))
@@ -359,7 +324,7 @@ func TestShouldParseQueueResponseGivenBrokerPayloadWhenParseQueueResponseCalled(
 		// Assert
 		assert.False(t, success)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrQueueFull)
+		assert.NotErrorIs(t, err, ErrQueueFull)
 	})
 
 	t.Run("error response too short", func(t *testing.T) {
@@ -398,7 +363,7 @@ func TestShouldRollbackActiveSubscriptionsGivenRestoreFailureWhenRestoreSubscrip
 		waitForRestoreWrites(t, trans, baseWrites+1)
 		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueSubscribe, queueSubscribeResponsePayload(201)))
 		waitForRestoreWrites(t, trans, baseWrites+2)
-		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueSubscribe, []byte{0x01, queueErrCodeQueueNotFound}))
+		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueSubscribe, queueErrorPayload(queueDomainErrQueueNotFound, "queue not found")))
 		waitForRestoreWrites(t, trans, baseWrites+3)
 		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueUnsubscribe, []byte{0x00}))
 	}()
@@ -441,7 +406,7 @@ func TestShouldParseQueueSubscriptionIDGivenBrokerPayloadWhenParseSubscriptionID
 
 func TestShouldRejectMalformedQueueReservePayloadWhenParseReserveItemsCalled(t *testing.T) {
 	t.Run("undersized success payload", func(t *testing.T) {
-		_, err := parseReserveItems([]byte{0x00, 0x01, 0x02}, "queue://acme/app/work", nil)
+		_, err := parseReserveItems([]byte{0x00, 0x01, 0x02}, nil)
 
 		require.Error(t, err)
 		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
@@ -452,6 +417,7 @@ func TestShouldRejectMalformedQueueReservePayloadWhenParseReserveItemsCalled(t *
 		defer connection.PutBuffer(buf)
 
 		connection.WriteU32BE(buf, 1)
+		connection.WriteString(buf, "queue://acme/app/work")
 		connection.WriteU64BE(buf, 11)
 		connection.WriteU64BE(buf, 22)
 		connection.WriteBytes(buf, []byte("job"))
@@ -460,7 +426,7 @@ func TestShouldRejectMalformedQueueReservePayloadWhenParseReserveItemsCalled(t *
 		payload := make([]byte, buf.Len())
 		copy(payload, buf.Bytes())
 
-		items, err := parseReserveItems(payload, "queue://acme/app/work", nil)
+		items, err := parseReserveItems(payload, nil)
 
 		require.Error(t, err)
 		assert.Nil(t, items)
@@ -468,74 +434,35 @@ func TestShouldRejectMalformedQueueReservePayloadWhenParseReserveItemsCalled(t *
 	})
 }
 
-// TestShouldMapQueueError tests error message mapping.
-func TestShouldMapQueueErrorGivenBrokerMessageWhenMapQueueErrorCalled(t *testing.T) {
-	t.Run("map invalid token", func(t *testing.T) {
-		// Arrange
-		errMsg := "invalid token provided"
+func TestShouldParseConcreteQueueRouteGivenWildcardReserveResponse(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteU32BE(buf, 1)
+	connection.WriteString(buf, "queue://acme/cats/cat")
+	connection.WriteU64BE(buf, 11)
+	connection.WriteU64BE(buf, 22)
+	connection.WriteBytes(buf, []byte("job"))
 
-		// Act
-		mapped := mapQueueError(errMsg)
+	items, err := parseReserveItems(buf.Bytes(), nil)
 
-		// Assert
-		assert.Equal(t, ErrInvalidToken, mapped)
-	})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "queue://acme/cats/cat", items[0].Route)
+}
 
-	t.Run("map lease expired", func(t *testing.T) {
-		// Arrange
-		errMsg := "lease has expired"
+func TestShouldRejectWildcardQueueRouteGivenReserveResponse(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteU32BE(buf, 1)
+	connection.WriteString(buf, "queue://*/cats/*")
+	connection.WriteU64BE(buf, 11)
+	connection.WriteU64BE(buf, 22)
+	connection.WriteBytes(buf, []byte("job"))
 
-		// Act
-		mapped := mapQueueError(errMsg)
+	items, err := parseReserveItems(buf.Bytes(), nil)
 
-		// Assert
-		assert.Equal(t, ErrLeaseExpiredQ, mapped)
-	})
-
-	t.Run("map message not found", func(t *testing.T) {
-		// Arrange
-		errMsg := "message not found"
-
-		// Act
-		mapped := mapQueueError(errMsg)
-
-		// Assert
-		assert.Equal(t, ErrMessageNotFound, mapped)
-	})
-
-	t.Run("map queue not found", func(t *testing.T) {
-		// Arrange
-		errMsg := "queue not found in realm"
-
-		// Act
-		mapped := mapQueueError(errMsg)
-
-		// Assert
-		assert.Equal(t, ErrQueueNotFound, mapped)
-	})
-
-	t.Run("map queue full", func(t *testing.T) {
-		// Arrange
-		errMsg := "queue is full"
-
-		// Act
-		mapped := mapQueueError(errMsg)
-
-		// Assert
-		assert.Equal(t, ErrQueueFull, mapped)
-	})
-
-	t.Run("unknown error returns wrapped message", func(t *testing.T) {
-		// Arrange
-		errMsg := "unknown error condition"
-
-		// Act
-		mapped := mapQueueError(errMsg)
-
-		// Assert
-		require.Error(t, mapped)
-		assert.Equal(t, errMsg, mapped.Error())
-	})
+	require.Error(t, err)
+	assert.Nil(t, items)
 }
 
 // Benchmarks
@@ -599,7 +526,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 
 func BenchmarkParseQueueResponse(b *testing.B) {
 	successPayload := []byte{0x00, 0x01, 0x02, 0x03}
-	errorPayload := []byte{0x01, queueErrCodeInvalidToken}
+	errorPayload := queueErrorPayload(queueDomainErrInvalidToken, "invalid token")
 
 	b.Run("success response", func(b *testing.B) {
 		b.ReportAllocs()
@@ -616,6 +543,16 @@ func BenchmarkParseQueueResponse(b *testing.B) {
 			_, _, _ = parseQueueResponse(errorPayload)
 		}
 	})
+}
+
+func queueErrorPayload(code uint32, message string) []byte {
+	payload := []byte{0x01}
+	var encoded [4]byte
+	binary.BigEndian.PutUint32(encoded[:], code)
+	payload = append(payload, encoded[:]...)
+	binary.BigEndian.PutUint32(encoded[:], uint32(len(message)))
+	payload = append(payload, encoded[:]...)
+	return append(payload, message...)
 }
 
 // TestShouldEncodeExtendRequest tests EXTEND operation encoding.

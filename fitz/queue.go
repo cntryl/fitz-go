@@ -57,6 +57,7 @@ type QueueItem struct {
 	id    uint64
 	token uint64
 	Body  []byte
+	Route string
 
 	inner *internalqueue.QueueItem
 }
@@ -73,6 +74,7 @@ func wrapQueueItem(item *internalqueue.QueueItem) *QueueItem {
 		id:    item.ID,
 		token: item.Token,
 		Body:  item.Body,
+		Route: item.Route,
 		inner: item,
 	}
 }

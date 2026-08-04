@@ -605,6 +605,34 @@ func TestShouldParseStreamRecordGivenFullPayloadWhenParseRecordCalled(t *testing
 	assert.Equal(t, timestamp, record.Timestamp)
 }
 
+func TestShouldParseConcreteRouteGivenLastResponseWhenParseLastResponseCalled(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteString(buf, "stream://acme/orders/created")
+	connection.WriteU64BE(buf, 7)
+	buf.WriteByte(0)
+	buf.WriteByte(0)
+	connection.WriteBytes(buf, []byte("record-body"))
+	buf.WriteByte(0)
+	connection.WriteU64BE(buf, 23)
+
+	record, err := parseLastResponse(buf.Bytes())
+
+	require.NoError(t, err)
+	assert.Equal(t, "stream://acme/orders/created", record.Route)
+}
+
+func TestShouldRejectWildcardRouteGivenLastResponseWhenParseLastResponseCalled(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteString(buf, "stream://*/orders/created")
+
+	record, err := parseLastResponse(buf.Bytes())
+
+	require.Error(t, err)
+	assert.Nil(t, record)
+}
+
 // TestShouldParseStreamReadResponse tests the count-prefixed stream read envelope.
 func TestShouldParseStreamReadResponseGivenTrailerWhenParseReadResponseCalled(t *testing.T) {
 	body := []byte("record-body")
@@ -628,6 +656,7 @@ func TestShouldParseStreamReadResponseGivenTrailerWhenParseReadResponseCalled(t 
 	dataBuf := connection.GetBuffer()
 	defer connection.PutBuffer(dataBuf)
 	connection.WriteU32BE(dataBuf, 1)
+	connection.WriteString(dataBuf, "stream://realm/area/resource")
 	dataBuf.WriteByte(0)
 	dataBuf.Write(recordBuf.Bytes())
 	connection.WriteU64BE(dataBuf, 99)
@@ -642,6 +671,7 @@ func TestShouldParseStreamReadResponseGivenTrailerWhenParseReadResponseCalled(t 
 	records, err := parseReadResponse(payload)
 	require.NoError(t, err)
 	require.Len(t, records, 1)
+	assert.Equal(t, "stream://realm/area/resource", records[0].Route)
 	assert.Equal(t, uint64(7), records[0].Offset)
 	assert.Equal(t, body, records[0].Body)
 	require.NotNil(t, records[0].AreaOffset)
@@ -657,6 +687,7 @@ func TestShouldParseStreamReadPageGivenFilteredItemsWhenParseReadPageResponseCal
 	defer connection.PutBuffer(buf)
 
 	connection.WriteU32BE(buf, 3)
+	connection.WriteString(buf, "stream://realm/area/resource")
 	buf.WriteByte(0)
 	connection.WriteU64BE(buf, 41)
 	buf.WriteByte(1)
@@ -665,9 +696,11 @@ func TestShouldParseStreamReadPageGivenFilteredItemsWhenParseReadPageResponseCal
 	connection.WriteBytes(buf, []byte("alpha"))
 	buf.WriteByte(0)
 	connection.WriteU64BE(buf, 111)
+	connection.WriteString(buf, "stream://realm/area/resource")
 	buf.WriteByte(1)
 	connection.WriteU64BE(buf, 42)
 	buf.WriteByte(1)
+	connection.WriteString(buf, "stream://realm/area/resource")
 	buf.WriteByte(2)
 	connection.WriteU64BE(buf, 43)
 	connection.WriteU64BE(buf, 45)
@@ -702,6 +735,45 @@ func TestShouldParseStreamReadPageGivenFilteredItemsWhenParseReadPageResponseCal
 	assert.Equal(t, uint64(45), page.Items[2].ToOffset)
 	require.NotNil(t, page.Items[2].Reason)
 	assert.Equal(t, FilteredReasonPermission, *page.Items[2].Reason)
+}
+
+func TestShouldParseConcreteRoutesGivenWildcardStreamReadPage(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteU32BE(buf, 1)
+	connection.WriteString(buf, "stream://acme/cats/orders")
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 42)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 42)
+	buf.WriteByte(0)
+	buf.WriteByte(0)
+	buf.WriteByte(0)
+
+	page, err := parseReadPageResponse(buf.Bytes())
+
+	require.NoError(t, err)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "stream://acme/cats/orders", page.Items[0].Route)
+}
+
+func TestShouldRejectWildcardRouteGivenStreamReadPage(t *testing.T) {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteU32BE(buf, 1)
+	connection.WriteString(buf, "stream://*/cats/*")
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 42)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 42)
+	buf.WriteByte(0)
+	buf.WriteByte(0)
+	buf.WriteByte(0)
+
+	page, err := parseReadPageResponse(buf.Bytes())
+
+	require.Error(t, err)
+	assert.Nil(t, page)
 }
 
 // TestShouldParseStreamMetadata tests the metadata payload parser.
@@ -933,9 +1005,10 @@ func BenchmarkParseStreamReadResponse(b *testing.B) {
 }
 
 func BenchmarkParseStreamLastResponse(b *testing.B) {
-	// single record: [u64 offset][opt area][opt realm][bytes body][opt metadata][u64 timestamp]
+	// concrete route followed by a single record
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
+	connection.WriteString(buf, "stream://acme/app/events")
 	connection.WriteU64BE(buf, 1)
 	buf.WriteByte(0)
 	buf.WriteByte(0)
@@ -947,6 +1020,6 @@ func BenchmarkParseStreamLastResponse(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = parseRecord(payload, 0)
+		_, _ = parseLastResponse(payload)
 	}
 }

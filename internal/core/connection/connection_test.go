@@ -384,11 +384,12 @@ func TestShouldParseStandardResponseGivenSuccessStatusWhenParseStandardResponseC
 
 // TestShouldParseStandardResponseGivenErrorStatus tests error response parsing.
 func TestShouldParseStandardResponseGivenErrorStatusWhenParseStandardResponseCalled(t *testing.T) {
-	// Arrange - Error response: [status=1][u32 BE len][error message]
+	// Arrange - Error response: [status=1][u32 code][u32 BE len][error message]
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 
 	connection.WriteU8(buf, 1) // Error status
+	connection.WriteU32BE(buf, uint32(coreerrors.KvIsolationConflict))
 	connection.WriteString(buf, "test error message")
 	payload := buf.Bytes()
 

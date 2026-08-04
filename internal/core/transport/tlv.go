@@ -11,7 +11,7 @@ import (
 //   NewTLVDecoder returns an error if a tag appears more than once.
 // - Each TLV value length is encoded as a 2-byte big-endian uint16, which limits a single
 //   TLV value to 65535 bytes (64 KiB).
-// - Unknown tags are accepted and preserved (forward-compatibility).
+// - Unknown tags are accepted and preserved for protocol extensibility.
 
 // MaxTLVValueLen is the maximum allowed length for a single TLV value (2-byte length field).
 const MaxTLVValueLen uint16 = 65535

@@ -142,7 +142,7 @@ if err != nil {
 	panic(err)
 }
 
-// Read keeps the compatibility shape and yields event records only.
+// Read is the event-only projection of ReadPage.
 // ReadPage exposes filtered markers plus cursor progression across hidden offsets.
 _ = page.Cursor.LastResourceOffset
 ```

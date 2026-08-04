@@ -52,7 +52,7 @@ func TestShouldParseTypedDomainErrorGivenKnownCodeWhenParseStandardResponseCalle
 	assert.Equal(t, "boom", domainErr.Message)
 }
 
-func TestShouldFallbackToLegacyErrorGivenUnknownCodeWhenParseStandardResponseCalled(t *testing.T) {
+func TestShouldRejectStringOnlyErrorGivenMissingDomainCodeWhenParseStandardResponseCalled(t *testing.T) {
 	payload := []byte{1}
 	payload = appendU32(payload, 5)
 	payload = append(payload, []byte("hello")...)
@@ -61,7 +61,8 @@ func TestShouldFallbackToLegacyErrorGivenUnknownCodeWhenParseStandardResponseCal
 
 	assert.False(t, success)
 	assert.Nil(t, remaining)
-	assert.EqualError(t, err, "hello")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode domain error")
 
 	var domainErr *coreerrors.DomainError
 	assert.False(t, errors.As(err, &domainErr))

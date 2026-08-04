@@ -199,12 +199,6 @@ func (f *TestFixture) ConnectWithAuthOrFail(ctx context.Context, mode AuthMode) 
 	f.ConnectOrFail(ctx)
 }
 
-// ConnectOrSkip is retained as a compatibility wrapper for older tests but no
-// longer skips; broker failures are fatal.
-func (f *TestFixture) ConnectOrSkip(ctx context.Context) {
-	f.ConnectOrFail(ctx)
-}
-
 // UniqueRealm generates a unique realm name for test isolation.
 func (f *TestFixture) UniqueRealm() string {
 	return fmt.Sprintf("test-%d", time.Now().UnixNano())

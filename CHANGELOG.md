@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Breaking: Queue reserve, Stream read, and Stream last wire items now require their concrete matched route. `QueueItem`, `StreamReadItem`, and `StreamRecord` expose it, and Queue reserves plus Stream reads/peeks accept arbitrary whole-segment patterns capable of matching three segments.
+- Breaking: domain errors require the typed code-and-message envelope; Queue's one-byte and string-only error decoders were removed.
 - Added `Client.ConnectWhenReady(ctx)` for context-bounded startup retry.
 - Breaking: `ScheduleDeliveryMode` is now a distinct public type. Convert internal or numeric values explicitly when crossing package boundaries.
 - Exported the existing Notice, Stream, and RPC sentinel errors for `errors.Is`.
@@ -19,6 +21,7 @@ All notable changes to this project are documented in this file.
 
 ### Removed
 
+- Removed the unused `ConnectOrSkip` fixture alias.
 - Deleted the obsolete bug-tracking placeholder in `bugs/README.md`.
 - Removed placeholder example stubs from `fitz/` that did not add value beyond package godoc.
 

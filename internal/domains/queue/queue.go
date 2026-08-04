@@ -22,14 +22,14 @@ import (
 )
 
 // QueueItem represents a received (reserved) queue message.
-// Extend and Complete are called on the item; route and token are tracked internally.
+// Route is the concrete queue matched by the reserve selector.
 type QueueItem struct {
 	ID    uint64
 	Token uint64
 	Body  []byte
+	Route string
 
-	route string
-	conn  *connection.Connection
+	conn *connection.Connection
 }
 
 // AvailabilityNotification represents an availability notification from the queue.
@@ -81,14 +81,14 @@ func (s *Subscription) Unsubscribe() {
 // Extend extends the lease on this queue item.
 func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 	ctx, span := q.conn.Tracer().Start(ctx, "fitz.queue.Extend", trace.WithAttributes(
-		attribute.String("fitz.route", q.route),
+		attribute.String("fitz.route", q.Route),
 		attribute.Int64("fitz.message_id", int64(q.ID)),
 	))
 	defer span.End()
 	if err := q.conn.CheckLiveHandle(); err != nil {
 		return err
 	}
-	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueExtend, extendPayloadWriter(q.route, q.ID, q.Token, leaseSecs))
+	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueExtend, extendPayloadWriter(q.Route, q.ID, q.Token, leaseSecs))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -117,14 +117,14 @@ func (q *QueueItem) Complete(ctx context.Context) error {
 // CompleteWithToken acknowledges the item using an explicit token.
 func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 	ctx, span := q.conn.Tracer().Start(ctx, "fitz.queue.Complete", trace.WithAttributes(
-		attribute.String("fitz.route", q.route),
+		attribute.String("fitz.route", q.Route),
 		attribute.Int64("fitz.message_id", int64(q.ID)),
 	))
 	defer span.End()
 	if err := q.conn.CheckLiveHandle(); err != nil {
 		return err
 	}
-	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueComplete, completePayloadWriter(q.route, q.ID, token))
+	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueComplete, completePayloadWriter(q.Route, q.ID, token))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -237,14 +237,14 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 
 // Reserve per CLIENT_SPEC.md:
 // Request: [route_len][route][lease_seconds][has_batch_size][batch_size?][has_wait_seconds][wait_seconds?]
-// Response: [status][lease_count(u32)][{message_id, lease_token, body_len, body}...]
+// Response: [status][lease_count(u32)][{route, message_id, lease_token, body_len, body}...]
 func (c *client) Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error) {
 	return c.ReserveWithOptions(ctx, route, leaseSecs, WithBatchSize(batchSize))
 }
 
 // ReserveWithOptions per CLIENT_SPEC.md:
 // Request: [route_len][route][lease_seconds][has_batch_size][batch_size?][has_wait_seconds][wait_seconds?]
-// Response: [status][lease_count(u32)][{message_id, lease_token, body_len, body}...]
+// Response: [status][lease_count(u32)][{route, message_id, lease_token, body_len, body}...]
 func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs uint64, opts ...ReserveOption) ([]*QueueItem, error) {
 	cfg := reserveConfig{
 		batchSize: 1,
@@ -267,7 +267,7 @@ func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs
 	}
 
 	// Validate route format
-	if err := types.ValidateSelectorRoute(route, "queue", 3, false); err != nil {
+	if err := types.ValidateRegistrationPattern(route, "queue", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -347,7 +347,7 @@ func (c *client) reserveOnce(
 		return nil, errors.New("reserve failed: unexpected status")
 	}
 
-	items, err := parseReserveItems(remaining, route, c.conn)
+	items, err := parseReserveItems(remaining, c.conn)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +355,7 @@ func (c *client) reserveOnce(
 	return items, nil
 }
 
-func parseReserveItems(remaining []byte, route string, conn *connection.Connection) ([]*QueueItem, error) {
+func parseReserveItems(remaining []byte, conn *connection.Connection) ([]*QueueItem, error) {
 	count, offset, err := connection.ReadU32BE(remaining, 0)
 	if err != nil {
 		return nil, fmt.Errorf("parse lease_count: %w", err)
@@ -363,7 +363,14 @@ func parseReserveItems(remaining []byte, route string, conn *connection.Connecti
 
 	items := make([]*QueueItem, 0, count)
 	for i := range count {
-		item := &QueueItem{route: route, conn: conn}
+		item := &QueueItem{conn: conn}
+		item.Route, offset, err = connection.ReadString(remaining, offset)
+		if err != nil {
+			return nil, fmt.Errorf("parse concrete route at item %d: %w", i, err)
+		}
+		if err = types.ValidateFixedRoute(item.Route, "queue", 3); err != nil {
+			return nil, fmt.Errorf("parse concrete route at item %d: %w", i, err)
+		}
 
 		item.ID, offset, err = connection.ReadU64BE(remaining, offset)
 		if err != nil {

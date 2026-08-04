@@ -23,6 +23,13 @@ availability notifications additionally expose ready, delayed, and inflight
 message counts. Duplicate local registrations for the same original string
 share one wire registration and reconnect restores active registrations.
 
+Queue reserves and Stream reads/peeks accept the same whole-segment patterns as
+their subscriptions. Every returned `QueueItem` and `StreamReadItem` exposes
+the exact concrete matched route, and Stream event records expose it through
+`StreamRecord.Route`. Route-less reserve/read/last responses are not supported. If
+any item contains an invalid concrete route, the entire response fails closed;
+the client never returns a partial reservation or read batch.
+
 ## Lifecycle And Resilience
 
 - `Connect(ctx)` is one-shot for the initial connection. Concurrent or repeated

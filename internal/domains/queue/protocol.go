@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
 )
@@ -32,15 +31,7 @@ var (
 	ErrQueueFull       = errors.New("queue full")
 )
 
-// Legacy queue error codes sent by older brokers as [u8 status=1][u8 error_code].
-const (
-	queueErrCodeInvalidToken  = 1
-	queueErrCodeLeaseExpired  = 2
-	queueErrCodeNotFound      = 3
-	queueErrCodeQueueNotFound = 4
-)
-
-// Current broker queue error codes in the shared domain error envelope:
+// Queue error codes in the shared domain error envelope:
 // [u8 status=1][u32 code][u32 msg_len][msg].
 const (
 	queueDomainErrInvalidToken  = 4001
@@ -50,13 +41,7 @@ const (
 	queueDomainErrQueueFull     = 4005
 )
 
-// parseQueueResponse handles the Queue domain's non-standard error format.
-// Queue errors can be either:
-//   - [u8 1][u32 code][u32 len][error_msg] (current shared domain error envelope)
-//   - [u8 1][u8 error_code]                (legacy typed errors)
-//   - [u8 1][u32 len][error_msg]           (legacy string errors)
-//
-// This replaces ParseStandardResponse for queue operations.
+// parseQueueResponse maps the Queue domain's shared error envelope to public errors.
 func parseQueueResponse(payload []byte) (bool, []byte, error) {
 	if len(payload) < 1 {
 		return false, nil, errors.New("response too short")
@@ -67,54 +52,16 @@ func parseQueueResponse(payload []byte) (bool, []byte, error) {
 		return true, payload[1:], nil
 	}
 
-	// Current shared domain error envelope.
-	if len(payload) >= 9 {
-		code := binary.BigEndian.Uint32(payload[1:5])
-		msgLen := binary.BigEndian.Uint32(payload[5:9])
-		if isQueueDomainErrorCode(code) && int(9+msgLen) <= len(payload) {
-			return false, nil, mapQueueErrorCode(code, string(payload[9:9+msgLen]))
-		}
+	if len(payload) < 9 {
+		return false, nil, fmt.Errorf("malformed queue error response (%d bytes)", len(payload))
 	}
 
-	// Legacy error response — check if it's a 1-byte error code or a string error.
-	if len(payload) == 2 {
-		// [u8 1][u8 error_code]
-		return false, nil, mapLegacyQueueErrorCode(payload[1])
+	code := binary.BigEndian.Uint32(payload[1:5])
+	msgLen := binary.BigEndian.Uint32(payload[5:9])
+	if uint64(msgLen) != uint64(len(payload)-9) {
+		return false, nil, fmt.Errorf("malformed queue error response (%d bytes)", len(payload))
 	}
-
-	// [u8 1][u32 len][error_msg] — standard string error; map to sentinels for consistent handling
-	if len(payload) >= 5 {
-		msgLen := binary.BigEndian.Uint32(payload[1:5])
-		if int(5+msgLen) <= len(payload) {
-			return false, nil, mapQueueError(string(payload[5 : 5+msgLen]))
-		}
-	}
-
-	return false, nil, fmt.Errorf("malformed queue error response (%d bytes)", len(payload))
-}
-
-func isQueueDomainErrorCode(code uint32) bool {
-	switch code {
-	case queueDomainErrInvalidToken, queueDomainErrLeaseExpired, queueDomainErrNotFound, queueDomainErrQueueNotFound, queueDomainErrQueueFull:
-		return true
-	default:
-		return false
-	}
-}
-
-func mapLegacyQueueErrorCode(code byte) error {
-	switch code {
-	case queueErrCodeInvalidToken:
-		return ErrInvalidToken
-	case queueErrCodeLeaseExpired:
-		return ErrLeaseExpiredQ
-	case queueErrCodeNotFound:
-		return ErrMessageNotFound
-	case queueErrCodeQueueNotFound:
-		return ErrQueueNotFound
-	default:
-		return fmt.Errorf("unknown queue error code: %d", code)
-	}
+	return false, nil, mapQueueErrorCode(code, string(payload[9:]))
 }
 
 func mapQueueErrorCode(code uint32, msg string) error {
@@ -130,27 +77,7 @@ func mapQueueErrorCode(code uint32, msg string) error {
 	case queueDomainErrQueueFull:
 		return ErrQueueFull
 	default:
-		return mapQueueError(msg)
-	}
-}
-
-// mapQueueError maps a broker error message to a domain-specific Go error.
-func mapQueueError(msg string) error {
-	l := strings.ToLower(msg)
-	switch {
-	case strings.Contains(l, "token"):
-		return ErrInvalidToken
-	case strings.Contains(l, "expired"):
-		return ErrLeaseExpiredQ
-	case strings.Contains(l, "not found"):
-		if strings.Contains(l, "message") {
-			return ErrMessageNotFound
-		}
-		return ErrQueueNotFound
-	case strings.Contains(l, "full"):
-		return ErrQueueFull
-	default:
-		return errors.New(msg)
+		return fmt.Errorf("queue error %d: %s", code, msg)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 
 // Record represents a single stream record.
 type Record struct {
+	Route       string
 	Offset      uint64
 	AreaOffset  *uint64
 	RealmOffset *uint64
@@ -49,6 +50,7 @@ const (
 )
 
 type ReadItem struct {
+	Route      string
 	Kind       ReadItemKind
 	Record     *Record
 	Offset     uint64
@@ -377,7 +379,7 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 	if log := c.conn.Logger(); log != nil {
 		log.DebugContext(ctx, "stream.Read", "route", route, "from_offset", fromOffset, "limit", limit)
 	}
-	if err := types.ValidateSelectorRoute(route, "stream", 3, true); err != nil {
+	if err := types.ValidateRegistrationPattern(route, "stream", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -430,7 +432,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	if log := c.conn.Logger(); log != nil {
 		log.DebugContext(ctx, "stream.Peek", "route", route)
 	}
-	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
+	if err := types.ValidateRegistrationPattern(route, "stream", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -459,7 +461,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 			return nil
 		}
 
-		record, err = parseRecord(data, 0)
+		record, err = parseLastResponse(data)
 		if err != nil {
 			return fmt.Errorf("parse peek response: %w", err)
 		}
@@ -571,9 +573,21 @@ func parseReadPageResponse(data []byte) (*ReadPage, error) {
 
 	items := make([]ReadItem, 0, count)
 	for i := range count {
+		concreteRoute, newOffset, err := connection.ReadString(data, offset)
+		if err != nil {
+			return nil, fmt.Errorf("parse concrete route at item %d: %w", i, err)
+		}
+		if err = types.ValidateFixedRoute(concreteRoute, "stream", 3); err != nil {
+			return nil, fmt.Errorf("parse concrete route at item %d: %w", i, err)
+		}
+		offset = newOffset
 		item, newOffset, err := decodeStreamReadItemAt(data, offset)
 		if err != nil {
 			return nil, fmt.Errorf("parse read item %d: %w", i, err)
+		}
+		item.Route = concreteRoute
+		if item.Record != nil {
+			item.Record.Route = concreteRoute
 		}
 		items = append(items, *item)
 		offset = newOffset
@@ -618,6 +632,25 @@ func parseRecord(data []byte, offset int) (*Record, error) {
 		return nil, errors.New("parse record has trailing bytes")
 	}
 	return rec, nil
+}
+
+func parseLastResponse(data []byte) (*Record, error) {
+	route, offset, err := connection.ReadString(data, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse concrete route: %w", err)
+	}
+	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
+		return nil, fmt.Errorf("invalid concrete route in response: %w", err)
+	}
+	record, newOffset, err := decodeStreamRecordAt(data, offset)
+	if err != nil {
+		return nil, err
+	}
+	if newOffset != len(data) {
+		return nil, errors.New("parse last response has trailing bytes")
+	}
+	record.Route = route
+	return record, nil
 }
 
 func decodeStreamRecordAt(data []byte, offset int) (*Record, int, error) {

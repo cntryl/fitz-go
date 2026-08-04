@@ -73,6 +73,7 @@ const (
 )
 
 type StreamRecord struct {
+	Route       string
 	Offset      uint64
 	AreaOffset  *uint64
 	RealmOffset *uint64
@@ -82,6 +83,7 @@ type StreamRecord struct {
 }
 
 type StreamReadItem struct {
+	Route      string
 	Kind       StreamReadItemKind
 	Record     *StreamRecord
 	Offset     uint64
@@ -204,6 +206,7 @@ func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset ui
 	items := make([]StreamReadItem, 0, len(page.Items))
 	for _, item := range page.Items {
 		converted := StreamReadItem{
+			Route:      item.Route,
 			Kind:       item.Kind,
 			Offset:     item.Offset,
 			FromOffset: item.FromOffset,
@@ -212,6 +215,7 @@ func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset ui
 		}
 		if item.Record != nil {
 			converted.Record = &StreamRecord{
+				Route:       item.Record.Route,
 				Offset:      item.Record.Offset,
 				AreaOffset:  item.Record.AreaOffset,
 				RealmOffset: item.Record.RealmOffset,
@@ -282,6 +286,7 @@ func (c *streamClient) Peek(ctx context.Context, route string) (*StreamRecord, e
 		return nil, err
 	}
 	return &StreamRecord{
+		Route:       record.Route,
 		Offset:      record.Offset,
 		AreaOffset:  record.AreaOffset,
 		RealmOffset: record.RealmOffset,
@@ -364,6 +369,7 @@ func (it *streamRecordIterator) Next() bool {
 	}
 	record := it.inner.Value()
 	it.current = StreamRecord{
+		Route:       record.Route,
 		Offset:      record.Offset,
 		AreaOffset:  record.AreaOffset,
 		RealmOffset: record.RealmOffset,

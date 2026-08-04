@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"sync"
 
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
@@ -15,8 +14,7 @@ import (
 // ParseStandardResponse handles the common [u8 status] prefix per CLIENT_SPEC.md.
 // Returns (success, remainingPayload, error).
 // If status=0 (success), returns remaining payload after status byte.
-// If status=1 (error), parses either a typed [u32 code][u32 msg_len][msg]
-// envelope or the legacy [u32 msg_len][msg] error string.
+// If status=1 (error), parses [u32 code][u32 msg_len][msg].
 func ParseStandardResponse(payload []byte) (bool, []byte, error) {
 	if len(payload) < 1 {
 		return false, nil, errors.New("response too short")
@@ -25,44 +23,36 @@ func ParseStandardResponse(payload []byte) (bool, []byte, error) {
 	status := payload[0]
 
 	if status == 1 { // Error (per CLIENT_SPEC.md)
-		if code, message, ok := parseTypedDomainError(payload[1:]); ok {
-			return false, nil, coreerrors.NewDomainError(code, message)
-		}
-
-		errMsg, _, err := ReadString(payload, 1)
+		code, message, err := parseTypedDomainError(payload[1:])
 		if err != nil {
-			return false, nil, fmt.Errorf("decode error message: %w", err)
+			return false, nil, fmt.Errorf("decode domain error: %w", err)
 		}
-		return false, nil, errors.New(errMsg)
+		return false, nil, coreerrors.NewDomainError(code, message)
 	}
 
 	// Success (status=0) - return remaining payload
 	return true, payload[1:], nil
 }
 
-func parseTypedDomainError(payload []byte) (uint32, string, bool) {
+func parseTypedDomainError(payload []byte) (uint32, string, error) {
 	if len(payload) < 8 {
-		return 0, "", false
+		return 0, "", io.ErrUnexpectedEOF
 	}
 
 	code, offset, err := ReadU32BE(payload, 0)
 	if err != nil {
-		return 0, "", false
-	}
-	if !isKnownDomainErrorCode(code) {
-		return 0, "", false
+		return 0, "", err
 	}
 
 	message, newOffset, err := ReadString(payload, offset)
-	if err != nil || newOffset != len(payload) {
-		return 0, "", false
+	if err != nil {
+		return 0, "", err
+	}
+	if newOffset != len(payload) {
+		return 0, "", errors.New("trailing bytes after domain error")
 	}
 
-	return code, message, true
-}
-
-func isKnownDomainErrorCode(code uint32) bool {
-	return !strings.HasPrefix(coreerrors.ErrorCode(code).String(), "unknown_error_")
+	return code, message, nil
 }
 
 // Read helpers with bounds checking (per CLIENT_SPEC.md encoding).
