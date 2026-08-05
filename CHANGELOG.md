@@ -6,9 +6,10 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Breaking: Stream READ and SUBSCRIBE now accept only concrete resource, area (`realm/area/*`), realm (`realm/*/*`), or global (`stream://**`) selectors. READ cursors expose `CurrentRealm`, global continuation requests use `WithStreamResumeRealm`, and Stream LAST is concrete-route only.
 - Breaking: `RPCWorkerRegistration.Deregister` now returns broker and transport errors instead of silently treating deregistration as best-effort.
 - KV commit attempts are terminal even when rejected or interrupted; subsequent rollback is an idempotent no-op.
-- Breaking: Queue reserve, Stream read, and Stream last wire items now require their concrete matched route. `QueueItem`, `StreamReadItem`, and `StreamRecord` expose it, and Queue reserves plus Stream reads/peeks accept arbitrary whole-segment patterns capable of matching three segments.
+- Breaking: Queue reserve, Stream read, and Stream last wire items now require their concrete matched route. `QueueItem`, `StreamReadItem`, and `StreamRecord` expose it.
 - Breaking: domain errors require the typed code-and-message envelope; Queue's one-byte and string-only error decoders were removed.
 - Added `Client.ConnectWhenReady(ctx)` for context-bounded startup retry.
 - Breaking: `ScheduleDeliveryMode` is now a distinct public type. Convert internal or numeric values explicitly when crossing package boundaries.

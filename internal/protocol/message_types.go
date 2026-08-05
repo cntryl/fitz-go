@@ -68,6 +68,7 @@ const (
 	MessageTypeScheduleCreate      uint16 = 700
 	MessageTypeScheduleCancel      uint16 = 701
 	MessageTypeScheduleList        uint16 = 702
+	MessageTypeScheduleListPage    uint16 = 707
 	MessageTypeScheduleSubscribe   uint16 = 703
 	MessageTypeScheduleUnsubscribe uint16 = 704
 	MessageTypeScheduleNotify      uint16 = 705 // Server -> Client only

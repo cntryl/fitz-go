@@ -187,6 +187,28 @@ func ValidateRegistrationPattern(route string, expectedScheme string, requiredSe
 	return nil
 }
 
+// ValidateStreamSelector validates the four route shapes shared by Stream READ and SUBSCRIBE.
+func ValidateStreamSelector(route string) error {
+	if route == "stream://**" {
+		return nil
+	}
+	shape, err := scanRoute(route, "stream")
+	if err != nil || shape.segmentCount != 3 {
+		return invalidRoute("stream selector must be realm/area/resource, realm/area/*, realm/*/*, or stream://**")
+	}
+	segments := splitRouteSegments(route)
+	if len(segments) != 3 {
+		return invalidRoute("stream selector must be realm/area/resource, realm/area/*, realm/*/*, or stream://**")
+	}
+	if strings.Contains(segments[0], "*") || strings.Contains(segments[1], "*") && segments[1] != "*" || strings.Contains(segments[2], "*") && segments[2] != "*" {
+		return invalidRoute("stream selector must use whole-segment wildcards")
+	}
+	if (segments[1] == "*" && segments[2] == "*") || (segments[1] != "*" && segments[2] == "*") || (segments[1] != "*" && segments[2] != "*") {
+		return nil
+	}
+	return invalidRoute("stream selector must use whole-segment wildcards")
+}
+
 // RouteMatchesPattern reports whether a validated concrete route matches a
 // validated registration pattern using whole-segment * and ** semantics.
 func RouteMatchesPattern(route string, pattern string) bool {

@@ -29,6 +29,11 @@ type ScheduleEntry struct {
 	DeliveryMode ScheduleDeliveryMode
 	Payload      []byte
 }
+type ScheduleListPage struct {
+	Entries      []ScheduleEntry
+	HasMore      bool
+	Continuation *string
+}
 
 type ScheduleDeliveryMode uint8
 
@@ -76,6 +81,7 @@ type Client interface {
 	// limit: maximum entries to return (0 = server default of 100).
 	// Returns: schedule entries for this page, total count of all schedules, error.
 	List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error)
+	ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error)
 
 	// ListBySelector retrieves schedules matching a canonical schedule selector.
 	ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error)
@@ -301,6 +307,48 @@ func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntr
 	}
 
 	return entries, totalCount, nil
+}
+
+func (c *client) ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error) {
+	if limit != nil && (*limit < 1 || *limit > 1000) {
+		return ScheduleListPage{}, errors.New("schedule LIST_PAGE limit must be between 1 and 1000")
+	}
+	resp, err := c.currentConn().SendRequestWithWriter(ctx, protocol.MessageTypeScheduleListPage, scheduleListPagePayloadWriter(cursor, limit))
+	if err != nil {
+		return ScheduleListPage{}, err
+	}
+	success, remaining, err := connection.ParseStandardResponse(resp)
+	if err != nil {
+		return ScheduleListPage{}, err
+	}
+	if !success {
+		return ScheduleListPage{}, errors.New("schedule LIST_PAGE failed")
+	}
+	if len(remaining) < 2 || remaining[0] != 1 || (remaining[1] != 0 && remaining[1] != 1) {
+		return ScheduleListPage{}, errors.New("invalid schedule LIST_PAGE response")
+	}
+	pos := 2
+	var continuation *string
+	if pos >= len(remaining) {
+		return ScheduleListPage{}, errors.New("missing continuation")
+	}
+	has := remaining[pos]
+	pos++
+	if has == 1 {
+		s, n, e := connection.ReadString(remaining, pos)
+		if e != nil {
+			return ScheduleListPage{}, e
+		}
+		continuation = &s
+		pos = n
+	} else if has != 0 {
+		return ScheduleListPage{}, errors.New("invalid continuation flag")
+	}
+	entries, err := parseScheduleListEntries(remaining[pos:])
+	if err != nil {
+		return ScheduleListPage{}, err
+	}
+	return ScheduleListPage{Entries: entries, HasMore: remaining[1] == 1, Continuation: continuation}, nil
 }
 
 func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {

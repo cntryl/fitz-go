@@ -2,6 +2,7 @@ package fitz
 
 import (
 	"context"
+	"strings"
 
 	internalstream "github.com/cntryl/fitz-go/internal/domains/stream"
 )
@@ -38,8 +39,10 @@ func WithStreamDiscriminator(discriminator string) StreamAppendOption {
 }
 
 type streamReadConfig struct {
-	maxBytes *uint64
-	filter   *StreamFilterSet
+	maxBytes          *uint64
+	filter            *StreamFilterSet
+	cursorFingerprint *uint64
+	capturedWatermark *uint64
 }
 
 type StreamReadOption func(*streamReadConfig)
@@ -54,6 +57,10 @@ func WithStreamFilter(filter StreamFilterSet) StreamReadOption {
 	return func(cfg *streamReadConfig) {
 		cfg.filter = &filter
 	}
+}
+
+func WithStreamCursor(fingerprint, watermark uint64) StreamReadOption {
+	return func(cfg *streamReadConfig) { cfg.cursorFingerprint = &fingerprint; cfg.capturedWatermark = &watermark }
 }
 
 type StreamFilteredReason = internalstream.FilteredReason
@@ -96,6 +103,9 @@ type StreamReadCursor struct {
 	LastResourceOffset uint64
 	LastAreaOffset     *uint64
 	LastRealmOffset    *uint64
+	LastGlobalOffset   *uint64
+	CursorFingerprint  *uint64
+	CapturedWatermark  *uint64
 	HasMore            bool
 }
 
@@ -233,6 +243,9 @@ func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset ui
 			LastResourceOffset: page.Cursor.LastResourceOffset,
 			LastAreaOffset:     page.Cursor.LastAreaOffset,
 			LastRealmOffset:    page.Cursor.LastRealmOffset,
+			LastGlobalOffset:   page.Cursor.LastGlobalOffset,
+			CursorFingerprint:  page.Cursor.CursorFingerprint,
+			CapturedWatermark:  page.Cursor.CapturedWatermark,
 			HasMore:            page.Cursor.HasMore,
 		},
 	}, nil
@@ -245,6 +258,7 @@ func (c *streamClient) ReadWhenCommitted(ctx context.Context, route string, from
 		batchSize = 1
 	}
 	offset := fromOffset
+	var cursorFingerprint, capturedWatermark *uint64
 	return startManagedPollingIterator(ctx,
 		func(helperCtx context.Context, wake func()) (func(), error) {
 			subscription, err := c.Subscribe(helperCtx, route, func(context.Context, StreamCommitNotification) error { wake(); return nil })
@@ -254,16 +268,37 @@ func (c *streamClient) ReadWhenCommitted(ctx context.Context, route string, from
 			return subscription.Unsubscribe, nil
 		},
 		func(helperCtx context.Context) (managedPollResult[[]StreamRecord], error) {
-			page, err := c.ReadPage(helperCtx, route, offset, batchSize, opts...)
+			pollOptions := append([]StreamReadOption{}, opts...)
+			if cursorFingerprint != nil && capturedWatermark != nil {
+				pollOptions = append(pollOptions, WithStreamCursor(*cursorFingerprint, *capturedWatermark))
+			}
+			page, err := c.ReadPage(helperCtx, route, offset, batchSize, pollOptions...)
 			if err != nil || page == nil {
 				return managedPollResult[[]StreamRecord]{}, err
 			}
 			records := streamRecordsFromPage(page)
 			if len(page.Items) > 0 {
-				offset = page.Cursor.LastResourceOffset + 1
+				offset = streamCursorOffset(route, page.Cursor) + 1
+				cursorFingerprint = page.Cursor.CursorFingerprint
+				capturedWatermark = page.Cursor.CapturedWatermark
 			}
 			return managedPollResult[[]StreamRecord]{value: records, emit: len(records) > 0, pollAgain: page.Cursor.HasMore}, nil
 		})
+}
+
+func streamCursorOffset(route string, cursor StreamReadCursor) uint64 {
+	if route == "stream://**" || strings.HasSuffix(route, "/*/*") {
+		if route == "stream://**" && cursor.LastGlobalOffset != nil {
+			return *cursor.LastGlobalOffset
+		}
+		if cursor.LastRealmOffset != nil {
+			return *cursor.LastRealmOffset
+		}
+	}
+	if strings.HasSuffix(route, "/*") && cursor.LastAreaOffset != nil {
+		return *cursor.LastAreaOffset
+	}
+	return cursor.LastResourceOffset
 }
 
 func streamRecordsFromPage(page *StreamReadPage) []StreamRecord {
@@ -349,7 +384,7 @@ func applyStreamReadOptions(options []StreamReadOption) *internalstream.StreamRe
 	for _, option := range options {
 		option(cfg)
 	}
-	return &internalstream.StreamReadOptions{MaxBytes: cfg.maxBytes, Filter: cfg.filter}
+	return &internalstream.StreamReadOptions{MaxBytes: cfg.maxBytes, Filter: cfg.filter, CursorFingerprint: cfg.cursorFingerprint, CapturedWatermark: cfg.capturedWatermark}
 }
 
 // Commit finalizes the active stream session.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -24,13 +25,14 @@ import (
 
 // Record represents a single stream record.
 type Record struct {
-	Route       string
-	Offset      uint64
-	AreaOffset  *uint64
-	RealmOffset *uint64
-	Body        []byte
-	Metadata    []byte
-	Timestamp   uint64
+	Route        string
+	Offset       uint64
+	AreaOffset   *uint64
+	RealmOffset  *uint64
+	GlobalOffset *uint64
+	Body         []byte
+	Metadata     []byte
+	Timestamp    uint64
 }
 
 type FilteredReason string
@@ -63,7 +65,12 @@ type ReadCursor struct {
 	LastResourceOffset uint64
 	LastAreaOffset     *uint64
 	LastRealmOffset    *uint64
-	HasMore            bool
+	LastGlobalOffset   *uint64
+	CursorFingerprint  *uint64
+	CapturedWatermark  *uint64
+	// Deprecated: retained for legacy cursor decoding.
+	CurrentRealm *string
+	HasMore      bool
 }
 
 type ReadPage struct {
@@ -379,7 +386,7 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 	if log := c.conn.Logger(); log != nil {
 		log.DebugContext(ctx, "stream.Read", "route", route, "from_offset", fromOffset, "limit", limit)
 	}
-	if err := types.ValidateRegistrationPattern(route, "stream", 3); err != nil {
+	if err := types.ValidateStreamSelector(route); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -408,7 +415,7 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 			return fmt.Errorf("parse read response envelope: %w", err)
 		}
 
-		page, err = parseReadPageResponse(data)
+		page, err = parseReadPageResponse(data, route)
 		if err != nil {
 			return fmt.Errorf("parse read response: %w", err)
 		}
@@ -432,7 +439,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 	if log := c.conn.Logger(); log != nil {
 		log.DebugContext(ctx, "stream.Peek", "route", route)
 	}
-	if err := types.ValidateRegistrationPattern(route, "stream", 3); err != nil {
+	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
@@ -561,7 +568,7 @@ func parseReadResponse(data []byte) ([]Record, error) {
 }
 
 // parseReadPageResponse parses a raw replay page from a READ response data blob.
-func parseReadPageResponse(data []byte) (*ReadPage, error) {
+func parseReadPageResponse(data []byte, selectors ...string) (*ReadPage, error) {
 	if len(data) == 0 {
 		return &ReadPage{Items: nil, Cursor: ReadCursor{}}, nil
 	}
@@ -603,23 +610,76 @@ func parseReadPageResponse(data []byte) (*ReadPage, error) {
 	if cursor.LastRealmOffset, offset, err = readOptionalU64(data, offset); err != nil {
 		return nil, fmt.Errorf("parse last_realm_offset: %w", err)
 	}
-	if offset >= len(data) {
-		return nil, errors.New("read response missing has_more flag")
+	global := len(selectors) > 0 && (selectors[0] == "stream://**" || strings.HasPrefix(selectors[0], "stream://*/"))
+	cursorStart := offset
+	parseCursor := func(withCurrentRealm bool) (ReadCursor, int, error) {
+		candidate := cursor
+		pos := cursorStart
+		var e error
+		if withCurrentRealm {
+			candidate.CurrentRealm, pos, e = readOptionalString(data, pos)
+			if e != nil {
+				return candidate, pos, e
+			}
+		}
+		if global {
+			if candidate.LastGlobalOffset, pos, e = readOptionalU64(data, pos); e != nil {
+				return candidate, pos, e
+			}
+		}
+		if pos >= len(data) || (data[pos] != 0 && data[pos] != 1) {
+			return candidate, pos, errors.New("invalid has_more flag")
+		}
+		candidate.HasMore = data[pos] == 1
+		pos++
+		if global {
+			if candidate.CursorFingerprint, pos, e = readOptionalU64(data, pos); e != nil {
+				return candidate, pos, e
+			}
+			if candidate.CapturedWatermark, pos, e = readOptionalU64(data, pos); e != nil {
+				return candidate, pos, e
+			}
+		}
+		return candidate, pos, nil
 	}
-	switch data[offset] {
-	case 0:
-		cursor.HasMore = false
-	case 1:
-		cursor.HasMore = true
-	default:
-		return nil, fmt.Errorf("parse has_more: invalid flag %d", data[offset])
+	if len(selectors) == 0 {
+		cursor, offset, err = parseCursor(false)
+		if err != nil || offset != len(data) {
+			cursor, offset, err = parseCursor(true)
+		}
+	} else {
+		cursor, offset, err = parseCursor(true)
+		if err != nil || offset != len(data) {
+			cursor, offset, err = parseCursor(false)
+		}
 	}
-	offset++
+	if err != nil {
+		return nil, err
+	}
 	if offset != len(data) {
 		return nil, errors.New("read response has trailing bytes")
 	}
 
 	return &ReadPage{Items: items, Cursor: cursor}, nil
+}
+
+func readOptionalString(data []byte, offset int) (*string, int, error) {
+	if offset >= len(data) {
+		return nil, offset, errors.New("optional string flag missing")
+	}
+	flag := data[offset]
+	offset++
+	if flag == 0 {
+		return nil, offset, nil
+	}
+	if flag != 1 {
+		return nil, offset, fmt.Errorf("invalid optional string flag: %d", flag)
+	}
+	value, newOffset, err := connection.ReadString(data, offset)
+	if err != nil {
+		return nil, newOffset, err
+	}
+	return &value, newOffset, nil
 }
 
 // parseRecord parses a single record from the payload at the given offset.
@@ -936,7 +996,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler CommitHa
 	if log := c.conn.Logger(); log != nil {
 		log.DebugContext(ctx, "stream.Subscribe", "pattern", pattern)
 	}
-	if err := types.ValidateRegistrationPattern(pattern, "stream", 3); err != nil {
+	if err := types.ValidateStreamSelector(pattern); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)

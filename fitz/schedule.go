@@ -13,6 +13,11 @@ type ScheduleEntry struct {
 	DeliveryMode ScheduleDeliveryMode
 	Payload      []byte
 }
+type ScheduleListPage struct {
+	Entries      []ScheduleEntry
+	HasMore      bool
+	Continuation *string
+}
 
 type ScheduleDeliveryMode uint8
 
@@ -43,6 +48,7 @@ type ScheduleClient interface {
 	Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (id string, err error)
 	Cancel(ctx context.Context, route string) error
 	List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error)
+	ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error)
 	ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error)
 	WaitForNotifications(ctx context.Context, route string) (Iterator[ScheduleNotification], error)
 	Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error)
@@ -69,6 +75,14 @@ func (c *scheduleClient) List(ctx context.Context, offset, limit uint64) ([]Sche
 		return nil, 0, err
 	}
 	return copyScheduleEntries(entries), totalCount, nil
+}
+
+func (c *scheduleClient) ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error) {
+	page, err := c.inner.ListPage(ctx, cursor, limit)
+	if err != nil {
+		return ScheduleListPage{}, err
+	}
+	return ScheduleListPage{Entries: copyScheduleEntries(page.Entries), HasMore: page.HasMore, Continuation: page.Continuation}, nil
 }
 
 // ListBySelector returns schedules matching a canonical selector.

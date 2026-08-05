@@ -54,8 +54,10 @@ type StreamAppendOptions struct {
 }
 
 type StreamReadOptions struct {
-	MaxBytes *uint64
-	Filter   *StreamFilterSet
+	MaxBytes          *uint64
+	Filter            *StreamFilterSet
+	CursorFingerprint *uint64
+	CapturedWatermark *uint64
 }
 
 // Domain-specific errors. Returned when the server rejects a stream operation.
@@ -186,6 +188,16 @@ func EncodeStreamRead(route string, fromOffset uint64, limit uint64, opts *Strea
 		} else {
 			buf.WriteByte(0)
 		}
+		if opts != nil && opts.CursorFingerprint != nil {
+			encoding.WriteOptionalU64(buf, *opts.CursorFingerprint)
+		} else {
+			encoding.WriteOptionalU64(buf, 0)
+		}
+		if opts != nil && opts.CapturedWatermark != nil {
+			encoding.WriteOptionalU64(buf, *opts.CapturedWatermark)
+		} else {
+			encoding.WriteOptionalU64(buf, 0)
+		}
 	}), nil
 }
 
@@ -296,6 +308,16 @@ func streamReadPayloadWriter(route string, fromOffset uint64, limit uint64, opts
 			encoding.WriteBytesRaw(buf, filterBytes)
 		} else {
 			buf.WriteByte(0)
+		}
+		if opts != nil && opts.CursorFingerprint != nil {
+			encoding.WriteOptionalU64(buf, *opts.CursorFingerprint)
+		} else {
+			encoding.WriteOptionalU64(buf, 0)
+		}
+		if opts != nil && opts.CapturedWatermark != nil {
+			encoding.WriteOptionalU64(buf, *opts.CapturedWatermark)
+		} else {
+			encoding.WriteOptionalU64(buf, 0)
 		}
 	}
 }

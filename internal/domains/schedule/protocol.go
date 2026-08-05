@@ -12,12 +12,13 @@ import (
 
 // Wire opcodes for Schedule domain (per CLIENT_SPEC.md). Values are message type identifiers.
 const (
-	ScheduleCreate      uint16 = 700
-	ScheduleCancel      uint16 = 701
-	ScheduleList        uint16 = 702
-	ScheduleSubscribe   uint16 = 703
-	ScheduleUnsubscribe uint16 = 704
-	ScheduleNotify      uint16 = 705 // Server -> Client only
+	ScheduleCreate       uint16 = 700
+	ScheduleCancel       uint16 = 701
+	ScheduleList         uint16 = 702
+	ScheduleListPageType uint16 = 707
+	ScheduleSubscribe    uint16 = 703
+	ScheduleUnsubscribe  uint16 = 704
+	ScheduleNotify       uint16 = 705 // Server -> Client only
 )
 
 // Domain-specific errors. Returned when the server rejects a schedule operation.
@@ -78,6 +79,22 @@ func scheduleListPayloadWriter(offset, limit uint64) func(*bytes.Buffer) {
 		// Optional pagination parameters (default to 0, 100 on server if not provided)
 		encoding.WriteOptionalU64(buf, offset)
 		encoding.WriteOptionalU64(buf, limit)
+	}
+}
+
+func scheduleListPagePayloadWriter(cursor *string, limit *uint64) func(*bytes.Buffer) {
+	return func(buf *bytes.Buffer) {
+		if cursor == nil {
+			buf.WriteByte(0)
+		} else {
+			buf.WriteByte(1)
+			encoding.WriteString(buf, *cursor)
+		}
+		if limit == nil {
+			encoding.WriteOptionalU64(buf, 0)
+		} else {
+			encoding.WriteOptionalU64(buf, *limit)
+		}
 	}
 }
 

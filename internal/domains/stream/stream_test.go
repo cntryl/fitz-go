@@ -663,6 +663,7 @@ func TestShouldParseStreamReadResponseGivenTrailerWhenParseReadResponseCalled(t 
 	dataBuf.WriteByte(1)
 	connection.WriteU64BE(dataBuf, 101)
 	dataBuf.WriteByte(0)
+	dataBuf.WriteByte(0)
 	dataBuf.WriteByte(1)
 
 	payload := make([]byte, dataBuf.Len())
@@ -709,6 +710,7 @@ func TestShouldParseStreamReadPageGivenFilteredItemsWhenParseReadPageResponseCal
 	buf.WriteByte(1)
 	connection.WriteU64BE(buf, 52)
 	buf.WriteByte(0)
+	buf.WriteByte(0)
 	buf.WriteByte(1)
 
 	payload := make([]byte, buf.Len())
@@ -746,6 +748,7 @@ func TestShouldParseConcreteRoutesGivenWildcardStreamReadPage(t *testing.T) {
 	connection.WriteU64BE(buf, 42)
 	buf.WriteByte(1)
 	connection.WriteU64BE(buf, 42)
+	buf.WriteByte(0)
 	buf.WriteByte(0)
 	buf.WriteByte(0)
 	buf.WriteByte(0)
