@@ -6,15 +6,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cntryl/fitz-go/internal/core/encoding"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 )
 
 // Wire opcodes for Schedule domain (per CLIENT_SPEC.md). Values are message type identifiers.
 const (
 	ScheduleCreate       uint16 = 700
 	ScheduleCancel       uint16 = 701
-	ScheduleList         uint16 = 702
 	ScheduleListPageType uint16 = 707
 	ScheduleSubscribe    uint16 = 703
 	ScheduleUnsubscribe  uint16 = 704
@@ -74,14 +73,6 @@ func scheduleCancelPayloadWriter(route string) func(*bytes.Buffer) {
 	}
 }
 
-func scheduleListPayloadWriter(offset, limit uint64) func(*bytes.Buffer) {
-	return func(buf *bytes.Buffer) {
-		// Optional pagination parameters (default to 0, 100 on server if not provided)
-		encoding.WriteOptionalU64(buf, offset)
-		encoding.WriteOptionalU64(buf, limit)
-	}
-}
-
 func scheduleListPagePayloadWriter(cursor *string, limit *uint64) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		if cursor == nil {
@@ -91,7 +82,7 @@ func scheduleListPagePayloadWriter(cursor *string, limit *uint64) func(*bytes.Bu
 			encoding.WriteString(buf, *cursor)
 		}
 		if limit == nil {
-			encoding.WriteOptionalU64(buf, 0)
+			buf.WriteByte(0)
 		} else {
 			encoding.WriteOptionalU64(buf, *limit)
 		}

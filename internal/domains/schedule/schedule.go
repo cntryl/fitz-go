@@ -11,17 +11,17 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	"github.com/cntryl/fitz-go/internal/core/reconnect"
-	"github.com/cntryl/fitz-go/internal/core/subscriptions"
-	"github.com/cntryl/fitz-go/internal/core/types"
-	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
+	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
+	"github.com/cntryl/fitz-go/v2/internal/core/types"
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// ScheduleEntry represents a schedule returned by List (per CLIENT_SPEC: route, cron, payload).
+// ScheduleEntry represents a schedule returned by a list page (per CLIENT_SPEC: route, cron, payload).
 type ScheduleEntry struct {
 	ID           string // Route (spec uses route as identity)
 	Route        string
@@ -76,15 +76,10 @@ type Client interface {
 	// Cancel cancels a schedule by route (route-based identity per CLIENT_SPEC).
 	Cancel(ctx context.Context, route string) error
 
-	// List retrieves schedules with pagination.
-	// offset: starting position (0-based). Use 0 for first page.
-	// limit: maximum entries to return (0 = server default of 100).
-	// Returns: schedule entries for this page, total count of all schedules, error.
-	List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error)
 	ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error)
 
 	// ListBySelector retrieves schedules matching a canonical schedule selector.
-	ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error)
+	ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error)
 
 	// Subscribe subscribes to schedule fire notifications for the given exact schedule route.
 	// When a schedule fires, the handler is invoked with the schedule's payload.
@@ -256,59 +251,6 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 	return nil
 }
 
-// List per CLIENT_SPEC.md: Request [optional u64 offset][optional u64 limit]. Response: [status][u64 total_count][has_entry]; when has_entry=1: [route_len][route][cron_len][cron][payload_len][payload]. Read until has_entry=0.
-// offset: starting offset (0-based), default 0
-// limit: max entries per page (0 = server default of 100), default 0
-func (c *client) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
-	conn := c.currentConn()
-	ctx, span := conn.Tracer().Start(ctx, "fitz.schedule.List")
-	defer span.End()
-	if log := conn.Logger(); log != nil {
-		log.DebugContext(ctx, "schedule.List", "offset", offset, "limit", limit)
-	}
-	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeScheduleList, scheduleListPayloadWriter(offset, limit))
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("list request failed: %w", err)
-	}
-
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("list failed: %w", mapScheduleError(err))
-	}
-	if !success {
-		recordErr := errors.New("list failed: unexpected status")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return nil, 0, recordErr
-	}
-
-	// Parse total_count
-	if len(remaining) < 8 {
-		recordErr := errors.New("list response missing total_count")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return nil, 0, recordErr
-	}
-	totalCount, bytesRead, err := connection.ReadU64BE(remaining, 0)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("list failed to parse total_count: %w", err)
-	}
-	entries, err := parseScheduleListEntries(remaining[bytesRead:])
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, 0, fmt.Errorf("list failed: %w", err)
-	}
-
-	return entries, totalCount, nil
-}
-
 func (c *client) ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error) {
 	if limit != nil && (*limit < 1 || *limit > 1000) {
 		return ScheduleListPage{}, errors.New("schedule LIST_PAGE limit must be between 1 and 1000")
@@ -407,45 +349,32 @@ func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
 	}
 }
 
-// ListBySelector retrieves schedules matching a canonical schedule selector.
-// It still filters client-side over paged List results, so cost scales with
-// the number of schedules scanned from the server.
-func (c *client) ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
+// ListBySelector retrieves schedules matching a canonical schedule selector by
+// consuming the cursor-based LIST_PAGE API.
+func (c *client) ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error) {
 	if err := types.ValidateScheduleSelector(selector); err != nil {
-		return nil, 0, fmt.Errorf("invalid selector: %w", err)
+		return nil, fmt.Errorf("invalid selector: %w", err)
 	}
-
-	const pageSize uint64 = 100
-
-	var (
-		sourceOffset uint64
-		totalMatches uint64
-		window       = make([]ScheduleEntry, 0)
-	)
-
+	var cursor *string
+	matches := make([]ScheduleEntry, 0)
 	for {
-		page, totalCount, err := c.List(ctx, sourceOffset, pageSize)
+		page, err := c.ListPage(ctx, cursor, nil)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
-		if len(page) == 0 {
-			return window, totalMatches, nil
-		}
-
-		for _, entry := range page {
+		for _, entry := range page.Entries {
 			if !scheduleSelectorMatches(selector, entry.Route) {
 				continue
 			}
-			if totalMatches >= offset && (limit == 0 || uint64(len(window)) < limit) {
-				window = append(window, entry)
-			}
-			totalMatches++
+			matches = append(matches, entry)
 		}
-
-		sourceOffset += uint64(len(page))
-		if sourceOffset >= totalCount {
-			return window, totalMatches, nil
+		if !page.HasMore {
+			return matches, nil
 		}
+		if page.Continuation == nil {
+			return nil, errors.New("schedule LIST_PAGE response missing continuation")
+		}
+		cursor = page.Continuation
 	}
 }
 

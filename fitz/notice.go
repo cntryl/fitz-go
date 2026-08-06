@@ -3,7 +3,7 @@ package fitz
 import (
 	"context"
 
-	internalnotice "github.com/cntryl/fitz-go/internal/domains/notice"
+	internalnotice "github.com/cntryl/fitz-go/v2/internal/domains/notice"
 )
 
 var (

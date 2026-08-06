@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/fitz"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
-	"github.com/cntryl/fitz-go/internal/testkit"
-	"github.com/cntryl/fitz-go/test/fixture"
+	"github.com/cntryl/fitz-go/v2/fitz"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/testkit"
+	"github.com/cntryl/fitz-go/v2/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -69,10 +69,9 @@ func TestShouldListSchedulesGivenMultipleSchedulesWhenListCalled(t *testing.T) {
 		_, err = f.Client().Schedule().Create(ctx, route, "0 12 * * *", fitz.ScheduleDeliveryBroadcast, []byte("s2"))
 		require.NoError(t, err)
 
-		entries, totalCount, err := f.Client().Schedule().List(ctx, 0, 100)
+		page, err := f.Client().Schedule().ListPage(ctx, nil, nil)
 		require.NoError(t, err)
-		require.NotNil(t, entries)
-		_ = totalCount
+		require.NotNil(t, page.Entries)
 	})
 }
 
@@ -98,10 +97,9 @@ func TestShouldReturnListWithoutErrorGivenSchedulesWhenListCalled(t *testing.T) 
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		entries, totalCount, err := f.Client().Schedule().List(ctx, 0, 0)
+		page, err := f.Client().Schedule().ListPage(ctx, nil, nil)
 		require.NoError(t, err)
-		require.NotNil(t, entries)
-		_ = totalCount
+		require.NotNil(t, page.Entries)
 	})
 }
 
@@ -127,10 +125,9 @@ func TestShouldListSchedulesGivenWildcardSelectorWhenListBySelectorCalled(t *tes
 			require.NoError(t, err)
 		}
 
-		entries, totalCount, err := f.Client().Schedule().ListBySelector(ctx, selector, 0, 10)
+		entries, err := f.Client().Schedule().ListBySelector(ctx, selector)
 		require.NoError(t, err)
 		require.Len(t, entries, 2)
-		assert.Equal(t, uint64(2), totalCount)
 		for _, entry := range entries {
 			assert.True(t, strings.HasPrefix(entry.Route, selectedPrefix+"/"))
 		}

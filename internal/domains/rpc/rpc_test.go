@@ -7,8 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -138,7 +138,7 @@ func TestShouldEncodeRPCSubscribeWorkerGivenWorkerRouteWhenEncodeRPCSubscribeWor
 		route := "rpc://acme/jobs/process"
 
 		// Act
-		payload, err := EncodeRPCSubscribeWorker(route)
+		payload, err := encodeRPCSubscribeWorker(route)
 
 		// Assert
 		require.NoError(t, err)
@@ -152,7 +152,7 @@ func TestShouldEncodeRPCSubscribeWorkerGivenWorkerRouteWhenEncodeRPCSubscribeWor
 
 	t.Run("empty route", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := EncodeRPCSubscribeWorker("")
+		payload, err := encodeRPCSubscribeWorker("")
 
 		// Assert
 		require.NoError(t, err)
@@ -164,7 +164,7 @@ func TestShouldEncodeRPCSubscribeWorkerGivenWorkerRouteWhenEncodeRPCSubscribeWor
 		route := "rpc://org.example.com/services/worker-pool/v2"
 
 		// Act
-		payload, err := EncodeRPCSubscribeWorker(route)
+		payload, err := encodeRPCSubscribeWorker(route)
 
 		// Assert
 		require.NoError(t, err)
@@ -179,7 +179,7 @@ func TestShouldEncodeRPCUnsubscribeWorkerGivenWorkerRouteWhenEncodeRPCUnsubscrib
 		route := "rpc://acme/tasks/handler"
 
 		// Act
-		payload, err := EncodeRPCUnsubscribeWorker(route)
+		payload, err := encodeRPCUnsubscribeWorker(route)
 
 		// Assert
 		require.NoError(t, err)
@@ -189,7 +189,7 @@ func TestShouldEncodeRPCUnsubscribeWorkerGivenWorkerRouteWhenEncodeRPCUnsubscrib
 
 	t.Run("unsubscribe empty route", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := EncodeRPCUnsubscribeWorker("")
+		payload, err := encodeRPCUnsubscribeWorker("")
 
 		// Assert
 		require.NoError(t, err)
@@ -210,7 +210,7 @@ func TestShouldEncodeRPCRequestGivenCorrelationAndBodyWhenEncodeRPCRequestCalled
 		body := []byte("test body")
 
 		// Act
-		payload, err := EncodeRPCRequest(correlationID, route, replyRoute, body)
+		payload, err := encodeRPCRequest(correlationID, route, replyRoute, body)
 
 		// Assert
 		require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestShouldEncodeRPCRequestGivenCorrelationAndBodyWhenEncodeRPCRequestCalled
 		route := "rpc://test/endpoint"
 
 		// Act
-		payload, err := EncodeRPCRequest(correlationID, route, "", []byte("data"))
+		payload, err := encodeRPCRequest(correlationID, route, "", []byte("data"))
 
 		// Assert
 		require.NoError(t, err)
@@ -237,7 +237,7 @@ func TestShouldEncodeRPCRequestGivenCorrelationAndBodyWhenEncodeRPCRequestCalled
 		route := "rpc://test"
 
 		// Act
-		payload, err := EncodeRPCRequest(correlationID, route, "", []byte{})
+		payload, err := encodeRPCRequest(correlationID, route, "", []byte{})
 
 		// Assert
 		require.NoError(t, err)
@@ -251,7 +251,7 @@ func TestShouldEncodeRPCRequestGivenCorrelationAndBodyWhenEncodeRPCRequestCalled
 		body := make([]byte, 10000)
 
 		// Act
-		payload, err := EncodeRPCRequest(correlationID, route, "", body)
+		payload, err := encodeRPCRequest(correlationID, route, "", body)
 
 		// Assert
 		require.NoError(t, err)
@@ -270,7 +270,7 @@ func TestShouldEncodeRPCResponseGivenCorrelationAndBodyWhenEncodeRPCResponseCall
 		body := []byte("response data")
 
 		// Act
-		payload, err := EncodeRPCResponse(correlationID, sequence, body, false)
+		payload, err := encodeRPCResponse(correlationID, sequence, body, false)
 
 		// Assert
 		require.NoError(t, err)
@@ -286,7 +286,7 @@ func TestShouldEncodeRPCResponseGivenCorrelationAndBodyWhenEncodeRPCResponseCall
 		body := []byte("final response")
 
 		// Act
-		payload, err := EncodeRPCResponse(correlationID, sequence, body, true)
+		payload, err := encodeRPCResponse(correlationID, sequence, body, true)
 
 		// Assert
 		require.NoError(t, err)
@@ -300,7 +300,7 @@ func TestShouldEncodeRPCResponseGivenCorrelationAndBodyWhenEncodeRPCResponseCall
 		sequence := uint64(0)
 
 		// Act
-		payload, err := EncodeRPCResponse(correlationID, sequence, []byte{}, false)
+		payload, err := encodeRPCResponse(correlationID, sequence, []byte{}, false)
 
 		// Assert
 		require.NoError(t, err)
@@ -313,7 +313,7 @@ func TestShouldEncodeRPCResponseGivenCorrelationAndBodyWhenEncodeRPCResponseCall
 		sequence := uint64(5)
 
 		// Act
-		payload, err := EncodeRPCResponse(correlationID, sequence, nil, true)
+		payload, err := encodeRPCResponse(correlationID, sequence, nil, true)
 
 		// Assert
 		require.NoError(t, err)
@@ -327,7 +327,7 @@ func TestShouldEncodeRPCResponseGivenCorrelationAndBodyWhenEncodeRPCResponseCall
 		sequence := uint64(0xFFFFFFFFFFFFFFFF)
 
 		// Act
-		payload, err := EncodeRPCResponse(correlationID, sequence, []byte("data"), false)
+		payload, err := encodeRPCResponse(correlationID, sequence, []byte("data"), false)
 
 		// Assert
 		require.NoError(t, err)
@@ -344,7 +344,7 @@ func BenchmarkEncodeRPCSubscribeWorker(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeRPCSubscribeWorker(route)
+			_, _ = encodeRPCSubscribeWorker(route)
 		}
 	})
 
@@ -354,7 +354,7 @@ func BenchmarkEncodeRPCSubscribeWorker(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeRPCSubscribeWorker(route)
+			_, _ = encodeRPCSubscribeWorker(route)
 		}
 	})
 }
@@ -365,7 +365,7 @@ func BenchmarkEncodeRPCUnsubscribeWorker(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeRPCUnsubscribeWorker(route)
+		_, _ = encodeRPCUnsubscribeWorker(route)
 	}
 }
 
@@ -378,7 +378,7 @@ func BenchmarkEncodeRPCRequest(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeRPCRequest(correlationID, route, "", body)
+			_, _ = encodeRPCRequest(correlationID, route, "", body)
 		}
 	})
 
@@ -390,7 +390,7 @@ func BenchmarkEncodeRPCRequest(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeRPCRequest(correlationID, route, "", body)
+			_, _ = encodeRPCRequest(correlationID, route, "", body)
 		}
 	})
 }
@@ -403,7 +403,7 @@ func BenchmarkEncodeRPCResponse(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeRPCResponse(correlationID, 42, body, false)
+			_, _ = encodeRPCResponse(correlationID, 42, body, false)
 		}
 	})
 
@@ -414,7 +414,7 @@ func BenchmarkEncodeRPCResponse(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeRPCResponse(correlationID, 100, body, true)
+			_, _ = encodeRPCResponse(correlationID, 100, body, true)
 		}
 	})
 }

@@ -1,7 +1,7 @@
 # fitz-go Public Contract
 
 This document summarizes the production-facing contract of the public
-`github.com/cntryl/fitz-go/fitz` package.
+`github.com/cntryl/fitz-go/v2/fitz` package.
 
 ## Routes
 

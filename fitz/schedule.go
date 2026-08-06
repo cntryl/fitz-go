@@ -3,7 +3,7 @@ package fitz
 import (
 	"context"
 
-	internalschedule "github.com/cntryl/fitz-go/internal/domains/schedule"
+	internalschedule "github.com/cntryl/fitz-go/v2/internal/domains/schedule"
 )
 
 type ScheduleEntry struct {
@@ -47,9 +47,8 @@ func (s *ScheduleSubscription) Unsubscribe() {
 type ScheduleClient interface {
 	Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (id string, err error)
 	Cancel(ctx context.Context, route string) error
-	List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error)
 	ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error)
-	ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error)
+	ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error)
 	WaitForNotifications(ctx context.Context, route string) (Iterator[ScheduleNotification], error)
 	Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error)
 }
@@ -68,15 +67,6 @@ func (c *scheduleClient) Cancel(ctx context.Context, route string) error {
 	return c.inner.Cancel(ctx, route)
 }
 
-// List returns schedules using offset/limit pagination.
-func (c *scheduleClient) List(ctx context.Context, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
-	entries, totalCount, err := c.inner.List(ctx, offset, limit)
-	if err != nil {
-		return nil, 0, err
-	}
-	return copyScheduleEntries(entries), totalCount, nil
-}
-
 func (c *scheduleClient) ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error) {
 	page, err := c.inner.ListPage(ctx, cursor, limit)
 	if err != nil {
@@ -86,12 +76,12 @@ func (c *scheduleClient) ListPage(ctx context.Context, cursor *string, limit *ui
 }
 
 // ListBySelector returns schedules matching a canonical selector.
-func (c *scheduleClient) ListBySelector(ctx context.Context, selector string, offset, limit uint64) ([]ScheduleEntry, uint64, error) {
-	entries, totalCount, err := c.inner.ListBySelector(ctx, selector, offset, limit)
+func (c *scheduleClient) ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error) {
+	entries, err := c.inner.ListBySelector(ctx, selector)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return copyScheduleEntries(entries), totalCount, nil
+	return copyScheduleEntries(entries), nil
 }
 
 func copyScheduleEntries(entries []internalschedule.ScheduleEntry) []ScheduleEntry {

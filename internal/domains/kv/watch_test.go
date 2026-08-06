@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	coretypes "github.com/cntryl/fitz-go/internal/core/types"
-	"github.com/cntryl/fitz-go/internal/testkit"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coretypes "github.com/cntryl/fitz-go/v2/internal/core/types"
+	"github.com/cntryl/fitz-go/v2/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/cntryl/fitz-go/internal/core/encoding"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 )
 
 // Wire opcodes for RPC domain (per CLIENT_SPEC.md). Values are message type identifiers.
@@ -60,26 +60,26 @@ func mapRPCError(err error) error {
 	}
 }
 
-// EncodeRPCSubscribeWorker encodes an RPC SUBSCRIBE_WORKER request per CLIENT_SPEC.md.
+// encodeRPCSubscribeWorker encodes an RPC SUBSCRIBE_WORKER request per CLIENT_SPEC.md.
 // Wire format: [string worker_route][u32 max_concurrent]
-func EncodeRPCSubscribeWorker(workerRoute string) ([]byte, error) {
+func encodeRPCSubscribeWorker(workerRoute string) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, workerRoute)
 		encoding.WriteU32(buf, 1)
 	}), nil
 }
 
-// EncodeRPCUnsubscribeWorker encodes an RPC UNSUBSCRIBE_WORKER request per CLIENT_SPEC.md.
+// encodeRPCUnsubscribeWorker encodes an RPC UNSUBSCRIBE_WORKER request per CLIENT_SPEC.md.
 // Wire format: [string worker_route]
-func EncodeRPCUnsubscribeWorker(workerRoute string) ([]byte, error) {
+func encodeRPCUnsubscribeWorker(workerRoute string) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, workerRoute)
 	}), nil
 }
 
-// EncodeRPCRequest encodes an RPC REQUEST per CLIENT_SPEC.md.
+// encodeRPCRequest encodes an RPC REQUEST per CLIENT_SPEC.md.
 // Wire format: [uuid16 correlation_id][string route][bytes body]
-func EncodeRPCRequest(correlationID [16]byte, route string, replyRoute string, body []byte) ([]byte, error) {
+func encodeRPCRequest(correlationID [16]byte, route string, replyRoute string, body []byte) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		buf.Write(correlationID[:])
 		encoding.WriteRoute(buf, route)
@@ -87,9 +87,9 @@ func EncodeRPCRequest(correlationID [16]byte, route string, replyRoute string, b
 	}), nil
 }
 
-// EncodeRPCResponse encodes an RPC RESPONSE per CLIENT_SPEC.md.
+// encodeRPCResponse encodes an RPC RESPONSE per CLIENT_SPEC.md.
 // Wire format: [uuid16 correlation_id][u64 sequence][u8 flags][bytes body]
-func EncodeRPCResponse(correlationID [16]byte, sequence uint64, body []byte, streamEnd bool) ([]byte, error) {
+func encodeRPCResponse(correlationID [16]byte, sequence uint64, body []byte, streamEnd bool) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		buf.Write(correlationID[:])
 		encoding.WriteU64(buf, sequence)

@@ -3,7 +3,7 @@ package kv
 import (
 	"testing"
 
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -34,7 +34,7 @@ func TestShouldMapKVErrorGivenTypedBrokerMessageWhenMapKVErrorCalled(t *testing.
 }
 
 func TestShouldRejectInvertedRangeGivenScanQueryWhenEncodeScanCalled(t *testing.T) {
-	_, err := EncodeScan(1, "kv://realm/area/resource", ScanQuery{
+	_, err := encodeScan(1, "kv://realm/area/resource", ScanQuery{
 		StartKey: []byte("z"),
 		EndKey:   []byte("a"),
 		Limit:    10,

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/cntryl/fitz-go/internal/core/encoding"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 )
 
 // Wire opcodes for Lease domain (per CLIENT_SPEC.md 400–403).
@@ -68,10 +68,10 @@ func mapLeaseError(err error) error {
 	}
 }
 
-// EncodeLeaseAcquire encodes a LEASE_ACQUIRE request per CLIENT_SPEC.md.
+// encodeLeaseAcquire encodes a LEASE_ACQUIRE request per CLIENT_SPEC.md.
 // Wire format: [string route][string client_id][u64 ttl_seconds]
 // The client_id is optional (empty string for auto-assignment by server).
-func EncodeLeaseAcquire(route string, ttlSeconds uint64) ([]byte, error) {
+func encodeLeaseAcquire(route string, ttlSeconds uint64) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		encoding.WriteRoute(buf, "") // client_id (empty = server assigns)
@@ -79,9 +79,9 @@ func EncodeLeaseAcquire(route string, ttlSeconds uint64) ([]byte, error) {
 	}), nil
 }
 
-// EncodeLeaseRenew encodes a LEASE_RENEW request per CLIENT_SPEC.md.
+// encodeLeaseRenew encodes a LEASE_RENEW request per CLIENT_SPEC.md.
 // Wire format: [string resource][string client_id][u64 fence_token][u64 ttl_seconds]
-func EncodeLeaseRenew(resource string, fenceToken uint64, ttlSeconds uint64) ([]byte, error) {
+func encodeLeaseRenew(resource string, fenceToken uint64, ttlSeconds uint64) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, resource)
 		encoding.WriteRoute(buf, "") // client_id (empty = use existing)
@@ -90,9 +90,9 @@ func EncodeLeaseRenew(resource string, fenceToken uint64, ttlSeconds uint64) ([]
 	}), nil
 }
 
-// EncodeLeaseRelease encodes a LEASE_RELEASE request per CLIENT_SPEC.md.
+// encodeLeaseRelease encodes a LEASE_RELEASE request per CLIENT_SPEC.md.
 // Wire format: [string resource][string client_id][u64 fence_token]
-func EncodeLeaseRelease(resource string, fenceToken uint64) ([]byte, error) {
+func encodeLeaseRelease(resource string, fenceToken uint64) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, resource)
 		encoding.WriteRoute(buf, "") // client_id (empty = use existing)
@@ -100,9 +100,9 @@ func EncodeLeaseRelease(resource string, fenceToken uint64) ([]byte, error) {
 	}), nil
 }
 
-// EncodeLeaseQuery encodes a LEASE_QUERY request per CLIENT_SPEC.md.
+// encodeLeaseQuery encodes a LEASE_QUERY request per CLIENT_SPEC.md.
 // Wire format: [string route]
-func EncodeLeaseQuery(route string) ([]byte, error) {
+func encodeLeaseQuery(route string) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 	}), nil

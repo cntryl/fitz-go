@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
-	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -106,7 +106,7 @@ func TestShouldEncodeLeaseAcquireRequestGivenRouteAndTTLWhenPayloadWritten(t *te
 		ttlSecs := uint64(300)
 
 		// Act
-		payload, err := EncodeLeaseAcquire(route, ttlSecs)
+		payload, err := encodeLeaseAcquire(route, ttlSecs)
 
 		// Assert
 		require.NoError(t, err)
@@ -122,7 +122,7 @@ func TestShouldEncodeLeaseAcquireRequestGivenRouteAndTTLWhenPayloadWritten(t *te
 		route := "lease://acme/app/locks"
 
 		// Act
-		payload, err := EncodeLeaseAcquire(route, 0)
+		payload, err := encodeLeaseAcquire(route, 0)
 
 		// Assert
 		require.NoError(t, err)
@@ -132,7 +132,7 @@ func TestShouldEncodeLeaseAcquireRequestGivenRouteAndTTLWhenPayloadWritten(t *te
 
 	t.Run("max ttl", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := EncodeLeaseAcquire("path", 0xFFFFFFFFFFFFFFFF)
+		payload, err := encodeLeaseAcquire("path", 0xFFFFFFFFFFFFFFFF)
 
 		// Assert
 		require.NoError(t, err)
@@ -149,7 +149,7 @@ func TestShouldEncodeLeaseRenewRequestGivenTokenAndTTLWhenPayloadWritten(t *test
 		ttlSecs := uint64(600)
 
 		// Act
-		payload, err := EncodeLeaseRenew("resource", token, ttlSecs)
+		payload, err := encodeLeaseRenew("resource", token, ttlSecs)
 
 		// Assert
 		require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestShouldEncodeLeaseRenewRequestGivenTokenAndTTLWhenPayloadWritten(t *test
 
 	t.Run("zero token", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := EncodeLeaseRenew("path", 0, 300) // Zero token (invalid, but tests encoding)
+		payload, err := encodeLeaseRenew("path", 0, 300) // Zero token (invalid, but tests encoding)
 
 		// Assert
 		require.NoError(t, err)
@@ -174,7 +174,7 @@ func TestShouldEncodeLeaseReleaseRequestGivenTokenWhenPayloadWritten(t *testing.
 		token := uint64(0xFEDCBA9876543210)
 
 		// Act
-		payload, err := EncodeLeaseRelease("resource", token)
+		payload, err := encodeLeaseRelease("resource", token)
 
 		// Assert
 		require.NoError(t, err)
@@ -184,7 +184,7 @@ func TestShouldEncodeLeaseReleaseRequestGivenTokenWhenPayloadWritten(t *testing.
 
 	t.Run("empty resource", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := EncodeLeaseRelease("", 12345)
+		payload, err := encodeLeaseRelease("", 12345)
 
 		// Assert
 		require.NoError(t, err)
@@ -200,7 +200,7 @@ func TestShouldEncodeLeaseQueryRequestGivenRouteWhenPayloadWritten(t *testing.T)
 		route := "lease://acme/app/locks/resource1"
 
 		// Act
-		payload, err := EncodeLeaseQuery(route)
+		payload, err := encodeLeaseQuery(route)
 
 		// Assert
 		require.NoError(t, err)
@@ -216,7 +216,7 @@ func TestShouldEncodeLeaseQueryRequestGivenRouteWhenPayloadWritten(t *testing.T)
 		route := "lease://org.example.com/system/distributed-locks"
 
 		// Act
-		payload, err := EncodeLeaseQuery(route)
+		payload, err := encodeLeaseQuery(route)
 
 		// Assert
 		require.NoError(t, err)
@@ -407,7 +407,7 @@ func BenchmarkEncodeLeaseAcquire(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeLeaseAcquire(route, 300)
+			_, _ = encodeLeaseAcquire(route, 300)
 		}
 	})
 
@@ -417,7 +417,7 @@ func BenchmarkEncodeLeaseAcquire(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeLeaseAcquire(route, 300)
+			_, _ = encodeLeaseAcquire(route, 300)
 		}
 	})
 }
@@ -429,7 +429,7 @@ func BenchmarkEncodeLeaseRenew(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeLeaseRenew("resource", token, 600)
+			_, _ = encodeLeaseRenew("resource", token, 600)
 		}
 	})
 }
@@ -440,7 +440,7 @@ func BenchmarkEncodeLeaseRelease(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeLeaseRelease("resource", token)
+		_, _ = encodeLeaseRelease("resource", token)
 	}
 }
 
@@ -450,7 +450,7 @@ func BenchmarkEncodeLeaseQuery(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeLeaseQuery(route)
+		_, _ = encodeLeaseQuery(route)
 	}
 }
 

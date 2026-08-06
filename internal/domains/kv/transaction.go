@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	"github.com/cntryl/fitz-go/internal/core/iter"
-	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	"github.com/cntryl/fitz-go/v2/internal/core/iter"
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )

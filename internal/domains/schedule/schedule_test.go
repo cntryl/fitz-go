@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -75,8 +75,8 @@ func TestShouldDefineScheduleOpcodesGivenConstantsWhenRead(t *testing.T) {
 		assert.Equal(t, uint16(701), ScheduleCancel)
 	})
 
-	t.Run("list opcode", func(t *testing.T) {
-		assert.Equal(t, uint16(702), ScheduleList)
+	t.Run("list page opcode", func(t *testing.T) {
+		assert.Equal(t, uint16(707), ScheduleListPageType)
 	})
 
 	t.Run("subscribe opcode", func(t *testing.T) {
@@ -93,8 +93,8 @@ func TestShouldDefineScheduleOpcodesGivenConstantsWhenRead(t *testing.T) {
 
 	t.Run("opcodes are sequential", func(t *testing.T) {
 		assert.Equal(t, ScheduleCreate+1, ScheduleCancel)
-		assert.Equal(t, ScheduleCancel+1, ScheduleList)
-		assert.Equal(t, ScheduleList+1, ScheduleSubscribe)
+		assert.Equal(t, uint16(707), ScheduleListPageType)
+		assert.Equal(t, uint16(703), ScheduleSubscribe)
 		assert.Equal(t, ScheduleSubscribe+1, ScheduleUnsubscribe)
 		assert.Equal(t, ScheduleUnsubscribe+1, ScheduleNotify)
 	})
@@ -189,18 +189,6 @@ func BenchmarkEncodeScheduleCreate(b *testing.B) {
 func BenchmarkEncodeScheduleCancel(b *testing.B) {
 	route := "schedule://acme/jobs/backup"
 	w := scheduleCancelPayloadWriter(route)
-	buf := connection.GetBuffer()
-	defer connection.PutBuffer(buf)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		buf.Reset()
-		w(buf)
-	}
-}
-
-func BenchmarkEncodeScheduleList(b *testing.B) {
-	w := scheduleListPayloadWriter(0, 100) // offset=0, limit=100
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	b.ReportAllocs()

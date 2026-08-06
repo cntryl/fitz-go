@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -252,7 +252,7 @@ func TestShouldEncodeStreamBeginGivenRouteAndOffsetWhenPayloadWritten(t *testing
 		route := "stream://acme/logs/app"
 
 		// Act
-		payload, err := EncodeStreamBegin(route, nil)
+		payload, err := encodeStreamBegin(route, nil)
 
 		// Assert
 		require.NoError(t, err)
@@ -274,7 +274,7 @@ func TestShouldEncodeStreamBeginGivenRouteAndOffsetWhenPayloadWritten(t *testing
 		metadata := []byte("meta")
 
 		// Act
-		payload, err := EncodeStreamBegin(route, metadata)
+		payload, err := encodeStreamBegin(route, metadata)
 
 		// Assert
 		require.NoError(t, err)
@@ -301,7 +301,7 @@ func TestShouldEncodeStreamAppendGivenSessionAndBodyWhenPayloadWritten(t *testin
 		body := []byte("payload")
 
 		// Act
-		payload, err := EncodeStreamAppend(sessionID, expectedOffset, body, nil)
+		payload, err := encodeStreamAppend(sessionID, expectedOffset, body, nil)
 
 		// Assert
 		require.NoError(t, err)
@@ -330,7 +330,7 @@ func TestShouldEncodeStreamAppendGivenSessionAndBodyWhenPayloadWritten(t *testin
 		metadata := []byte("meta")
 
 		// Act
-		payload, err := EncodeStreamAppend(sessionID, expectedOffset, body, metadata)
+		payload, err := encodeStreamAppend(sessionID, expectedOffset, body, metadata)
 
 		// Assert
 		require.NoError(t, err)
@@ -361,7 +361,7 @@ func TestShouldEncodeStreamAppendGivenSessionAndBodyWhenPayloadWritten(t *testin
 		discriminator := "proj.alpha"
 
 		// Act
-		payload, err := EncodeStreamAppend(sessionID, expectedOffset, body, nil, &StreamAppendOptions{Discriminator: &discriminator})
+		payload, err := encodeStreamAppend(sessionID, expectedOffset, body, nil, &StreamAppendOptions{Discriminator: &discriminator})
 
 		// Assert
 		require.NoError(t, err)
@@ -398,7 +398,7 @@ func TestShouldEncodeStreamCommitGivenSessionAndModeWhenPayloadWritten(t *testin
 		mode := CommitModeBuffered
 
 		// Act
-		payload, err := EncodeStreamCommit(sessionID, mode)
+		payload, err := encodeStreamCommit(sessionID, mode)
 
 		// Assert
 		require.NoError(t, err)
@@ -417,7 +417,7 @@ func TestShouldEncodeStreamRollbackGivenSessionWhenPayloadWritten(t *testing.T) 
 		sessionID := uint64(456)
 
 		// Act
-		payload, err := EncodeStreamRollback(sessionID)
+		payload, err := encodeStreamRollback(sessionID)
 
 		// Assert
 		require.NoError(t, err)
@@ -436,7 +436,7 @@ func TestShouldEncodeStreamReadGivenBoundsWhenPayloadWritten(t *testing.T) {
 		limit := uint64(100)
 
 		// Act
-		payload, err := EncodeStreamRead(route, fromOffset, limit, nil)
+		payload, err := encodeStreamRead(route, fromOffset, limit, nil)
 
 		// Assert
 		require.NoError(t, err)
@@ -465,7 +465,7 @@ func TestShouldEncodeStreamReadGivenBoundsWhenPayloadWritten(t *testing.T) {
 		filter := &StreamFilterSet{Clauses: []StreamFilterClause{{Kind: StreamFilterEquals, Value: "proj.alpha"}}}
 
 		// Act
-		payload, err := EncodeStreamRead(route, fromOffset, limit, &StreamReadOptions{Filter: filter})
+		payload, err := encodeStreamRead(route, fromOffset, limit, &StreamReadOptions{Filter: filter})
 
 		// Assert
 		require.NoError(t, err)
@@ -503,7 +503,7 @@ func TestShouldEncodeStreamLastGivenRouteWhenPayloadWritten(t *testing.T) {
 		route := "stream://acme/logs/app"
 
 		// Act
-		payload, err := EncodeStreamLast(route)
+		payload, err := encodeStreamLast(route)
 
 		// Assert
 		require.NoError(t, err)
@@ -520,7 +520,7 @@ func TestShouldEncodeStreamGetMetadataGivenRouteWhenPayloadWritten(t *testing.T)
 		route := "stream://acme/metadata"
 
 		// Act
-		payload, err := EncodeStreamGetMetadata(route)
+		payload, err := encodeStreamGetMetadata(route)
 
 		// Assert
 		require.NoError(t, err)
@@ -538,7 +538,7 @@ func TestShouldEncodeStreamSubscribeGivenPatternWhenPayloadWritten(t *testing.T)
 		fromOffset := uint64(99)
 
 		// Act
-		payload, err := EncodeStreamSubscribe(route, fromOffset)
+		payload, err := encodeStreamSubscribe(route, fromOffset)
 
 		// Assert
 		require.NoError(t, err)
@@ -559,7 +559,7 @@ func TestShouldEncodeStreamUnsubscribeGivenPatternWhenPayloadWritten(t *testing.
 		route := "stream://acme/unsub"
 
 		// Act
-		payload, err := EncodeStreamUnsubscribe(route)
+		payload, err := encodeStreamUnsubscribe(route)
 
 		// Assert
 		require.NoError(t, err)
@@ -664,13 +664,13 @@ func TestShouldParseStreamReadResponseGivenTrailerWhenParseReadResponseCalled(t 
 	connection.WriteU64BE(dataBuf, 101)
 	dataBuf.WriteByte(0)
 	dataBuf.WriteByte(0)
-	dataBuf.WriteByte(1)
 
 	payload := make([]byte, dataBuf.Len())
 	copy(payload, dataBuf.Bytes())
 
-	records, err := parseReadResponse(payload)
+	page, err := parseReadPageResponse(payload, "stream://realm/area/resource")
 	require.NoError(t, err)
+	records := flattenReadItems(page.Items)
 	require.Len(t, records, 1)
 	assert.Equal(t, "stream://realm/area/resource", records[0].Route)
 	assert.Equal(t, uint64(7), records[0].Offset)
@@ -710,13 +710,12 @@ func TestShouldParseStreamReadPageGivenFilteredItemsWhenParseReadPageResponseCal
 	buf.WriteByte(1)
 	connection.WriteU64BE(buf, 52)
 	buf.WriteByte(0)
-	buf.WriteByte(0)
 	buf.WriteByte(1)
 
 	payload := make([]byte, buf.Len())
 	copy(payload, buf.Bytes())
 
-	page, err := parseReadPageResponse(payload)
+	page, err := parseReadPageResponse(payload, "stream://realm/area/resource")
 	require.NoError(t, err)
 	require.NotNil(t, page)
 	assert.Equal(t, uint64(45), page.Cursor.LastResourceOffset)
@@ -751,9 +750,8 @@ func TestShouldParseConcreteRoutesGivenWildcardStreamReadPage(t *testing.T) {
 	buf.WriteByte(0)
 	buf.WriteByte(0)
 	buf.WriteByte(0)
-	buf.WriteByte(0)
 
-	page, err := parseReadPageResponse(buf.Bytes())
+	page, err := parseReadPageResponse(buf.Bytes(), "stream://realm/area/resource")
 
 	require.NoError(t, err)
 	require.Len(t, page.Items, 1)
@@ -773,7 +771,7 @@ func TestShouldRejectWildcardRouteGivenStreamReadPage(t *testing.T) {
 	buf.WriteByte(0)
 	buf.WriteByte(0)
 
-	page, err := parseReadPageResponse(buf.Bytes())
+	page, err := parseReadPageResponse(buf.Bytes(), "stream://realm/area/resource")
 
 	require.Error(t, err)
 	assert.Nil(t, page)
@@ -844,7 +842,7 @@ func BenchmarkEncodeStreamBegin(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeStreamBegin(route, nil)
+			_, _ = encodeStreamBegin(route, nil)
 		}
 	})
 
@@ -855,7 +853,7 @@ func BenchmarkEncodeStreamBegin(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeStreamBegin(route, metadata)
+			_, _ = encodeStreamBegin(route, metadata)
 		}
 	})
 }
@@ -869,7 +867,7 @@ func BenchmarkEncodeStreamAppend(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeStreamAppend(sessionID, expectedOffset, body, nil)
+			_, _ = encodeStreamAppend(sessionID, expectedOffset, body, nil)
 		}
 	})
 
@@ -882,7 +880,7 @@ func BenchmarkEncodeStreamAppend(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeStreamAppend(sessionID, expectedOffset, body, metadata)
+			_, _ = encodeStreamAppend(sessionID, expectedOffset, body, metadata)
 		}
 	})
 }
@@ -894,7 +892,7 @@ func BenchmarkEncodeStreamCommit(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeStreamCommit(sessionID, mode)
+		_, _ = encodeStreamCommit(sessionID, mode)
 	}
 }
 
@@ -904,7 +902,7 @@ func BenchmarkEncodeStreamRollback(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeStreamRollback(sessionID)
+		_, _ = encodeStreamRollback(sessionID)
 	}
 }
 
@@ -917,7 +915,7 @@ func BenchmarkEncodeStreamRead(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeStreamRead(route, fromOffset, limit, nil)
+			_, _ = encodeStreamRead(route, fromOffset, limit, nil)
 		}
 	})
 
@@ -930,7 +928,7 @@ func BenchmarkEncodeStreamRead(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeStreamRead(route, fromOffset, limit, &StreamReadOptions{Filter: filter})
+			_, _ = encodeStreamRead(route, fromOffset, limit, &StreamReadOptions{Filter: filter})
 		}
 	})
 }
@@ -941,7 +939,7 @@ func BenchmarkEncodeStreamLast(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeStreamLast(route)
+		_, _ = encodeStreamLast(route)
 	}
 }
 
@@ -951,7 +949,7 @@ func BenchmarkEncodeStreamGetMetadata(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeStreamGetMetadata(route)
+		_, _ = encodeStreamGetMetadata(route)
 	}
 }
 
@@ -962,7 +960,7 @@ func BenchmarkEncodeStreamSubscribe(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeStreamSubscribe(route, fromOffset)
+		_, _ = encodeStreamSubscribe(route, fromOffset)
 	}
 }
 
@@ -972,38 +970,7 @@ func BenchmarkEncodeStreamUnsubscribe(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeStreamUnsubscribe(route)
-	}
-}
-
-func BenchmarkParseStreamReadResponse(b *testing.B) {
-	// data blob: [u32 count=1][tag=event][record][u64 last_resource_offset][opt area][opt realm][u8 has_more]
-	recordBuf := connection.GetBuffer()
-	defer connection.PutBuffer(recordBuf)
-	connection.WriteU64BE(recordBuf, 1)
-	recordBuf.WriteByte(1)
-	connection.WriteU64BE(recordBuf, 2)
-	recordBuf.WriteByte(1)
-	connection.WriteU64BE(recordBuf, 3)
-	connection.WriteBytes(recordBuf, []byte("record1"))
-	recordBuf.WriteByte(0)
-	connection.WriteU64BE(recordBuf, 4)
-
-	buf := connection.GetBuffer()
-	defer connection.PutBuffer(buf)
-	connection.WriteU32BE(buf, 1)
-	buf.WriteByte(0)
-	buf.Write(recordBuf.Bytes())
-	connection.WriteU64BE(buf, 9)
-	buf.WriteByte(0)
-	buf.WriteByte(0)
-	buf.WriteByte(1)
-	payload := make([]byte, buf.Len())
-	copy(payload, buf.Bytes())
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		_, _ = parseReadResponse(payload)
+		_, _ = encodeStreamUnsubscribe(route)
 	}
 }
 

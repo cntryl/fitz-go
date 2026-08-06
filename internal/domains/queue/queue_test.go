@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	"github.com/cntryl/fitz-go/internal/core/subscriptions"
-	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -124,7 +124,7 @@ func TestShouldEncodeEnqueueWithoutDelayGivenImmediateMessageWhenEncodeEnqueueCa
 		delaySeconds := uint64(0)
 
 		// Act
-		payload := EncodeEnqueue(route, body, delaySeconds)
+		payload := encodeEnqueue(route, body, delaySeconds)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -158,7 +158,7 @@ func TestShouldEncodeEnqueueWithoutDelayGivenImmediateMessageWhenEncodeEnqueueCa
 		body := []byte{}
 
 		// Act
-		payload := EncodeEnqueue(route, body, 0)
+		payload := encodeEnqueue(route, body, 0)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -176,7 +176,7 @@ func TestShouldEncodeEnqueueWithoutDelayGivenImmediateMessageWhenEncodeEnqueueCa
 		}
 
 		// Act
-		payload := EncodeEnqueue(route, body, 0)
+		payload := encodeEnqueue(route, body, 0)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -193,7 +193,7 @@ func TestShouldEncodeEnqueueWithDelayGivenDelayedMessageWhenEncodeEnqueueCalled(
 		delaySeconds := uint64(3600) // 1 hour
 
 		// Act
-		payload := EncodeEnqueue(route, body, delaySeconds)
+		payload := encodeEnqueue(route, body, delaySeconds)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -209,7 +209,7 @@ func TestShouldEncodeEnqueueWithDelayGivenDelayedMessageWhenEncodeEnqueueCalled(
 		maxDelay := uint64(0xFFFFFFFFFFFFFFFF)
 
 		// Act
-		payload := EncodeEnqueue(route, body, maxDelay)
+		payload := encodeEnqueue(route, body, maxDelay)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -226,7 +226,7 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 		batchSize := uint32(10)
 
 		// Act
-		payload := EncodeReserve(route, leaseSeconds, batchSize)
+		payload := encodeReserve(route, leaseSeconds, batchSize)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -256,7 +256,7 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 		leaseSeconds := uint64(60)
 
 		// Act
-		payload := EncodeReserve(route, leaseSeconds, 0)
+		payload := encodeReserve(route, leaseSeconds, 0)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -274,7 +274,7 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 		leaseSeconds := uint64(0)
 
 		// Act
-		payload := EncodeReserve(route, leaseSeconds, 1)
+		payload := encodeReserve(route, leaseSeconds, 1)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -475,7 +475,7 @@ func BenchmarkEncodeEnqueue(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_ = EncodeEnqueue(route, body, 0)
+			_ = encodeEnqueue(route, body, 0)
 		}
 	})
 
@@ -486,7 +486,7 @@ func BenchmarkEncodeEnqueue(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_ = EncodeEnqueue(route, body, 0)
+			_ = encodeEnqueue(route, body, 0)
 		}
 	})
 
@@ -497,7 +497,7 @@ func BenchmarkEncodeEnqueue(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_ = EncodeEnqueue(route, body, 3600)
+			_ = encodeEnqueue(route, body, 3600)
 		}
 	})
 }
@@ -509,7 +509,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_ = EncodeReserve(route, 30, 10)
+			_ = encodeReserve(route, 30, 10)
 		}
 	})
 
@@ -519,7 +519,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_ = EncodeReserve(route, 30, 0)
+			_ = encodeReserve(route, 30, 0)
 		}
 	})
 }
@@ -565,7 +565,7 @@ func TestShouldEncodeExtendRequestGivenLeaseFieldsWhenEncodeExtendCalled(t *test
 		leaseSeconds := uint64(60)
 
 		// Act
-		payload, err := EncodeExtend(route, messageID, leaseToken, leaseSeconds)
+		payload, err := encodeExtend(route, messageID, leaseToken, leaseSeconds)
 
 		// Assert
 		require.NoError(t, err)
@@ -575,7 +575,7 @@ func TestShouldEncodeExtendRequestGivenLeaseFieldsWhenEncodeExtendCalled(t *test
 
 	t.Run("zero message id", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := EncodeExtend("route", 0, 999, 30)
+		payload, err := encodeExtend("route", 0, 999, 30)
 
 		// Assert
 		require.NoError(t, err)
@@ -584,7 +584,7 @@ func TestShouldEncodeExtendRequestGivenLeaseFieldsWhenEncodeExtendCalled(t *test
 
 	t.Run("max lease seconds", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := EncodeExtend("route", 1, 2, 0xFFFFFFFFFFFFFFFF)
+		payload, err := encodeExtend("route", 1, 2, 0xFFFFFFFFFFFFFFFF)
 
 		// Assert
 		require.NoError(t, err)
@@ -601,7 +601,7 @@ func TestShouldEncodeCompleteRequestGivenLeaseFieldsWhenEncodeCompleteCalled(t *
 		leaseToken := uint64(0xFEDCBA987654)
 
 		// Act
-		payload, err := EncodeComplete(route, messageID, leaseToken)
+		payload, err := encodeComplete(route, messageID, leaseToken)
 
 		// Assert
 		require.NoError(t, err)
@@ -611,7 +611,7 @@ func TestShouldEncodeCompleteRequestGivenLeaseFieldsWhenEncodeCompleteCalled(t *
 
 	t.Run("empty route", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := EncodeComplete("", 123, 456)
+		payload, err := encodeComplete("", 123, 456)
 
 		// Assert
 		require.NoError(t, err)
@@ -621,7 +621,7 @@ func TestShouldEncodeCompleteRequestGivenLeaseFieldsWhenEncodeCompleteCalled(t *
 
 	t.Run("zero token", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := EncodeComplete("queue://test", 100, 0)
+		payload, err := encodeComplete("queue://test", 100, 0)
 
 		// Assert
 		require.NoError(t, err)
@@ -641,7 +641,7 @@ func BenchmarkEncodeExtend(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeExtend(route, messageID, token, 30)
+			_, _ = encodeExtend(route, messageID, token, 30)
 		}
 	})
 }
@@ -655,7 +655,7 @@ func BenchmarkEncodeComplete(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodeComplete(route, messageID, token)
+			_, _ = encodeComplete(route, messageID, token)
 		}
 	})
 }

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/cntryl/fitz-go/internal/testkit"
+	"github.com/cntryl/fitz-go/v2/internal/testkit"
 )
 
 func newTestWSTransport(conn *testkit.MockWSConn) *WebSocketTransport {

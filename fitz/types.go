@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	coreclient "github.com/cntryl/fitz-go/internal/core/client"
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	coretypes "github.com/cntryl/fitz-go/internal/core/types"
+	coreclient "github.com/cntryl/fitz-go/v2/internal/core/client"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coretypes "github.com/cntryl/fitz-go/v2/internal/core/types"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )

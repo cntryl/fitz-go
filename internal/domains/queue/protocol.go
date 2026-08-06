@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cntryl/fitz-go/internal/core/encoding"
+	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
 )
 
 // Wire opcodes for Queue domain (per CLIENT_SPEC.md). Values are message type identifiers.
@@ -81,9 +81,9 @@ func mapQueueErrorCode(code uint32, msg string) error {
 	}
 }
 
-// EncodeEnqueue encodes a Queue ENQUEUE request payload per CLIENT_SPEC.md.
+// encodeEnqueue encodes a Queue ENQUEUE request payload per CLIENT_SPEC.md.
 // Spec: [route_len][route][body_len][body][has_delay][delay_seconds if has_delay]
-func EncodeEnqueue(route string, body []byte, delaySeconds uint64) []byte {
+func encodeEnqueue(route string, body []byte, delaySeconds uint64) []byte {
 	routeBytes := []byte(route)
 	hasDelay := uint8(0)
 	if delaySeconds > 0 {
@@ -125,9 +125,9 @@ func EncodeEnqueue(route string, body []byte, delaySeconds uint64) []byte {
 	return payload
 }
 
-// EncodeReserve encodes a Queue RESERVE request payload per CLIENT_SPEC.md.
+// encodeReserve encodes a Queue RESERVE request payload per CLIENT_SPEC.md.
 // Spec: [route_len][route][lease_seconds][has_batch_size][batch_size if present]
-func EncodeReserve(route string, leaseSeconds uint64, batchSize uint32) []byte {
+func encodeReserve(route string, leaseSeconds uint64, batchSize uint32) []byte {
 	routeBytes := []byte(route)
 	hasBatchSize := uint8(0)
 	if batchSize > 0 {
@@ -166,9 +166,9 @@ func EncodeReserve(route string, leaseSeconds uint64, batchSize uint32) []byte {
 	return payload
 }
 
-// EncodeExtend encodes a Queue EXTEND request payload per CLIENT_SPEC.md.
+// encodeExtend encodes a Queue EXTEND request payload per CLIENT_SPEC.md.
 // Spec: [route_len][route][message_id][lease_token][lease_seconds]
-func EncodeExtend(route string, messageID uint64, leaseToken uint64, leaseSeconds uint64) ([]byte, error) {
+func encodeExtend(route string, messageID uint64, leaseToken uint64, leaseSeconds uint64) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		encoding.WriteU64(buf, messageID)
@@ -177,9 +177,9 @@ func EncodeExtend(route string, messageID uint64, leaseToken uint64, leaseSecond
 	}), nil
 }
 
-// EncodeComplete encodes a Queue COMPLETE request payload per CLIENT_SPEC.md.
+// encodeComplete encodes a Queue COMPLETE request payload per CLIENT_SPEC.md.
 // Spec: [route_len][route][message_id][lease_token]
-func EncodeComplete(route string, messageID uint64, leaseToken uint64) ([]byte, error) {
+func encodeComplete(route string, messageID uint64, leaseToken uint64) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		encoding.WriteU64(buf, messageID)
@@ -197,9 +197,7 @@ func enqueuePayloadWriter(route string, body []byte, delaySeconds uint64) func(*
 			hasDelay = 1
 		}
 		// [u32 BE] route_len
-		var routeLenBytes [4]byte
 		encoding.WriteU32(buf, uint32(len(routeBytes)))
-		_ = routeLenBytes // silence unused
 		// [bytes] route
 		buf.Write(routeBytes)
 		// [u32 BE] body_len

@@ -3,7 +3,7 @@ package encoding
 import (
 	"bytes"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
 )
 
 // OwnedBuffer wraps a pooled buffer with explicit release semantics.

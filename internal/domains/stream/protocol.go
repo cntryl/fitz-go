@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/cntryl/fitz-go/internal/core/encoding"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 )
 
 // Wire opcodes for Stream domain (per CLIENT_SPEC.md). Values are message type identifiers.
@@ -101,10 +101,10 @@ func mapStreamError(err error) error {
 	}
 }
 
-// EncodeStreamBegin encodes a STREAM BEGIN request per CLIENT_SPEC.md.
+// encodeStreamBegin encodes a STREAM BEGIN request per CLIENT_SPEC.md.
 // Wire format: [string route][u8 has_ingest_metadata][bytes? ingest_metadata]
 // ingestMetadata is optional; pass nil to omit.
-func EncodeStreamBegin(route string, ingestMetadata []byte) ([]byte, error) {
+func encodeStreamBegin(route string, ingestMetadata []byte) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		if ingestMetadata != nil {
@@ -116,10 +116,10 @@ func EncodeStreamBegin(route string, ingestMetadata []byte) ([]byte, error) {
 	}), nil
 }
 
-// EncodeStreamAppend encodes a STREAM APPEND request per CLIENT_SPEC.md.
+// encodeStreamAppend encodes a STREAM APPEND request per CLIENT_SPEC.md.
 // Wire format: [u64 session_id][u64 expected_offset][bytes body][u8 has_metadata][bytes? metadata][u8 has_discriminator][string? discriminator]
 // metadata and discriminator are optional; pass nil to omit.
-func EncodeStreamAppend(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte, opts ...*StreamAppendOptions) ([]byte, error) {
+func encodeStreamAppend(sessionID uint64, expectedOffset uint64, body []byte, metadata []byte, opts ...*StreamAppendOptions) ([]byte, error) {
 	var discriminator *string
 	if len(opts) > 0 && opts[0] != nil {
 		discriminator = opts[0].Discriminator
@@ -144,28 +144,28 @@ func EncodeStreamAppend(sessionID uint64, expectedOffset uint64, body []byte, me
 	}), nil
 }
 
-// EncodeStreamCommit encodes a STREAM COMMIT request per CLIENT_SPEC.md.
+// encodeStreamCommit encodes a STREAM COMMIT request per CLIENT_SPEC.md.
 // Wire format: [u64 session_id][u8 mode]
 // mode: 0=Buffered, 1=Sync
-func EncodeStreamCommit(sessionID uint64, mode CommitMode) ([]byte, error) {
+func encodeStreamCommit(sessionID uint64, mode CommitMode) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
 		buf.WriteByte(byte(mode))
 	}), nil
 }
 
-// EncodeStreamRollback encodes a STREAM ROLLBACK request per CLIENT_SPEC.md.
+// encodeStreamRollback encodes a STREAM ROLLBACK request per CLIENT_SPEC.md.
 // Wire format: [u64 session_id]
-func EncodeStreamRollback(sessionID uint64) ([]byte, error) {
+func encodeStreamRollback(sessionID uint64) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, sessionID)
 	}), nil
 }
 
-// EncodeStreamRead encodes a STREAM READ request per CLIENT_SPEC.md.
+// encodeStreamRead encodes a STREAM READ request per CLIENT_SPEC.md.
 // Wire format: [string route][u64 from_offset][u64 limit][u8 has_max_bytes][u64? max_bytes][u8 has_filter][u32 filter_len?][bincode? filter]
 // filter is optional; pass nil to omit.
-func EncodeStreamRead(route string, fromOffset uint64, limit uint64, opts *StreamReadOptions) ([]byte, error) {
+func encodeStreamRead(route string, fromOffset uint64, limit uint64, opts *StreamReadOptions) ([]byte, error) {
 	var filterBytes []byte
 	if opts != nil && opts.Filter != nil && len(opts.Filter.Clauses) > 0 {
 		filterBytes = encodeStreamFilterSet(opts.Filter)
@@ -201,34 +201,34 @@ func EncodeStreamRead(route string, fromOffset uint64, limit uint64, opts *Strea
 	}), nil
 }
 
-// EncodeStreamLast encodes a STREAM LAST request per CLIENT_SPEC.md.
+// encodeStreamLast encodes a STREAM LAST request per CLIENT_SPEC.md.
 // Wire format: [string route]
-func EncodeStreamLast(route string) ([]byte, error) {
+func encodeStreamLast(route string) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 	}), nil
 }
 
-// EncodeStreamGetMetadata encodes a STREAM GET_METADATA request per CLIENT_SPEC.md.
+// encodeStreamGetMetadata encodes a STREAM GET_METADATA request per CLIENT_SPEC.md.
 // Wire format: [string route]
-func EncodeStreamGetMetadata(route string) ([]byte, error) {
+func encodeStreamGetMetadata(route string) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 	}), nil
 }
 
-// EncodeStreamSubscribe encodes a STREAM SUBSCRIBE request per CLIENT_SPEC.md.
+// encodeStreamSubscribe encodes a STREAM SUBSCRIBE request per CLIENT_SPEC.md.
 // Wire format: [string route][u64 from_offset]
-func EncodeStreamSubscribe(route string, fromOffset uint64) ([]byte, error) {
+func encodeStreamSubscribe(route string, fromOffset uint64) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		encoding.WriteU64(buf, fromOffset)
 	}), nil
 }
 
-// EncodeStreamUnsubscribe encodes a STREAM UNSUBSCRIBE request per CLIENT_SPEC.md.
+// encodeStreamUnsubscribe encodes a STREAM UNSUBSCRIBE request per CLIENT_SPEC.md.
 // Wire format: [string route]
-func EncodeStreamUnsubscribe(route string) ([]byte, error) {
+func encodeStreamUnsubscribe(route string) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 	}), nil

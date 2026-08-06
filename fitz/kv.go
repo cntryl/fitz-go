@@ -3,7 +3,7 @@ package fitz
 import (
 	"context"
 
-	internalkv "github.com/cntryl/fitz-go/internal/domains/kv"
+	internalkv "github.com/cntryl/fitz-go/v2/internal/domains/kv"
 )
 
 type KVPair struct {

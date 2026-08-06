@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,7 +16,7 @@ func TestShouldEncodeBeginGivenValidRouteWhenBeginPayloadWritten(t *testing.T) {
 	durability := DurabilityBuffered
 
 	// Act
-	payload, err := EncodeBegin(route, mode, durability)
+	payload, err := encodeBegin(route, mode, durability)
 
 	// Assert
 	require.NoError(t, err)
@@ -45,7 +45,7 @@ func TestShouldEncodeBeginGivenReadWriteModeWhenBeginPayloadWritten(t *testing.T
 	durability := DurabilitySync
 
 	// Act
-	payload, err := EncodeBegin(route, mode, durability)
+	payload, err := encodeBegin(route, mode, durability)
 
 	// Assert
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestShouldEncodeGetGivenValidKeyAndTxIDWhenGetPayloadWritten(t *testing.T) 
 	key := []byte("user:123")
 
 	// Act
-	payload, err := EncodeGet(txID, route, key)
+	payload, err := encodeGet(txID, route, key)
 
 	// Assert
 	require.NoError(t, err)
@@ -107,7 +107,7 @@ func TestShouldEncodePutGivenValidKeyAndValueWhenPutPayloadWritten(t *testing.T)
 	value := []byte(`{"name":"Alice"}`)
 
 	// Act
-	payload, err := EncodePut(txID, route, key, value)
+	payload, err := encodePut(txID, route, key, value)
 
 	// Assert
 	require.NoError(t, err)
@@ -146,7 +146,7 @@ func TestShouldEncodeInsertGivenValidDataWhenInsertPayloadWritten(t *testing.T) 
 	value := []byte("new value")
 
 	// Act
-	payload, err := EncodeInsert(txID, route, key, value)
+	payload, err := encodeInsert(txID, route, key, value)
 
 	// Assert
 	require.NoError(t, err)
@@ -166,7 +166,7 @@ func TestShouldEncodeDeleteGivenValidKeyWhenDeletePayloadWritten(t *testing.T) {
 	key := []byte("del:key")
 
 	// Act
-	payload, err := EncodeDelete(txID, route, key)
+	payload, err := encodeDelete(txID, route, key)
 
 	// Assert
 	require.NoError(t, err)
@@ -187,7 +187,7 @@ func TestShouldEncodeDeleteRangeGivenValidRangeWhenDeleteRangePayloadWritten(t *
 	endKey := []byte("range:end")
 
 	// Act
-	payload, err := EncodeDeleteRange(txID, route, startKey, endKey)
+	payload, err := encodeDeleteRange(txID, route, startKey, endKey)
 
 	// Assert
 	require.NoError(t, err)
@@ -228,7 +228,7 @@ func TestShouldEncodeScanGivenFullRangeQueryWhenScanPayloadWritten(t *testing.T)
 	}
 
 	// Act
-	payload, err := EncodeScan(txID, route, query)
+	payload, err := encodeScan(txID, route, query)
 
 	// Assert
 	require.NoError(t, err)
@@ -257,7 +257,7 @@ func TestShouldEncodeScanGivenReverseQueryWhenScanPayloadWritten(t *testing.T) {
 	}
 
 	// Act
-	payload, err := EncodeScan(txID, route, query)
+	payload, err := encodeScan(txID, route, query)
 
 	// Assert
 	require.NoError(t, err)
@@ -274,7 +274,7 @@ func TestShouldEncodeCommitGivenValidTxIDWhenCommitPayloadWritten(t *testing.T) 
 	route := "kv://acme/app/users"
 
 	// Act
-	payload, err := EncodeCommit(txID, route)
+	payload, err := encodeCommit(txID, route)
 
 	// Assert
 	require.NoError(t, err)
@@ -303,7 +303,7 @@ func TestShouldEncodeRollbackGivenValidTxIDWhenRollbackPayloadWritten(t *testing
 	route := "kv://acme/app/users"
 
 	// Act
-	payload, err := EncodeRollback(txID, route)
+	payload, err := encodeRollback(txID, route)
 
 	// Assert
 	require.NoError(t, err)
@@ -323,7 +323,7 @@ func TestShouldRejectOversizedKeyGivenKeyTooLargeWhenValidationRuns(t *testing.T
 	key := make([]byte, MaxKeySize+1) // Exceed limit
 
 	// Act
-	_, err := EncodeGet(txID, route, key)
+	_, err := encodeGet(txID, route, key)
 
 	// Assert
 	require.Error(t, err)
@@ -339,7 +339,7 @@ func TestShouldRejectOversizedValueGivenValueTooLargeWhenValidationRuns(t *testi
 	value := make([]byte, MaxValueSize+1) // Exceed limit
 
 	// Act
-	_, err := EncodePut(txID, route, key, value)
+	_, err := encodePut(txID, route, key, value)
 
 	// Assert
 	require.Error(t, err)
@@ -354,7 +354,7 @@ func TestShouldAcceptMaxSizeKeyGivenExactLimitWhenValidationRuns(t *testing.T) {
 	key := make([]byte, MaxKeySize) // Exactly at limit
 
 	// Act
-	payload, err := EncodeGet(txID, route, key)
+	payload, err := encodeGet(txID, route, key)
 
 	// Assert
 	require.NoError(t, err)
@@ -370,7 +370,7 @@ func TestShouldAcceptMaxSizeValueGivenExactLimitWhenValidationRuns(t *testing.T)
 	value := make([]byte, MaxValueSize) // Exactly at limit
 
 	// Act
-	payload, err := EncodePut(txID, route, key, value)
+	payload, err := encodePut(txID, route, key, value)
 
 	// Assert
 	require.NoError(t, err)
@@ -385,7 +385,7 @@ func TestShouldRejectEmptyKeyGivenZeroLengthKeyWhenValidationRuns(t *testing.T) 
 	key := []byte{} // Empty key
 
 	// Act
-	_, err := EncodeGet(txID, route, key)
+	_, err := encodeGet(txID, route, key)
 
 	// Assert
 	require.Error(t, err)
@@ -401,7 +401,7 @@ func TestShouldEncodeEmptyValueGivenZeroLengthValueWhenPutPayloadWritten(t *test
 	value := []byte{} // Empty value (allowed)
 
 	// Act
-	payload, err := EncodePut(txID, route, key, value)
+	payload, err := encodePut(txID, route, key, value)
 
 	// Assert
 	require.NoError(t, err)
@@ -466,7 +466,7 @@ func BenchmarkEncodeBegin(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeBegin(route, mode, durability)
+		_, _ = encodeBegin(route, mode, durability)
 	}
 }
 
@@ -478,7 +478,7 @@ func BenchmarkEncodeGet(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeGet(txID, route, key)
+		_, _ = encodeGet(txID, route, key)
 	}
 }
 
@@ -492,7 +492,7 @@ func BenchmarkEncodePut(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodePut(txID, route, key, value)
+			_, _ = encodePut(txID, route, key, value)
 		}
 	})
 
@@ -505,7 +505,7 @@ func BenchmarkEncodePut(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = EncodePut(txID, route, key, value)
+			_, _ = encodePut(txID, route, key, value)
 		}
 	})
 }
@@ -518,7 +518,7 @@ func BenchmarkEncodeDelete(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeDelete(txID, route, key)
+		_, _ = encodeDelete(txID, route, key)
 	}
 }
 
@@ -535,7 +535,7 @@ func BenchmarkEncodeScan(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeScan(txID, route, query)
+		_, _ = encodeScan(txID, route, query)
 	}
 }
 
@@ -546,7 +546,7 @@ func BenchmarkEncodeCommit(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeCommit(txID, route)
+		_, _ = encodeCommit(txID, route)
 	}
 }
 
@@ -557,7 +557,7 @@ func BenchmarkEncodeRollback(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = EncodeRollback(txID, route)
+		_, _ = encodeRollback(txID, route)
 	}
 }
 

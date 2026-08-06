@@ -5,7 +5,7 @@ package integration
 import (
 	"context"
 
-	"github.com/cntryl/fitz-go/internal/testkit"
+	"github.com/cntryl/fitz-go/v2/internal/testkit"
 )
 
 func closeQuietly[T interface{ Close() error }](value T) {

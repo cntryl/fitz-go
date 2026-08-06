@@ -3,7 +3,7 @@ package reconnect
 import (
 	"context"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
 )
 
 // DomainRestorer is implemented by subscription-based domain clients that can

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/fitz"
-	coretransport "github.com/cntryl/fitz-go/internal/core/transport"
-	"github.com/cntryl/fitz-go/internal/protocol"
-	"github.com/cntryl/fitz-go/test/fixture"
+	"github.com/cntryl/fitz-go/v2/fitz"
+	coretransport "github.com/cntryl/fitz-go/v2/internal/core/transport"
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +89,7 @@ func TestShouldConnectGivenJWTWithoutSchedulePermissionWhenConnectCalled(t *test
 		require.NoError(t, err)
 		require.NoError(t, tx.Rollback(ctx))
 
-		_, _, err = client.Schedule().List(ctx, 0, 1)
+		_, err = client.Schedule().ListPage(ctx, nil, nil)
 		require.Error(t, err)
 	})
 }

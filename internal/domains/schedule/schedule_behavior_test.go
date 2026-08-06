@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	coretypes "github.com/cntryl/fitz-go/internal/core/types"
-	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coretypes "github.com/cntryl/fitz-go/v2/internal/core/types"
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -153,11 +153,13 @@ func TestShouldRejectInvalidCronBeforeSendingRequestWhenCreateCalled(t *testing.
 	}
 }
 
-func TestShouldParseEntriesGivenValidListResponseWhenListCalled(t *testing.T) {
+func TestShouldParseEntriesGivenValidListPageResponseWhenListPageCalled(t *testing.T) {
 	// Arrange
 	client, transport := newStartedScheduleClient(t)
 	buf := connection.GetBuffer()
-	connection.WriteU64BE(buf, 2)
+	connection.WriteU8(buf, 1)
+	connection.WriteU8(buf, 0)
+	connection.WriteU8(buf, 0)
 	connection.WriteU8(buf, 1)
 	connection.WriteString(buf, "schedule://realm/area/one/run")
 	connection.WriteString(buf, "0 0 * * *")
@@ -171,19 +173,19 @@ func TestShouldParseEntriesGivenValidListResponseWhenListCalled(t *testing.T) {
 	connection.WriteU8(buf, 0)
 	payload := append([]byte(nil), buf.Bytes()...)
 	connection.PutBuffer(buf)
-	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleList, payload)
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleListPage, payload)
 
 	// Act
-	entries, totalCount, err := client.List(context.Background(), 0, 100)
+	page, err := client.ListPage(context.Background(), nil, nil)
 
 	// Assert
 	require.NoError(t, err)
-	assert.Equal(t, uint64(2), totalCount)
-	require.Len(t, entries, 2)
-	assert.Equal(t, "schedule://realm/area/one/run", entries[0].Route)
-	assert.Equal(t, ScheduleDeliveryBroadcast, entries[0].DeliveryMode)
-	assert.Equal(t, ScheduleDeliverySingle, entries[1].DeliveryMode)
-	assert.Equal(t, []byte("second"), entries[1].Payload)
+	assert.False(t, page.HasMore)
+	require.Len(t, page.Entries, 2)
+	assert.Equal(t, "schedule://realm/area/one/run", page.Entries[0].Route)
+	assert.Equal(t, ScheduleDeliveryBroadcast, page.Entries[0].DeliveryMode)
+	assert.Equal(t, ScheduleDeliverySingle, page.Entries[1].DeliveryMode)
+	assert.Equal(t, []byte("second"), page.Entries[1].Payload)
 }
 
 func TestShouldRejectUnknownDeliveryModeBeforeSendingWhenCreateCalled(t *testing.T) {
@@ -199,54 +201,55 @@ func TestShouldRejectUnknownDeliveryModeBeforeSendingWhenCreateCalled(t *testing
 	}
 }
 
-func TestShouldReturnErrorGivenShortListResponseWhenListCalled(t *testing.T) {
+func TestShouldReturnErrorGivenShortListPageResponseWhenListPageCalled(t *testing.T) {
 	// Arrange
 	client, transport := newStartedScheduleClient(t)
-	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleList, []byte{1, 2, 3})
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleListPage, []byte{1, 2, 3})
 
 	// Act
-	entries, totalCount, err := client.List(context.Background(), 0, 100)
+	page, err := client.ListPage(context.Background(), nil, nil)
 
 	// Assert
 	require.Error(t, err)
-	assert.Nil(t, entries)
-	assert.Equal(t, uint64(0), totalCount)
+	assert.Empty(t, page.Entries)
 }
 
-func TestShouldReturnErrorGivenTruncatedEntryWhenListCalled(t *testing.T) {
+func TestShouldReturnErrorGivenTruncatedEntryWhenListPageCalled(t *testing.T) {
 	client, transport := newStartedScheduleClient(t)
 	buf := connection.GetBuffer()
-	connection.WriteU64BE(buf, 1)
+	connection.WriteU8(buf, 1)
+	connection.WriteU8(buf, 0)
+	connection.WriteU8(buf, 0)
 	connection.WriteU8(buf, 1)
 	connection.WriteString(buf, "schedule://realm/area/one/run")
 	connection.WriteString(buf, "0 0 * * *")
 	payload := append([]byte(nil), buf.Bytes()...)
 	connection.PutBuffer(buf)
-	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleList, payload)
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleListPage, payload)
 
-	entries, totalCount, err := client.List(context.Background(), 0, 100)
+	page, err := client.ListPage(context.Background(), nil, nil)
 
 	require.Error(t, err)
-	assert.Nil(t, entries)
-	assert.Equal(t, uint64(0), totalCount)
+	assert.Empty(t, page.Entries)
 	assert.ErrorContains(t, err, "missing delivery mode")
 }
 
-func TestShouldReturnErrorGivenTrailingBytesAfterTerminatorWhenListCalled(t *testing.T) {
+func TestShouldReturnErrorGivenTrailingBytesAfterTerminatorWhenListPageCalled(t *testing.T) {
 	client, transport := newStartedScheduleClient(t)
 	buf := connection.GetBuffer()
-	connection.WriteU64BE(buf, 0)
+	connection.WriteU8(buf, 1)
+	connection.WriteU8(buf, 0)
+	connection.WriteU8(buf, 0)
 	connection.WriteU8(buf, 0)
 	buf.WriteByte(0xFF)
 	payload := append([]byte(nil), buf.Bytes()...)
 	connection.PutBuffer(buf)
-	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleList, payload)
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleListPage, payload)
 
-	entries, totalCount, err := client.List(context.Background(), 0, 100)
+	page, err := client.ListPage(context.Background(), nil, nil)
 
 	require.Error(t, err)
-	assert.Nil(t, entries)
-	assert.Equal(t, uint64(0), totalCount)
+	assert.Empty(t, page.Entries)
 	assert.ErrorContains(t, err, "trailing bytes")
 }
 

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

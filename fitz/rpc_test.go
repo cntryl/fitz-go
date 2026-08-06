@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cntryl/fitz-go/internal/core/iter"
-	internalrpc "github.com/cntryl/fitz-go/internal/domains/rpc"
+	"github.com/cntryl/fitz-go/v2/internal/core/iter"
+	internalrpc "github.com/cntryl/fitz-go/v2/internal/domains/rpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

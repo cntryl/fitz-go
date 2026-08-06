@@ -8,16 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	"github.com/cntryl/fitz-go/internal/core/iter"
-	"github.com/cntryl/fitz-go/internal/core/reconnect"
-	"github.com/cntryl/fitz-go/internal/core/subscriptions"
-	"github.com/cntryl/fitz-go/internal/core/types"
-	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	"github.com/cntryl/fitz-go/v2/internal/core/iter"
+	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
+	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
+	"github.com/cntryl/fitz-go/v2/internal/core/types"
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -68,9 +67,7 @@ type ReadCursor struct {
 	LastGlobalOffset   *uint64
 	CursorFingerprint  *uint64
 	CapturedWatermark  *uint64
-	// Deprecated: retained for legacy cursor decoding.
-	CurrentRealm *string
-	HasMore      bool
+	HasMore            bool
 }
 
 type ReadPage struct {
@@ -558,17 +555,11 @@ func skipOptionalSessionIDAndGetData(remaining []byte) ([]byte, error) {
 	return data, nil
 }
 
-// parseReadResponse parses records from a READ response data blob.
-func parseReadResponse(data []byte) ([]Record, error) {
-	page, err := parseReadPageResponse(data)
-	if err != nil {
-		return nil, err
-	}
-	return flattenReadItems(page.Items), nil
-}
-
 // parseReadPageResponse parses a raw replay page from a READ response data blob.
-func parseReadPageResponse(data []byte, selectors ...string) (*ReadPage, error) {
+func parseReadPageResponse(data []byte, selector string) (*ReadPage, error) {
+	if err := types.ValidateStreamSelector(selector); err != nil {
+		return nil, fmt.Errorf("invalid stream selector for READ response: %w", err)
+	}
 	if len(data) == 0 {
 		return &ReadPage{Items: nil, Cursor: ReadCursor{}}, nil
 	}
@@ -610,47 +601,23 @@ func parseReadPageResponse(data []byte, selectors ...string) (*ReadPage, error) 
 	if cursor.LastRealmOffset, offset, err = readOptionalU64(data, offset); err != nil {
 		return nil, fmt.Errorf("parse last_realm_offset: %w", err)
 	}
-	global := len(selectors) > 0 && (selectors[0] == "stream://**" || strings.HasPrefix(selectors[0], "stream://*/"))
-	cursorStart := offset
-	parseCursor := func(withCurrentRealm bool) (ReadCursor, int, error) {
-		candidate := cursor
-		pos := cursorStart
-		var e error
-		if withCurrentRealm {
-			candidate.CurrentRealm, pos, e = readOptionalString(data, pos)
-			if e != nil {
-				return candidate, pos, e
-			}
+	global := selector == "stream://**"
+	if global {
+		if cursor.LastGlobalOffset, offset, err = readOptionalU64(data, offset); err != nil {
+			return nil, fmt.Errorf("parse last_global_offset: %w", err)
 		}
-		if global {
-			if candidate.LastGlobalOffset, pos, e = readOptionalU64(data, pos); e != nil {
-				return candidate, pos, e
-			}
-		}
-		if pos >= len(data) || (data[pos] != 0 && data[pos] != 1) {
-			return candidate, pos, errors.New("invalid has_more flag")
-		}
-		candidate.HasMore = data[pos] == 1
-		pos++
-		if global {
-			if candidate.CursorFingerprint, pos, e = readOptionalU64(data, pos); e != nil {
-				return candidate, pos, e
-			}
-			if candidate.CapturedWatermark, pos, e = readOptionalU64(data, pos); e != nil {
-				return candidate, pos, e
-			}
-		}
-		return candidate, pos, nil
 	}
-	if len(selectors) == 0 {
-		cursor, offset, err = parseCursor(false)
-		if err != nil || offset != len(data) {
-			cursor, offset, err = parseCursor(true)
+	if offset >= len(data) || (data[offset] != 0 && data[offset] != 1) {
+		return nil, errors.New("invalid has_more flag")
+	}
+	cursor.HasMore = data[offset] == 1
+	offset++
+	if global {
+		if cursor.CursorFingerprint, offset, err = readOptionalU64(data, offset); err != nil {
+			return nil, fmt.Errorf("parse cursor_fingerprint: %w", err)
 		}
-	} else {
-		cursor, offset, err = parseCursor(true)
-		if err != nil || offset != len(data) {
-			cursor, offset, err = parseCursor(false)
+		if cursor.CapturedWatermark, offset, err = readOptionalU64(data, offset); err != nil {
+			return nil, fmt.Errorf("parse captured_watermark: %w", err)
 		}
 	}
 	if err != nil {
@@ -661,25 +628,6 @@ func parseReadPageResponse(data []byte, selectors ...string) (*ReadPage, error) 
 	}
 
 	return &ReadPage{Items: items, Cursor: cursor}, nil
-}
-
-func readOptionalString(data []byte, offset int) (*string, int, error) {
-	if offset >= len(data) {
-		return nil, offset, errors.New("optional string flag missing")
-	}
-	flag := data[offset]
-	offset++
-	if flag == 0 {
-		return nil, offset, nil
-	}
-	if flag != 1 {
-		return nil, offset, fmt.Errorf("invalid optional string flag: %d", flag)
-	}
-	value, newOffset, err := connection.ReadString(data, offset)
-	if err != nil {
-		return nil, newOffset, err
-	}
-	return &value, newOffset, nil
 }
 
 // parseRecord parses a single record from the payload at the given offset.

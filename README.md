@@ -2,13 +2,13 @@
 
 Reference Go client for Fitz.
 
-The supported public API is the canonical `github.com/cntryl/fitz-go/fitz`
+The supported public API is the canonical `github.com/cntryl/fitz-go/v2/fitz`
 package: token-provider auth, `Connect`/`Close`, `State`, and
 spec-facing domain verbs.
 
 ## Public API
 
-Import `github.com/cntryl/fitz-go/fitz` for the public API.
+Import `github.com/cntryl/fitz-go/v2/fitz` for the public API.
 
 ```go
 package main
@@ -17,7 +17,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/cntryl/fitz-go/fitz"
+	"github.com/cntryl/fitz-go/v2/fitz"
 )
 
 func main() {
@@ -276,27 +276,27 @@ When you need a regression diff, capture two local benchmark runs and compare th
 
 ```bash
 go test -run=^$ -bench=. -benchmem -count=3 \
-	github.com/cntryl/fitz-go/bench \
-	github.com/cntryl/fitz-go/internal/domains/rpc \
-	github.com/cntryl/fitz-go/internal/protocol \
-	github.com/cntryl/fitz-go/internal/core/connection \
-	github.com/cntryl/fitz-go/internal/core/encoding \
-	github.com/cntryl/fitz-go/internal/core/transport \
-	github.com/cntryl/fitz-go/internal/domains/stream \
-	github.com/cntryl/fitz-go/internal/domains/kv \
-	github.com/cntryl/fitz-go/internal/domains/notice \
-	github.com/cntryl/fitz-go/internal/domains/schedule > before.txt
+	github.com/cntryl/fitz-go/v2/bench \
+	github.com/cntryl/fitz-go/v2/internal/domains/rpc \
+	github.com/cntryl/fitz-go/v2/internal/protocol \
+	github.com/cntryl/fitz-go/v2/internal/core/connection \
+	github.com/cntryl/fitz-go/v2/internal/core/encoding \
+	github.com/cntryl/fitz-go/v2/internal/core/transport \
+	github.com/cntryl/fitz-go/v2/internal/domains/stream \
+	github.com/cntryl/fitz-go/v2/internal/domains/kv \
+	github.com/cntryl/fitz-go/v2/internal/domains/notice \
+	github.com/cntryl/fitz-go/v2/internal/domains/schedule > before.txt
 go test -run=^$ -bench=. -benchmem -count=3 \
-	github.com/cntryl/fitz-go/bench \
-	github.com/cntryl/fitz-go/internal/domains/rpc \
-	github.com/cntryl/fitz-go/internal/protocol \
-	github.com/cntryl/fitz-go/internal/core/connection \
-	github.com/cntryl/fitz-go/internal/core/encoding \
-	github.com/cntryl/fitz-go/internal/core/transport \
-	github.com/cntryl/fitz-go/internal/domains/stream \
-	github.com/cntryl/fitz-go/internal/domains/kv \
-	github.com/cntryl/fitz-go/internal/domains/notice \
-	github.com/cntryl/fitz-go/internal/domains/schedule > after.txt
+	github.com/cntryl/fitz-go/v2/bench \
+	github.com/cntryl/fitz-go/v2/internal/domains/rpc \
+	github.com/cntryl/fitz-go/v2/internal/protocol \
+	github.com/cntryl/fitz-go/v2/internal/core/connection \
+	github.com/cntryl/fitz-go/v2/internal/core/encoding \
+	github.com/cntryl/fitz-go/v2/internal/core/transport \
+	github.com/cntryl/fitz-go/v2/internal/domains/stream \
+	github.com/cntryl/fitz-go/v2/internal/domains/kv \
+	github.com/cntryl/fitz-go/v2/internal/domains/notice \
+	github.com/cntryl/fitz-go/v2/internal/domains/schedule > after.txt
 benchstat before.txt after.txt
 ```
 

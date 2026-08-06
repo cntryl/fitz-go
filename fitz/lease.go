@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	internallease "github.com/cntryl/fitz-go/internal/domains/lease"
+	internallease "github.com/cntryl/fitz-go/v2/internal/domains/lease"
 )
 
 type Lease struct {

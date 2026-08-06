@@ -3,8 +3,8 @@ package fitz
 import (
 	"errors"
 
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
-	"github.com/cntryl/fitz-go/internal/core/transport"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/transport"
 )
 
 // Error code constants mirror the canonical Fitz server error registry.

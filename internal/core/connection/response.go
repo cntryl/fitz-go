@@ -8,7 +8,7 @@ import (
 	"io"
 	"sync"
 
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 )
 
 // ParseStandardResponse handles the common [u8 status] prefix per CLIENT_SPEC.md.

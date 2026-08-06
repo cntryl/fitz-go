@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/fitz"
-	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
-	"github.com/cntryl/fitz-go/test/fixture"
+	"github.com/cntryl/fitz-go/v2/fitz"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/test/fixture"
 	"github.com/stretchr/testify/require"
 )
 

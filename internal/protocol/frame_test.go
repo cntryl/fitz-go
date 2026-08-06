@@ -444,7 +444,7 @@ func TestShouldRouteDomainGivenMessageTypeWhenRouteDomainCalled(t *testing.T) {
 		{600, "stream"},
 		{603, "stream"},
 		{700, "schedule"},
-		{702, "schedule"},
+		{707, "schedule"},
 		{999, "unknown"},
 	}
 

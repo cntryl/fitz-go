@@ -245,7 +245,6 @@ func readFrame(r io.Reader) (byte, []byte, error) {
 	if _, err := io.ReadFull(r, b[:2]); err != nil {
 		return 0, nil, err
 	}
-	fin := b[0] & 0x80
 	opcode := b[0] & 0x0f
 	mask := b[1]&0x80 != 0
 	len7 := int(b[1] & 0x7f)
@@ -293,6 +292,5 @@ func readFrame(r io.Reader) (byte, []byte, error) {
 		}
 	}
 
-	_ = fin // currently unused
 	return opcode, payload, nil
 }

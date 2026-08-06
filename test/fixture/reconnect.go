@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/fitz"
+	"github.com/cntryl/fitz-go/v2/fitz"
 )
 
 const reconnectPollInterval = 20 * time.Millisecond

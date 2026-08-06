@@ -3,7 +3,7 @@ package fitz
 import (
 	"context"
 
-	coreiter "github.com/cntryl/fitz-go/internal/core/iter"
+	coreiter "github.com/cntryl/fitz-go/v2/internal/core/iter"
 )
 
 type managedPollResult[T any] struct {

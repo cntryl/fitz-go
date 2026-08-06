@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/fitz"
+	"github.com/cntryl/fitz-go/v2/fitz"
 )
 
 // Environment variables for broker configuration.

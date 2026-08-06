@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	internalstream "github.com/cntryl/fitz-go/internal/domains/stream"
+	internalstream "github.com/cntryl/fitz-go/v2/internal/domains/stream"
 )
 
 var (

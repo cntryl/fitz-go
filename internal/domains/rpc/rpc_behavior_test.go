@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/internal/core/connection"
-	"github.com/cntryl/fitz-go/internal/core/encoding"
-	"github.com/cntryl/fitz-go/internal/protocol"
-	"github.com/cntryl/fitz-go/internal/testkit"
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -3,7 +3,7 @@ package fitz
 import (
 	"context"
 
-	coreclient "github.com/cntryl/fitz-go/internal/core/client"
+	coreclient "github.com/cntryl/fitz-go/v2/internal/core/client"
 )
 
 // Client is the canonical public Fitz Go client.

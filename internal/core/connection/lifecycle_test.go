@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/internal/protocol"
-	"github.com/cntryl/fitz-go/internal/testkit"
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

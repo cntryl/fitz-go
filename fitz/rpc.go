@@ -3,7 +3,7 @@ package fitz
 import (
 	"context"
 
-	internalrpc "github.com/cntryl/fitz-go/internal/domains/rpc"
+	internalrpc "github.com/cntryl/fitz-go/v2/internal/domains/rpc"
 )
 
 var (

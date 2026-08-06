@@ -3,7 +3,7 @@ package fitz
 import (
 	"context"
 
-	internalqueue "github.com/cntryl/fitz-go/internal/domains/queue"
+	internalqueue "github.com/cntryl/fitz-go/v2/internal/domains/queue"
 )
 
 type QueueAvailabilityNotification struct {
