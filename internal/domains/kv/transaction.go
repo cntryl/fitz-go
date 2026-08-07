@@ -141,9 +141,6 @@ func (t *transaction) Put(ctx context.Context, key, value []byte) error {
 	if err := t.checkState(); err != nil {
 		return err
 	}
-	if err := t.checkWritable(); err != nil {
-		return err
-	}
 
 	// Validate inputs
 	if err := ValidateKeySize(key); err != nil {

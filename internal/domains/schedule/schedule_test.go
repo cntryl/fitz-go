@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -11,6 +12,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestShouldEncodeCanonicalOffsetAndLimitGivenScheduleList(t *testing.T) {
+	offset, limit := uint64(0), uint64(25)
+	var payload bytes.Buffer
+	scheduleListPayloadWriter(&offset, &limit)(&payload)
+
+	require.Len(t, payload.Bytes(), 18)
+	assert.Equal(t, byte(1), payload.Bytes()[0])
+	assert.Equal(t, uint64(0), binary.BigEndian.Uint64(payload.Bytes()[1:9]))
+	assert.Equal(t, byte(1), payload.Bytes()[9])
+	assert.Equal(t, uint64(25), binary.BigEndian.Uint64(payload.Bytes()[10:18]))
+}
 
 var benchmarkScheduleEntriesSink []ScheduleEntry
 
@@ -76,7 +89,7 @@ func TestShouldDefineScheduleOpcodesGivenConstantsWhenRead(t *testing.T) {
 	})
 
 	t.Run("list page opcode", func(t *testing.T) {
-		assert.Equal(t, uint16(707), ScheduleListPageType)
+		assert.Equal(t, uint16(702), ScheduleListPageType)
 	})
 
 	t.Run("subscribe opcode", func(t *testing.T) {
@@ -93,7 +106,7 @@ func TestShouldDefineScheduleOpcodesGivenConstantsWhenRead(t *testing.T) {
 
 	t.Run("opcodes are sequential", func(t *testing.T) {
 		assert.Equal(t, ScheduleCreate+1, ScheduleCancel)
-		assert.Equal(t, uint16(707), ScheduleListPageType)
+		assert.Equal(t, uint16(702), ScheduleListPageType)
 		assert.Equal(t, uint16(703), ScheduleSubscribe)
 		assert.Equal(t, ScheduleSubscribe+1, ScheduleUnsubscribe)
 		assert.Equal(t, ScheduleUnsubscribe+1, ScheduleNotify)

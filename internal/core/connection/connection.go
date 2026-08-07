@@ -1021,6 +1021,12 @@ func (c *Connection) RegisterNotifyHandler(msgType uint16, handler func(subID ui
 	c.mux.SetNotifyHandler(msgType, handler)
 }
 
+// RegisterRawPushHandler registers a handler for deferred responses that use
+// their request message type but arrive after the synchronous response.
+func (c *Connection) RegisterRawPushHandler(msgType uint16, handler func(payload []byte)) {
+	c.mux.SetRawPushHandler(msgType, handler)
+}
+
 // RegisterRPCRequestHandler registers handler for RPC REQUEST messages (302).
 func (c *Connection) RegisterRPCRequestHandler(handler func(payload []byte)) {
 	c.mux.SetRPCRequestHandler(handler)
@@ -1053,16 +1059,18 @@ func (c *Connection) isAuthenticated() bool {
 
 func (c *Connection) setConnError(err error) {
 	if err != nil {
-		c.connError.Store(err)
+		c.connError.Store(connErrorValue{err: err})
 	}
 }
 
 func (c *Connection) getConnError() error {
 	if val := c.connError.Load(); val != nil {
-		return val.(error)
+		return val.(connErrorValue).err
 	}
 	return nil
 }
+
+type connErrorValue struct{ err error }
 
 // Metrics returns multiplexer metrics.
 func (c *Connection) Metrics() MultiplexerMetrics {

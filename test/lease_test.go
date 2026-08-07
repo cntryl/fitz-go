@@ -20,7 +20,7 @@ func TestShouldAcquireLeaseGivenAvailableLeaseWhenAcquireCalled(t *testing.T) {
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		l, err := f.Client().Lease().Acquire(ctx, f.UniqueRoute("lease"), 30)
+		l, err := f.Client().Lease().Acquire(ctx, f.UniqueRoute("lease"), 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 		require.NotNil(t, l)
 		assert.Greater(t, l.ExpiresAt, time.Now().Unix()-1)
@@ -38,10 +38,10 @@ func TestShouldRejectAcquireGivenHeldLeaseWhenAcquireCalled(t *testing.T) {
 		f2.ConnectOrFail(ctx)
 		route := f1.UniqueRoute("lease")
 
-		_, err := f1.Client().Lease().Acquire(ctx, route, 30)
+		_, err := f1.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 
-		l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
+		l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		if err2 != nil {
 			assert.ErrorIs(t, err2, fitz.ErrLeaseHeld)
 			return
@@ -57,7 +57,7 @@ func TestShouldExtendTTLGivenValidTokenWhenRenewCalled(t *testing.T) {
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		l, err := f.Client().Lease().Acquire(ctx, f.UniqueRoute("lease"), 10)
+		l, err := f.Client().Lease().Acquire(ctx, f.UniqueRoute("lease"), 10, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 		newExpiry, err := l.Extend(ctx, 60)
 		require.NoError(t, err)
@@ -72,7 +72,7 @@ func TestShouldRejectRenewGivenInvalidTokenWhenTokenMismatch(t *testing.T) {
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		l, err := f.Client().Lease().Acquire(ctx, f.UniqueRoute("lease"), 30)
+		l, err := f.Client().Lease().Acquire(ctx, f.UniqueRoute("lease"), 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 		_, err = l.ExtendWithToken(ctx, []byte("wrong-token"), 60)
 		require.Error(t, err)
@@ -87,11 +87,11 @@ func TestShouldReleaseLeaseGivenValidTokenWhenReleaseCalled(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("lease")
-		l, err := f.Client().Lease().Acquire(ctx, route, 30)
+		l, err := f.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 		require.NoError(t, l.Release(ctx))
 
-		l2, err := f.Client().Lease().Acquire(ctx, route, 30)
+		l2, err := f.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 		require.NotNil(t, l2)
 		assert.Greater(t, l2.ExpiresAt, time.Now().Unix()-1)
@@ -105,7 +105,7 @@ func TestShouldRejectReleaseGivenInvalidTokenWhenTokenMismatch(t *testing.T) {
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		l, err := f.Client().Lease().Acquire(ctx, f.UniqueRoute("lease"), 30)
+		l, err := f.Client().Lease().Acquire(ctx, f.UniqueRoute("lease"), 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 		require.Error(t, l.ReleaseWithToken(ctx, []byte("wrong-token")))
 	})
@@ -119,7 +119,7 @@ func TestShouldExpireLeaseGivenTTLElapsedWhenNoRenew(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("lease")
-		l, err := f.Client().Lease().Acquire(ctx, route, 1)
+		l, err := f.Client().Lease().Acquire(ctx, route, 1, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 		require.NotNil(t, l)
 
@@ -127,7 +127,7 @@ func TestShouldExpireLeaseGivenTTLElapsedWhenNoRenew(t *testing.T) {
 
 		var l2 *fitz.Lease
 		require.Eventually(t, func() bool {
-			candidate, err := f.Client().Lease().Acquire(ctx, route, 30)
+			candidate, err := f.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 			if err != nil || candidate == nil {
 				return false
 			}
@@ -147,7 +147,7 @@ func TestShouldQueryLeaseStatusGivenExistingLeaseWhenQueryCalled(t *testing.T) {
 
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("lease")
-		l, err := f.Client().Lease().Acquire(ctx, route, 30)
+		l, err := f.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 		require.NotNil(t, l)
 
@@ -176,7 +176,7 @@ func TestShouldNotifyGivenSubscriptionWhenLeaseReleased(t *testing.T) {
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 
-		l, err := f.Client().Lease().Acquire(ctx, route, 30)
+		l, err := f.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 		require.NoError(t, err)
 		require.NoError(t, l.Release(ctx))
 
@@ -210,7 +210,7 @@ func TestShouldRestoreLeaseSubscriptionGivenLiveDisconnectWhenReconnectEnabled(t
 		require.NoError(t, err)
 
 		triggerChange := func() {
-			lease, err := actor.Client().Lease().Acquire(ctx, route, 30)
+			lease, err := actor.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 			require.NoError(t, err)
 			require.NoError(t, lease.Release(ctx))
 		}

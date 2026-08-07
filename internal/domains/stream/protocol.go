@@ -189,14 +189,14 @@ func encodeStreamRead(route string, fromOffset uint64, limit uint64, opts *Strea
 			buf.WriteByte(0)
 		}
 		if opts != nil && opts.CursorFingerprint != nil {
-			encoding.WriteOptionalU64(buf, *opts.CursorFingerprint)
+			encoding.WriteOptionalU64(buf, opts.CursorFingerprint)
 		} else {
-			encoding.WriteOptionalU64(buf, 0)
+			encoding.WriteOptionalU64(buf, nil)
 		}
 		if opts != nil && opts.CapturedWatermark != nil {
-			encoding.WriteOptionalU64(buf, *opts.CapturedWatermark)
+			encoding.WriteOptionalU64(buf, opts.CapturedWatermark)
 		} else {
-			encoding.WriteOptionalU64(buf, 0)
+			encoding.WriteOptionalU64(buf, nil)
 		}
 	}), nil
 }
@@ -310,14 +310,14 @@ func streamReadPayloadWriter(route string, fromOffset uint64, limit uint64, opts
 			buf.WriteByte(0)
 		}
 		if opts != nil && opts.CursorFingerprint != nil {
-			encoding.WriteOptionalU64(buf, *opts.CursorFingerprint)
+			encoding.WriteOptionalU64(buf, opts.CursorFingerprint)
 		} else {
-			encoding.WriteOptionalU64(buf, 0)
+			encoding.WriteOptionalU64(buf, nil)
 		}
 		if opts != nil && opts.CapturedWatermark != nil {
-			encoding.WriteOptionalU64(buf, *opts.CapturedWatermark)
+			encoding.WriteOptionalU64(buf, opts.CapturedWatermark)
 		} else {
-			encoding.WriteOptionalU64(buf, 0)
+			encoding.WriteOptionalU64(buf, nil)
 		}
 	}
 }

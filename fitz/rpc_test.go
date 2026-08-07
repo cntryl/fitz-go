@@ -15,7 +15,7 @@ type fakeRPCClient struct {
 	callErr  error
 }
 
-func (f *fakeRPCClient) RegisterWorker(context.Context, string, internalrpc.RPCHandler) (*internalrpc.Subscription, error) {
+func (f *fakeRPCClient) RegisterWorker(context.Context, string, uint32, internalrpc.RPCHandler) (*internalrpc.Subscription, error) {
 	return nil, nil
 }
 

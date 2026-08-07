@@ -39,9 +39,8 @@ func coreclientTokenProvider(tokenProvider TokenProvider) func(context.Context) 
 	}
 }
 
-// Connect performs the Fitz handshake over the configured transport, exchanging
-// CONNECT / CONNECT_OK frames and waiting for the connection to reach the
-// Authenticated state. The context deadline governs the full connect attempt.
+// Connect sends CONNECT and waits for the connection to reach the Authenticated
+// state. The context deadline governs the full connect attempt.
 func (c *Client) Connect(ctx context.Context) error {
 	return c.inner.Connect(ctx)
 }

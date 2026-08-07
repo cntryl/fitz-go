@@ -30,9 +30,8 @@ type ScheduleEntry struct {
 	Payload      []byte
 }
 type ScheduleListPage struct {
-	Entries      []ScheduleEntry
-	HasMore      bool
-	Continuation *string
+	Entries    []ScheduleEntry
+	TotalCount uint64
 }
 
 type ScheduleDeliveryMode uint8
@@ -76,7 +75,7 @@ type Client interface {
 	// Cancel cancels a schedule by route (route-based identity per CLIENT_SPEC).
 	Cancel(ctx context.Context, route string) error
 
-	ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error)
+	List(ctx context.Context, offset *uint64, limit *uint64) (ScheduleListPage, error)
 
 	// ListBySelector retrieves schedules matching a canonical schedule selector.
 	ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error)
@@ -187,7 +186,7 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, deli
 		return "", fmt.Errorf("create request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := connection.ParsePlainResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -200,16 +199,21 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, deli
 		return "", recordErr
 	}
 
-	// Optional schedule_id when server sends it; otherwise route is identity
-	if len(remaining) >= 1 && remaining[0] == 1 {
-		if len(remaining) >= 5 {
-			id, _, err := connection.ReadString(remaining, 1)
-			if err == nil {
-				return id, nil
-			}
-		}
+	// Optional schedule_id when server sends it; otherwise route is identity.
+	if len(remaining) == 0 {
+		return route, nil
 	}
-	return route, nil
+	if remaining[0] != 1 {
+		return "", errors.New("create response has invalid schedule_id flag")
+	}
+	id, offset, err := connection.ReadString(remaining, 1)
+	if err != nil {
+		return "", fmt.Errorf("parse schedule_id: %w", err)
+	}
+	if offset != len(remaining) {
+		return "", errors.New("create response has trailing bytes")
+	}
+	return id, nil
 }
 
 // Cancel per CLIENT_SPEC.md: Request [route_len][route] (route-based identity).
@@ -235,7 +239,7 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 		return fmt.Errorf("cancel request failed: %w", err)
 	}
 
-	success, _, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := connection.ParsePlainResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -247,15 +251,15 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
 	}
+	if len(remaining) != 0 {
+		return errors.New("cancel response has trailing bytes")
+	}
 
 	return nil
 }
 
-func (c *client) ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error) {
-	if limit != nil && (*limit < 1 || *limit > 1000) {
-		return ScheduleListPage{}, errors.New("schedule LIST_PAGE limit must be between 1 and 1000")
-	}
-	resp, err := c.currentConn().SendRequestWithWriter(ctx, protocol.MessageTypeScheduleListPage, scheduleListPagePayloadWriter(cursor, limit))
+func (c *client) List(ctx context.Context, offset *uint64, limit *uint64) (ScheduleListPage, error) {
+	resp, err := c.currentConn().SendRequestWithWriter(ctx, protocol.MessageTypeScheduleListPage, scheduleListPayloadWriter(offset, limit))
 	if err != nil {
 		return ScheduleListPage{}, err
 	}
@@ -264,33 +268,20 @@ func (c *client) ListPage(ctx context.Context, cursor *string, limit *uint64) (S
 		return ScheduleListPage{}, err
 	}
 	if !success {
-		return ScheduleListPage{}, errors.New("schedule LIST_PAGE failed")
+		return ScheduleListPage{}, errors.New("schedule LIST failed")
 	}
-	if len(remaining) < 2 || remaining[0] != 1 || (remaining[1] != 0 && remaining[1] != 1) {
-		return ScheduleListPage{}, errors.New("invalid schedule LIST_PAGE response")
+	if len(remaining) < 9 {
+		return ScheduleListPage{}, errors.New("invalid schedule LIST response")
 	}
-	pos := 2
-	var continuation *string
-	if pos >= len(remaining) {
-		return ScheduleListPage{}, errors.New("missing continuation")
-	}
-	has := remaining[pos]
-	pos++
-	if has == 1 {
-		s, n, e := connection.ReadString(remaining, pos)
-		if e != nil {
-			return ScheduleListPage{}, e
-		}
-		continuation = &s
-		pos = n
-	} else if has != 0 {
-		return ScheduleListPage{}, errors.New("invalid continuation flag")
-	}
-	entries, err := parseScheduleListEntries(remaining[pos:])
+	totalCount, _, err := connection.ReadU64BE(remaining, 0)
 	if err != nil {
 		return ScheduleListPage{}, err
 	}
-	return ScheduleListPage{Entries: entries, HasMore: remaining[1] == 1, Continuation: continuation}, nil
+	entries, err := parseScheduleListEntries(remaining[8:])
+	if err != nil {
+		return ScheduleListPage{}, err
+	}
+	return ScheduleListPage{Entries: entries, TotalCount: totalCount}, nil
 }
 
 func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
@@ -350,15 +341,16 @@ func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
 }
 
 // ListBySelector retrieves schedules matching a canonical schedule selector by
-// consuming the cursor-based LIST_PAGE API.
+// consuming the offset-based LIST API.
 func (c *client) ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error) {
 	if err := types.ValidateScheduleSelector(selector); err != nil {
 		return nil, fmt.Errorf("invalid selector: %w", err)
 	}
-	var cursor *string
+	var offset uint64
+	limit := uint64(1000)
 	matches := make([]ScheduleEntry, 0)
 	for {
-		page, err := c.ListPage(ctx, cursor, nil)
+		page, err := c.List(ctx, &offset, &limit)
 		if err != nil {
 			return nil, err
 		}
@@ -368,13 +360,13 @@ func (c *client) ListBySelector(ctx context.Context, selector string) ([]Schedul
 			}
 			matches = append(matches, entry)
 		}
-		if !page.HasMore {
+		offset += uint64(len(page.Entries))
+		if offset >= page.TotalCount {
 			return matches, nil
 		}
-		if page.Continuation == nil {
-			return nil, errors.New("schedule LIST_PAGE response missing continuation")
+		if len(page.Entries) == 0 {
+			return nil, errors.New("schedule LIST returned an empty page before total_count")
 		}
-		cursor = page.Continuation
 	}
 }
 
@@ -424,7 +416,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+	if _, _, err := connection.ParsePlainResponse(resp); err != nil {
 		return
 	}
 }
@@ -449,7 +441,7 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if _, _, err = connection.ParseStandardResponse(resp); err != nil {
+			if _, _, err = connection.ParsePlainResponse(resp); err != nil {
 				return err
 			}
 			conn.AddSubscriptions(-1)
@@ -465,7 +457,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("subscribe request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := connection.ParsePlainResponse(resp)
 	if err != nil {
 		return 0, fmt.Errorf("subscribe failed: %w", mapScheduleError(err))
 	}
@@ -479,7 +471,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 	if remaining[0] != 1 {
 		return 0, errors.New("subscribe response missing subscription_id")
 	}
-	if len(remaining) < 9 {
+	if len(remaining) != 9 {
 		return 0, fmt.Errorf("subscribe response too short for subscription_id: got %d bytes", len(remaining))
 	}
 

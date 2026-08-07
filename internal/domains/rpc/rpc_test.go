@@ -138,7 +138,7 @@ func TestShouldEncodeRPCSubscribeWorkerGivenWorkerRouteWhenEncodeRPCSubscribeWor
 		route := "rpc://acme/jobs/process"
 
 		// Act
-		payload, err := encodeRPCSubscribeWorker(route)
+		payload, err := encodeRPCSubscribeWorker(route, 7)
 
 		// Assert
 		require.NoError(t, err)
@@ -147,12 +147,12 @@ func TestShouldEncodeRPCSubscribeWorkerGivenWorkerRouteWhenEncodeRPCSubscribeWor
 		// Verify route length prefix
 		routeLen := binary.BigEndian.Uint32(payload[0:4])
 		assert.Equal(t, uint32(len(route)), routeLen)
-		assert.Equal(t, uint32(1), binary.BigEndian.Uint32(payload[4+len(route):]))
+		assert.Equal(t, uint32(7), binary.BigEndian.Uint32(payload[4+len(route):]))
 	})
 
 	t.Run("empty route", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := encodeRPCSubscribeWorker("")
+		payload, err := encodeRPCSubscribeWorker("", 7)
 
 		// Assert
 		require.NoError(t, err)
@@ -164,7 +164,7 @@ func TestShouldEncodeRPCSubscribeWorkerGivenWorkerRouteWhenEncodeRPCSubscribeWor
 		route := "rpc://org.example.com/services/worker-pool/v2"
 
 		// Act
-		payload, err := encodeRPCSubscribeWorker(route)
+		payload, err := encodeRPCSubscribeWorker(route, 7)
 
 		// Assert
 		require.NoError(t, err)
@@ -344,7 +344,7 @@ func BenchmarkEncodeRPCSubscribeWorker(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = encodeRPCSubscribeWorker(route)
+			_, _ = encodeRPCSubscribeWorker(route, 7)
 		}
 	})
 
@@ -354,7 +354,7 @@ func BenchmarkEncodeRPCSubscribeWorker(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = encodeRPCSubscribeWorker(route)
+			_, _ = encodeRPCSubscribeWorker(route, 7)
 		}
 	})
 }

@@ -346,6 +346,7 @@ Notes:
 ## Managed leases
 
 `client.Lease().WithLease(ctx, route, ttlSecs, callback)` owns acquisition, renewal,
-callback cancellation, and release. Add `fitz.WithLeaseWait()` to retry typed contention.
+callback cancellation, and release. Add `fitz.WithLeaseWaitSeconds(30)` to use the
+broker's bounded FIFO acquisition queue.
 The callback must honor its context promptly; `context.Cause` reports caller cancellation
 or `fitz.ErrLeaseLost`. Low-level lease methods remain available and serialize token rotation.

@@ -55,7 +55,7 @@ func TestShouldReturnBrokerErrorGivenRejectedWorkerUnsubscribe(t *testing.T) {
 		waitForRPCWrites(t, transport, baseWrites+2)
 		transport.enqueue(scriptedRPCFrame(t, protocol.MessageTypeRpcUnsubscribeWorker, rpcDomainErrorPayload(3002, "worker not found")))
 	}()
-	subscription, err := client.RegisterWorker(context.Background(), "rpc://realm/area/method", func(context.Context, InboundRequest, ResponseWriter) error { return nil })
+	subscription, err := client.RegisterWorker(context.Background(), "rpc://realm/area/method", 7, func(context.Context, InboundRequest, ResponseWriter) error { return nil })
 	require.NoError(t, err)
 
 	err = subscription.Unsubscribe()

@@ -22,6 +22,26 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+func parsePlainStreamResponse(payload []byte) (bool, []byte, error) {
+	if len(payload) == 0 {
+		return false, nil, errors.New("response too short")
+	}
+	if payload[0] == 0 {
+		return true, payload[1:], nil
+	}
+	if payload[0] != 1 {
+		return false, nil, fmt.Errorf("unknown response status: %d", payload[0])
+	}
+	message, end, err := connection.ReadString(payload, 1)
+	if err != nil {
+		return false, nil, fmt.Errorf("decode stream error: %w", err)
+	}
+	if end != len(payload) {
+		return false, nil, errors.New("trailing bytes after stream error")
+	}
+	return false, nil, errors.New(message)
+}
+
 // Record represents a single stream record.
 type Record struct {
 	Route        string
@@ -156,6 +176,7 @@ type Client interface {
 
 type client struct {
 	conn                    *connection.Connection
+	connMu                  sync.RWMutex
 	mu                      sync.Mutex
 	subscriptions           *subscriptions.Registry[CommitHandler]
 	notifyHandlerInitOnce   sync.Once
@@ -181,7 +202,7 @@ var _ reconnect.DomainRestorer = (*client)(nil)
 
 // Begin per server stream_codec.rs:
 // Request: [string route][optional bytes ingest_metadata]
-// Response: [status][u8 has_session_id][u64 session_id if has=1][bytes data]
+// Response: [status][u64 session_id][bytes data]
 // Expected offset (OCC) is sent on Append; Begin creates session state only.
 func (c *client) Begin(ctx context.Context, route string) (StreamSession, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Begin", trace.WithAttributes(
@@ -206,7 +227,7 @@ func (c *client) Begin(ctx context.Context, route string) (StreamSession, error)
 		return nil, fmt.Errorf("begin request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := parsePlainStreamResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -219,25 +240,20 @@ func (c *client) Begin(ctx context.Context, route string) (StreamSession, error)
 		return nil, recordErr
 	}
 
-	if len(remaining) < 1 {
+	if len(remaining) < 12 {
 		recordErr := errors.New("begin response too short")
 		span.RecordError(recordErr)
 		span.SetStatus(codes.Error, recordErr.Error())
 		return nil, recordErr
 	}
-	hasSessionID := remaining[0]
-	if hasSessionID != 1 || len(remaining) < 9 {
-		recordErr := errors.New("begin response missing session_id")
-		span.RecordError(recordErr)
-		span.SetStatus(codes.Error, recordErr.Error())
-		return nil, recordErr
-	}
-
-	sessionID, _, err := connection.ReadU64BE(remaining, 1)
+	sessionID, dataOffset, err := connection.ReadU64BE(remaining, 0)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("parse session_id: %w", err)
+	}
+	if _, end, err := connection.ReadBytes(remaining, dataOffset); err != nil || end != len(remaining) {
+		return nil, errors.New("begin response contains invalid data payload")
 	}
 
 	return &session{route: route, sessionID: sessionID, conn: c.conn}, nil
@@ -262,7 +278,7 @@ func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte
 		return 0, fmt.Errorf("send request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := parsePlainStreamResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -275,18 +291,9 @@ func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte
 		return 0, recordErr
 	}
 
-	offset := 0
-	if offset < len(remaining) {
-		hasSessionID := remaining[offset]
-		offset++
-		if hasSessionID == 1 && offset+8 <= len(remaining) {
-			offset += 8
-		}
-	}
-	if offset+4 <= len(remaining) {
-		dataLen, newOffset, err := connection.ReadU32BE(remaining, offset)
-		if err == nil && dataLen >= 8 && newOffset+int(dataLen) <= len(remaining) {
-			assignedOffset, _, _ := connection.ReadU64BE(remaining, newOffset)
+	if data, end, err := connection.ReadBytes(remaining, 0); err == nil && end == len(remaining) {
+		if len(data) >= 8 {
+			assignedOffset, _, _ := connection.ReadU64BE(data, 0)
 			return assignedOffset, nil
 		}
 	}
@@ -311,7 +318,7 @@ func (s *session) Commit(ctx context.Context, mode CommitMode) error {
 		return fmt.Errorf("commit request failed: %w", err)
 	}
 
-	success, _, err := connection.ParseStandardResponse(resp)
+	success, _, err := parsePlainStreamResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -344,7 +351,7 @@ func (s *session) Rollback(ctx context.Context) error {
 		return fmt.Errorf("rollback request failed: %w", err)
 	}
 
-	success, _, err := connection.ParseStandardResponse(resp)
+	success, _, err := parsePlainStreamResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -361,7 +368,7 @@ func (s *session) Rollback(ctx context.Context) error {
 
 // Read per server stream_codec.rs:
 // Request: [string route][u64 from_offset][u64 limit][optional bincode filter]
-// Response: [status][u8 has_session_id][u64?][bytes data]
+// Response: [status][record data]
 func (c *client) Read(ctx context.Context, route string, fromOffset uint64, limit uint64, opts ...*StreamReadOptions) (iter.Iterator[Record], error) {
 	page, err := c.ReadPage(ctx, route, fromOffset, limit, opts...)
 	if err != nil {
@@ -399,7 +406,7 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 			return fmt.Errorf("read request failed: %w", err)
 		}
 
-		success, remaining, err := connection.ParseStandardResponse(resp)
+		success, remaining, err := parsePlainStreamResponse(resp)
 		if err != nil {
 			return fmt.Errorf("read failed: %w", mapStreamError(err))
 		}
@@ -456,16 +463,12 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 			return errors.New("peek failed: unexpected status")
 		}
 
-		data, err := skipOptionalSessionIDAndGetData(remaining)
-		if err != nil {
-			return fmt.Errorf("parse peek response envelope: %w", err)
-		}
-		if len(data) == 0 {
+		if len(remaining) == 0 {
 			record = nil
 			return nil
 		}
 
-		record, err = parseLastResponse(data)
+		record, err = parseLastResponse(remaining, route)
 		if err != nil {
 			return fmt.Errorf("parse peek response: %w", err)
 		}
@@ -482,7 +485,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 
 // Metadata per server stream_codec.rs:
 // Request: [string route]
-// Response: [status][u8 has_session_id][u64?][bytes data]
+// Response: [status][metadata data]
 func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.stream.Metadata", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
@@ -501,7 +504,7 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 			return fmt.Errorf("get_metadata request failed: %w", err)
 		}
 
-		success, remaining, err := connection.ParseStandardResponse(resp)
+		success, remaining, err := parsePlainStreamResponse(resp)
 		if err != nil {
 			return fmt.Errorf("get_metadata failed: %w", mapStreamError(err))
 		}
@@ -509,12 +512,7 @@ func (c *client) Metadata(ctx context.Context, route string) (*Metadata, error) 
 			return errors.New("get_metadata failed: unexpected status")
 		}
 
-		data, err := skipOptionalSessionIDAndGetData(remaining)
-		if err != nil {
-			return fmt.Errorf("parse GET_METADATA response envelope: %w", err)
-		}
-
-		meta, err = parseMetadataPayload(data)
+		meta, err = parseMetadataPayload(remaining)
 		if err != nil {
 			return fmt.Errorf("parse GET_METADATA response: %w", err)
 		}
@@ -570,6 +568,7 @@ func parseReadPageResponse(data []byte, selector string) (*ReadPage, error) {
 	}
 
 	items := make([]ReadItem, 0, count)
+	global := selector == "stream://**"
 	for i := range count {
 		concreteRoute, newOffset, err := connection.ReadString(data, offset)
 		if err != nil {
@@ -579,7 +578,7 @@ func parseReadPageResponse(data []byte, selector string) (*ReadPage, error) {
 			return nil, fmt.Errorf("parse concrete route at item %d: %w", i, err)
 		}
 		offset = newOffset
-		item, newOffset, err := decodeStreamReadItemAt(data, offset)
+		item, newOffset, err := decodeStreamReadItemAt(data, offset, global)
 		if err != nil {
 			return nil, fmt.Errorf("parse read item %d: %w", i, err)
 		}
@@ -601,7 +600,6 @@ func parseReadPageResponse(data []byte, selector string) (*ReadPage, error) {
 	if cursor.LastRealmOffset, offset, err = readOptionalU64(data, offset); err != nil {
 		return nil, fmt.Errorf("parse last_realm_offset: %w", err)
 	}
-	global := selector == "stream://**"
 	if global {
 		if cursor.LastGlobalOffset, offset, err = readOptionalU64(data, offset); err != nil {
 			return nil, fmt.Errorf("parse last_global_offset: %w", err)
@@ -632,7 +630,7 @@ func parseReadPageResponse(data []byte, selector string) (*ReadPage, error) {
 
 // parseRecord parses a single record from the payload at the given offset.
 func parseRecord(data []byte, offset int) (*Record, error) {
-	rec, newOffset, err := decodeStreamRecordAt(data, offset)
+	rec, newOffset, err := decodeStreamRecordAt(data, offset, false)
 	if err != nil {
 		return nil, err
 	}
@@ -642,15 +640,11 @@ func parseRecord(data []byte, offset int) (*Record, error) {
 	return rec, nil
 }
 
-func parseLastResponse(data []byte) (*Record, error) {
-	route, offset, err := connection.ReadString(data, 0)
-	if err != nil {
-		return nil, fmt.Errorf("parse concrete route: %w", err)
-	}
+func parseLastResponse(data []byte, route string) (*Record, error) {
 	if err := types.ValidateFixedRoute(route, "stream", 3); err != nil {
 		return nil, fmt.Errorf("invalid concrete route in response: %w", err)
 	}
-	record, newOffset, err := decodeStreamRecordAt(data, offset)
+	record, newOffset, err := decodeStreamRecordAt(data, 0, false)
 	if err != nil {
 		return nil, err
 	}
@@ -661,7 +655,7 @@ func parseLastResponse(data []byte) (*Record, error) {
 	return record, nil
 }
 
-func decodeStreamRecordAt(data []byte, offset int) (*Record, int, error) {
+func decodeStreamRecordAt(data []byte, offset int, global bool) (*Record, int, error) {
 	rec := &Record{}
 
 	var err error
@@ -678,6 +672,12 @@ func decodeStreamRecordAt(data []byte, offset int) (*Record, int, error) {
 	rec.RealmOffset, offset, err = readOptionalU64(data, offset)
 	if err != nil {
 		return nil, offset, fmt.Errorf("parse record realm_offset: %w", err)
+	}
+	if global {
+		rec.GlobalOffset, offset, err = readOptionalU64(data, offset)
+		if err != nil {
+			return nil, offset, fmt.Errorf("parse record global_offset: %w", err)
+		}
 	}
 
 	bodyData, offset, err := connection.ReadBytes(data, offset)
@@ -699,7 +699,7 @@ func decodeStreamRecordAt(data []byte, offset int) (*Record, int, error) {
 	return rec, offset, nil
 }
 
-func decodeStreamReadItemAt(data []byte, offset int) (*ReadItem, int, error) {
+func decodeStreamReadItemAt(data []byte, offset int, global bool) (*ReadItem, int, error) {
 	if offset >= len(data) {
 		return nil, offset, fmt.Errorf("parse read item tag: %w", io.ErrUnexpectedEOF)
 	}
@@ -711,7 +711,7 @@ func decodeStreamReadItemAt(data []byte, offset int) (*ReadItem, int, error) {
 	var err error
 	switch tag {
 	case 0:
-		item.Record, offset, err = decodeStreamRecordAt(data, offset)
+		item.Record, offset, err = decodeStreamRecordAt(data, offset, global)
 		if err != nil {
 			return nil, offset, err
 		}
@@ -778,7 +778,7 @@ func flattenReadItems(items []ReadItem) []Record {
 }
 
 func isStreamReadRetryable(err error) bool {
-	return connection.IsTransientRetryable(err) || errors.Is(err, ErrStreamReadError)
+	return connection.IsTransientRetryable(err)
 }
 
 func parseMetadataPayload(data []byte) (*Metadata, error) {
@@ -980,7 +980,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+	if _, _, err := parsePlainStreamResponse(resp); err != nil {
 		return
 	}
 }
@@ -988,7 +988,9 @@ func (c *client) unsubscribe(sub *Subscription) {
 func (c *client) ReplaceConnection(conn *connection.Connection) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.connMu.Lock()
 	c.conn = conn
+	c.connMu.Unlock()
 	if c.notifyHandlerRegistered.Load() {
 		c.conn.RegisterNotifyHandler(protocol.MessageTypeStreamNotify, c.handleNotify)
 	}
@@ -1004,7 +1006,7 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if _, _, err = connection.ParseStandardResponse(resp); err != nil {
+			if _, _, err = parsePlainStreamResponse(resp); err != nil {
 				return err
 			}
 			c.conn.AddSubscriptions(-1)
@@ -1019,7 +1021,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("subscribe request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := parsePlainStreamResponse(resp)
 	if err != nil {
 		return 0, fmt.Errorf("subscribe failed: %w", mapStreamError(err))
 	}

@@ -48,7 +48,7 @@ type RPCResponseWriter interface {
 type RPCHandler func(ctx context.Context, req RPCInboundRequest, writer RPCResponseWriter) error
 
 type RPCClient interface {
-	RegisterWorker(ctx context.Context, route string, handler RPCHandler) (*RPCWorkerRegistration, error)
+	RegisterWorker(ctx context.Context, route string, maxConcurrent uint32, handler RPCHandler) (*RPCWorkerRegistration, error)
 	Call(ctx context.Context, route string, body []byte) (Iterator[RPCResponseFrame], error)
 }
 
@@ -71,8 +71,8 @@ func (w *rpcResponseWriter) Send(body []byte) error {
 }
 
 // RegisterWorker registers a handler for a route and returns a deregistration handle.
-func (c *rpcClient) RegisterWorker(ctx context.Context, route string, handler RPCHandler) (*RPCWorkerRegistration, error) {
-	registration, err := c.inner.RegisterWorker(ctx, route, func(ctx context.Context, req internalrpc.InboundRequest, writer internalrpc.ResponseWriter) error {
+func (c *rpcClient) RegisterWorker(ctx context.Context, route string, maxConcurrent uint32, handler RPCHandler) (*RPCWorkerRegistration, error) {
+	registration, err := c.inner.RegisterWorker(ctx, route, maxConcurrent, func(ctx context.Context, req internalrpc.InboundRequest, writer internalrpc.ResponseWriter) error {
 		return handler(ctx, RPCInboundRequest{
 			Route:         req.Route,
 			ReplyRoute:    req.ReplyRoute,

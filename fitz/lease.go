@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -81,22 +80,32 @@ type LeaseInfo struct {
 }
 
 type LeaseClient interface {
-	Acquire(ctx context.Context, route string, ttlSecs uint64) (*Lease, error)
+	Acquire(ctx context.Context, route string, ttlSecs uint64, options LeaseAcquireOptions) (*Lease, error)
 	WithLease(ctx context.Context, route string, ttlSecs uint64, callback func(context.Context) error, opts ...WithLeaseOption) error
 	Query(ctx context.Context, route string) (*LeaseInfo, error)
 	Subscribe(ctx context.Context, route string, handler LeaseChangeHandler) (*LeaseSubscription, error)
 }
 
 type leaseExecutionOptions struct {
-	wait bool
+	ownerID     string
+	waitSeconds uint32
+}
+
+type LeaseAcquireOptions struct {
+	OwnerID     string
+	WaitSeconds uint32
 }
 
 // WithLeaseOption configures a managed lease execution.
 type WithLeaseOption func(*leaseExecutionOptions)
 
-// WithLeaseWait retries typed contention outcomes until acquisition or cancellation.
-func WithLeaseWait() WithLeaseOption {
-	return func(options *leaseExecutionOptions) { options.wait = true }
+func WithLeaseOwnerID(ownerID string) WithLeaseOption {
+	return func(options *leaseExecutionOptions) { options.ownerID = ownerID }
+}
+
+// WithLeaseWaitSeconds uses the broker's FIFO acquisition queue.
+func WithLeaseWaitSeconds(waitSeconds uint32) WithLeaseOption {
+	return func(options *leaseExecutionOptions) { options.waitSeconds = waitSeconds }
 }
 
 type leaseClient struct {
@@ -115,8 +124,8 @@ type managedLeaseOutcome struct {
 }
 
 // Acquire attempts to acquire a lease for the route.
-func (c *leaseClient) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Lease, error) {
-	lease, err := c.inner.Acquire(ctx, route, ttlSecs)
+func (c *leaseClient) Acquire(ctx context.Context, route string, ttlSecs uint64, options LeaseAcquireOptions) (*Lease, error) {
+	lease, err := c.inner.Acquire(ctx, route, ttlSecs, internallease.AcquireOptions{OwnerID: options.OwnerID, WaitSeconds: options.WaitSeconds})
 	if err != nil {
 		return nil, err
 	}
@@ -138,33 +147,12 @@ func (c *leaseClient) WithLease(ctx context.Context, route string, ttlSecs uint6
 		option(&options)
 	}
 
-	lease, err := c.acquireManagedLease(ctx, route, ttlSecs, options.wait)
+	lease, err := c.Acquire(ctx, route, ttlSecs, LeaseAcquireOptions{OwnerID: options.ownerID, WaitSeconds: options.waitSeconds})
 	if err != nil {
 		return err
 	}
 	outcome := c.superviseManagedLease(ctx, lease, ttlSecs, callback)
 	return finalizeManagedLease(ctx, lease, outcome)
-}
-
-func (c *leaseClient) acquireManagedLease(ctx context.Context, route string, ttlSecs uint64, wait bool) (*Lease, error) {
-	delay := 50 * time.Millisecond
-	for {
-		lease, err := c.Acquire(ctx, route, ttlSecs)
-		if err == nil {
-			return lease, nil
-		}
-		if !wait || (!errors.Is(err, ErrLeaseHeld) && !errors.Is(err, ErrLeaseQueued)) {
-			return nil, err
-		}
-		timer := time.NewTimer(time.Duration(rand.Int64N(int64(delay) + 1)))
-		select {
-		case <-ctx.Done():
-			stopAndDrain(timer)
-			return nil, context.Cause(ctx)
-		case <-timer.C:
-		}
-		delay = min(delay*2, time.Second)
-	}
 }
 
 func (c *leaseClient) superviseManagedLease(ctx context.Context, lease *Lease, ttlSecs uint64, callback func(context.Context) error) managedLeaseOutcome {

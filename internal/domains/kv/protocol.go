@@ -387,6 +387,7 @@ var (
 	ErrValueTooLarge       = errors.New("value too large")
 	ErrTransactionAborted  = errors.New("transaction aborted")
 	ErrReadOnlyTransaction = errors.New("transaction is read-only")
+	ErrBackendError        = errors.New("kv backend error")
 )
 
 // mapKVError maps a broker error to a domain-specific Go error.
@@ -402,8 +403,14 @@ func mapKVError(err error) error {
 			return ErrNotFound
 		case coreerrors.KvKeyExists:
 			return ErrKeyExists
-		case coreerrors.KvIsolationConflict, coreerrors.KvBackendError:
+		case coreerrors.KvIsolationConflict:
 			return ErrConcurrencyConflict
+		case coreerrors.KvBackendError:
+			message := strings.ToLower(domainErr.Message)
+			if strings.Contains(message, "read-only") || strings.Contains(message, "readonly") {
+				return ErrReadOnlyTransaction
+			}
+			return ErrBackendError
 		case coreerrors.KvWriteInReadonly, coreerrors.KvInvalidMode:
 			return ErrReadOnlyTransaction
 		case coreerrors.KvTransactionAborted:

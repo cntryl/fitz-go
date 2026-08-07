@@ -21,7 +21,7 @@ func TestPublicSurface(t *testing.T) {
 	})
 
 	t.Run("queue item hides reservation ids", func(t *testing.T) {
-		assertPublicFields(t, reflect.TypeOf(fitz.QueueItem{}), []string{"Body"})
+		assertPublicFields(t, reflect.TypeOf(fitz.QueueItem{}), []string{"Body", "Route"})
 		assertUnexportedField(t, reflect.TypeOf(fitz.QueueItem{}), "id")
 		assertUnexportedField(t, reflect.TypeOf(fitz.QueueItem{}), "token")
 	})

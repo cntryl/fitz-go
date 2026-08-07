@@ -89,7 +89,7 @@ func TestShouldConnectGivenJWTWithoutSchedulePermissionWhenConnectCalled(t *test
 		require.NoError(t, err)
 		require.NoError(t, tx.Rollback(ctx))
 
-		_, err = client.Schedule().ListPage(ctx, nil, nil)
+		_, err = client.Schedule().List(ctx, nil, nil)
 		require.Error(t, err)
 	})
 }
@@ -386,7 +386,7 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 		fCaller.ConnectOrFail(ctx)
 		route := fWorker.UniqueRoute("rpc")
 
-		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(handlerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, 7, func(handlerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 			select {
 			case <-time.After(200 * time.Millisecond):
 				return w.Send([]byte("late"))
@@ -394,6 +394,7 @@ func TestShouldReturnErrorGivenContextCanceledWhenLongRequestInFlight(t *testing
 				return handlerCtx.Err()
 			}
 		})
+
 		require.NoError(t, err)
 		defer sub.Deregister()
 

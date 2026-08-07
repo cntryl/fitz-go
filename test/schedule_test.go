@@ -69,7 +69,7 @@ func TestShouldListSchedulesGivenMultipleSchedulesWhenListCalled(t *testing.T) {
 		_, err = f.Client().Schedule().Create(ctx, route, "0 12 * * *", fitz.ScheduleDeliveryBroadcast, []byte("s2"))
 		require.NoError(t, err)
 
-		page, err := f.Client().Schedule().ListPage(ctx, nil, nil)
+		page, err := f.Client().Schedule().List(ctx, nil, nil)
 		require.NoError(t, err)
 		require.NotNil(t, page.Entries)
 	})
@@ -97,7 +97,7 @@ func TestShouldReturnListWithoutErrorGivenSchedulesWhenListCalled(t *testing.T) 
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		page, err := f.Client().Schedule().ListPage(ctx, nil, nil)
+		page, err := f.Client().Schedule().List(ctx, nil, nil)
 		require.NoError(t, err)
 		require.NotNil(t, page.Entries)
 	})

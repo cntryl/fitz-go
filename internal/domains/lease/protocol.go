@@ -69,22 +69,22 @@ func mapLeaseError(err error) error {
 }
 
 // encodeLeaseAcquire encodes a LEASE_ACQUIRE request per CLIENT_SPEC.md.
-// Wire format: [string route][string client_id][u64 ttl_seconds]
-// The client_id is optional (empty string for auto-assignment by server).
-func encodeLeaseAcquire(route string, ttlSeconds uint64) ([]byte, error) {
+// Wire format: [string route][string owner_id][u64 ttl_seconds][u32 wait_seconds].
+func encodeLeaseAcquire(route, ownerID string, ttlSeconds uint64, waitSeconds uint32) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
-		encoding.WriteRoute(buf, "") // client_id (empty = server assigns)
+		encoding.WriteRoute(buf, ownerID)
 		encoding.WriteU64(buf, ttlSeconds)
+		encoding.WriteU32(buf, waitSeconds)
 	}), nil
 }
 
 // encodeLeaseRenew encodes a LEASE_RENEW request per CLIENT_SPEC.md.
 // Wire format: [string resource][string client_id][u64 fence_token][u64 ttl_seconds]
-func encodeLeaseRenew(resource string, fenceToken uint64, ttlSeconds uint64) ([]byte, error) {
+func encodeLeaseRenew(resource, ownerID string, fenceToken uint64, ttlSeconds uint64) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, resource)
-		encoding.WriteRoute(buf, "") // client_id (empty = use existing)
+		encoding.WriteRoute(buf, ownerID)
 		encoding.WriteU64(buf, fenceToken)
 		encoding.WriteU64(buf, ttlSeconds)
 	}), nil
@@ -92,10 +92,10 @@ func encodeLeaseRenew(resource string, fenceToken uint64, ttlSeconds uint64) ([]
 
 // encodeLeaseRelease encodes a LEASE_RELEASE request per CLIENT_SPEC.md.
 // Wire format: [string resource][string client_id][u64 fence_token]
-func encodeLeaseRelease(resource string, fenceToken uint64) ([]byte, error) {
+func encodeLeaseRelease(resource, ownerID string, fenceToken uint64) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, resource)
-		encoding.WriteRoute(buf, "") // client_id (empty = use existing)
+		encoding.WriteRoute(buf, ownerID)
 		encoding.WriteU64(buf, fenceToken)
 	}), nil
 }
@@ -110,27 +110,28 @@ func encodeLeaseQuery(route string) ([]byte, error) {
 
 // Payload writer helpers for zero-copy frame encoding
 
-func leaseAcquirePayloadWriter(route string, ttlSeconds uint64) func(*bytes.Buffer) {
+func leaseAcquirePayloadWriter(route, ownerID string, ttlSeconds uint64, waitSeconds uint32) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
-		encoding.WriteRoute(buf, "") // client_id (empty = server assigns)
+		encoding.WriteRoute(buf, ownerID)
 		encoding.WriteU64(buf, ttlSeconds)
+		encoding.WriteU32(buf, waitSeconds)
 	}
 }
 
-func leaseRenewPayloadWriter(resource string, fenceToken uint64, ttlSeconds uint64) func(*bytes.Buffer) {
+func leaseRenewPayloadWriter(resource, ownerID string, fenceToken uint64, ttlSeconds uint64) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, resource)
-		encoding.WriteRoute(buf, "") // client_id (empty = use existing)
+		encoding.WriteRoute(buf, ownerID)
 		encoding.WriteU64(buf, fenceToken)
 		encoding.WriteU64(buf, ttlSeconds)
 	}
 }
 
-func leaseReleasePayloadWriter(resource string, fenceToken uint64) func(*bytes.Buffer) {
+func leaseReleasePayloadWriter(resource, ownerID string, fenceToken uint64) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, resource)
-		encoding.WriteRoute(buf, "") // client_id (empty = use existing)
+		encoding.WriteRoute(buf, ownerID)
 		encoding.WriteU64(buf, fenceToken)
 	}
 }

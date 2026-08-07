@@ -175,7 +175,7 @@ func (s *Subscription) Unsubscribe() error {
 // Client is the RPC domain client interface.
 type Client interface {
 	// RegisterWorker registers a worker handler for the given route.
-	RegisterWorker(ctx context.Context, route string, handler RPCHandler) (*Subscription, error)
+	RegisterWorker(ctx context.Context, route string, maxConcurrent uint32, handler RPCHandler) (*Subscription, error)
 
 	// Call sends an RPC request and returns an iterator over response frames.
 	// Callers must call Close on the returned iterator when done to release resources.
@@ -188,6 +188,7 @@ type client struct {
 	mu                sync.Mutex
 	workers           map[string]RPCHandler // route -> handler
 	workerVersions    map[string]uint64
+	workerConcurrency map[string]uint32
 	nextWorkerVersion uint64
 	pendingRPCs       map[[16]byte]*responseStream
 	initialized       bool
@@ -196,10 +197,11 @@ type client struct {
 // NewClient creates a new RPC domain client.
 func NewClient(conn *connection.Connection) Client {
 	c := &client{
-		conn:           conn,
-		workers:        make(map[string]RPCHandler),
-		workerVersions: make(map[string]uint64),
-		pendingRPCs:    make(map[[16]byte]*responseStream),
+		conn:              conn,
+		workers:           make(map[string]RPCHandler),
+		workerConcurrency: make(map[string]uint32),
+		workerVersions:    make(map[string]uint64),
+		pendingRPCs:       make(map[[16]byte]*responseStream),
 	}
 	return c
 }
@@ -425,7 +427,7 @@ func scoreWorkerPattern(pattern string) workerPatternSpecificity {
 // RegisterWorker per CLIENT_SPEC.md:
 // Request: [worker_route_len][worker_route]
 // Response: [status]
-func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHandler) (*Subscription, error) {
+func (c *client) RegisterWorker(ctx context.Context, route string, maxConcurrent uint32, handler RPCHandler) (*Subscription, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.rpc.RegisterWorker", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
@@ -438,6 +440,9 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
+	if maxConcurrent == 0 {
+		return nil, errors.New("maxConcurrent must be positive")
+	}
 	c.mu.Lock()
 	_, alreadyRegistered := c.workers[route]
 	c.mu.Unlock()
@@ -447,7 +452,7 @@ func (c *client) RegisterWorker(ctx context.Context, route string, handler RPCHa
 
 	c.initRPCHandler()
 
-	sub, err := c.subscribeWorker(ctx, route, handler)
+	sub, err := c.subscribeWorker(ctx, route, maxConcurrent, handler)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -465,6 +470,7 @@ func (c *client) unsubscribeWorker(route string, version uint64) error {
 	}
 	delete(c.workers, route)
 	delete(c.workerVersions, route)
+	delete(c.workerConcurrency, route)
 	c.mu.Unlock()
 
 	ctx := c.conn.LifecycleContext()
@@ -681,13 +687,15 @@ func (c *client) ReplaceConnection(conn *connection.Connection) {
 func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	c.mu.Lock()
 	snapshot := make(map[string]RPCHandler, len(c.workers))
+	concurrency := make(map[string]uint32, len(c.workerConcurrency))
 	maps.Copy(snapshot, c.workers)
+	maps.Copy(concurrency, c.workerConcurrency)
 	c.mu.Unlock()
 
 	restoredRoutes := make([]string, 0, len(snapshot))
 
 	for route := range snapshot {
-		if err := c.restoreSubscribeWorker(ctx, route); err != nil {
+		if err := c.restoreSubscribeWorker(ctx, route, concurrency[route]); err != nil {
 			for _, v := range slices.Backward(restoredRoutes) {
 				c.rollbackRestoredWorker(v)
 			}
@@ -702,8 +710,8 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	return nil
 }
 
-func (c *client) restoreSubscribeWorker(ctx context.Context, route string) error {
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route))
+func (c *client) restoreSubscribeWorker(ctx context.Context, route string, maxConcurrent uint32) error {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route, maxConcurrent))
 	if err != nil {
 		return fmt.Errorf("SUBSCRIBE_WORKER request failed: %w", err)
 	}
@@ -725,8 +733,8 @@ func (c *client) rollbackRestoredWorker(route string) {
 	_ = err
 }
 
-func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCHandler) (*Subscription, error) {
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route))
+func (c *client) subscribeWorker(ctx context.Context, route string, maxConcurrent uint32, handler RPCHandler) (*Subscription, error) {
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route, maxConcurrent))
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE_WORKER request failed: %w", err)
 	}
@@ -743,6 +751,7 @@ func (c *client) subscribeWorker(ctx context.Context, route string, handler RPCH
 	c.nextWorkerVersion++
 	version := c.nextWorkerVersion
 	c.workers[route] = handler
+	c.workerConcurrency[route] = maxConcurrent
 	c.workerVersions[route] = version
 	c.mu.Unlock()
 	return &Subscription{route: route, version: version, client: c}, nil

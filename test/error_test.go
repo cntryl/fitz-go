@@ -48,11 +48,11 @@ func TestShouldReturnExpectedDomainErrorsGivenRejectedOperations(t *testing.T) {
 
 		t.Run("lease contention rejected", func(t *testing.T) {
 			route := f1.UniqueRoute("lease")
-			lease, err := f1.Client().Lease().Acquire(ctx, route, 3)
+			lease, err := f1.Client().Lease().Acquire(ctx, route, 3, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 			require.NoError(t, err)
 			defer releaseQuietly(ctx, lease)
 
-			_, err = f2.Client().Lease().Acquire(ctx, route, 3)
+			_, err = f2.Client().Lease().Acquire(ctx, route, 3, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 			require.Error(t, err)
 			assert.True(t, errors.Is(err, fitz.ErrLeaseHeld) || errors.Is(err, fitz.ErrLeaseQueued))
 		})

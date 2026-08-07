@@ -106,7 +106,7 @@ func TestShouldEncodeLeaseAcquireRequestGivenRouteAndTTLWhenPayloadWritten(t *te
 		ttlSecs := uint64(300)
 
 		// Act
-		payload, err := encodeLeaseAcquire(route, ttlSecs)
+		payload, err := encodeLeaseAcquire(route, "owner-1", ttlSecs, 15)
 
 		// Assert
 		require.NoError(t, err)
@@ -115,6 +115,13 @@ func TestShouldEncodeLeaseAcquireRequestGivenRouteAndTTLWhenPayloadWritten(t *te
 		// Verify route length prefix
 		routeLen := binary.BigEndian.Uint32(payload[0:4])
 		assert.Equal(t, uint32(len(route)), routeLen)
+		pos := 4 + len(route)
+		ownerLen := int(binary.BigEndian.Uint32(payload[pos : pos+4]))
+		pos += 4
+		assert.Equal(t, "owner-1", string(payload[pos:pos+ownerLen]))
+		pos += ownerLen
+		assert.Equal(t, ttlSecs, binary.BigEndian.Uint64(payload[pos:pos+8]))
+		assert.Equal(t, uint32(15), binary.BigEndian.Uint32(payload[pos+8:pos+12]))
 	})
 
 	t.Run("zero ttl", func(t *testing.T) {
@@ -122,7 +129,7 @@ func TestShouldEncodeLeaseAcquireRequestGivenRouteAndTTLWhenPayloadWritten(t *te
 		route := "lease://acme/app/locks"
 
 		// Act
-		payload, err := encodeLeaseAcquire(route, 0)
+		payload, err := encodeLeaseAcquire(route, "owner-1", 0, 0)
 
 		// Assert
 		require.NoError(t, err)
@@ -132,13 +139,76 @@ func TestShouldEncodeLeaseAcquireRequestGivenRouteAndTTLWhenPayloadWritten(t *te
 
 	t.Run("max ttl", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := encodeLeaseAcquire("path", 0xFFFFFFFFFFFFFFFF)
+		payload, err := encodeLeaseAcquire("path", "owner-1", 0xFFFFFFFFFFFFFFFF, 0)
 
 		// Assert
 		require.NoError(t, err)
 		require.NotNil(t, payload)
 		// Max uint64 should be accepted
 	})
+}
+
+func TestShouldResolveQueuedAcquireGivenDeferredBrokerFrame(t *testing.T) {
+	trans := newScriptedLeaseRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() { _ = conn.Close() })
+	c := NewClient(conn)
+	baseWrites := scriptedLeaseWriteCount(trans)
+
+	go func() {
+		waitForLeaseWrites(t, trans, baseWrites+1)
+		queued := make([]byte, 10)
+		queued[0], queued[1] = 0, 2
+		trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseAcquire, queued))
+		acquired := make([]byte, 10)
+		acquired[0], acquired[1] = 0, 0
+		binary.BigEndian.PutUint64(acquired[2:], 42)
+		trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseAcquire, acquired))
+	}()
+
+	acquired, err := c.Acquire(context.Background(), "lease://realm/area/resource", 30, AcquireOptions{OwnerID: "worker-1", WaitSeconds: 5})
+	require.NoError(t, err)
+	assert.Equal(t, uint64(42), binary.BigEndian.Uint64(acquired.Token))
+	assert.Equal(t, "worker-1", acquired.ownerID)
+}
+
+func TestShouldSerializeAcquireLifecycleGivenDeferredBrokerFrame(t *testing.T) {
+	trans := newScriptedLeaseRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() { _ = conn.Close() })
+	c := NewClient(conn)
+	baseWrites := scriptedLeaseWriteCount(trans)
+
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := c.Acquire(context.Background(), "lease://realm/area/first", 30, AcquireOptions{OwnerID: "worker-1", WaitSeconds: 5})
+		firstResult <- err
+	}()
+	waitForLeaseWrites(t, trans, baseWrites+1)
+	queued := make([]byte, 10)
+	queued[0], queued[1] = 0, 2
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseAcquire, queued))
+
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := c.Acquire(context.Background(), "lease://realm/area/second", 30, AcquireOptions{OwnerID: "worker-2"})
+		secondResult <- err
+	}()
+	assert.Never(t, func() bool {
+		return scriptedLeaseWriteCount(trans) > baseWrites+1
+	}, 100*time.Millisecond, 10*time.Millisecond)
+
+	acquired := make([]byte, 10)
+	acquired[0], acquired[1] = 0, 0
+	binary.BigEndian.PutUint64(acquired[2:], 42)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseAcquire, acquired))
+	require.NoError(t, <-firstResult)
+	waitForLeaseWrites(t, trans, baseWrites+2)
+	binary.BigEndian.PutUint64(acquired[2:], 43)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseAcquire, acquired))
+	require.NoError(t, <-secondResult)
 }
 
 // TestShouldEncodeLeaseRenewRequest tests RENEW operation encoding.
@@ -149,7 +219,7 @@ func TestShouldEncodeLeaseRenewRequestGivenTokenAndTTLWhenPayloadWritten(t *test
 		ttlSecs := uint64(600)
 
 		// Act
-		payload, err := encodeLeaseRenew("resource", token, ttlSecs)
+		payload, err := encodeLeaseRenew("resource", "owner-1", token, ttlSecs)
 
 		// Assert
 		require.NoError(t, err)
@@ -159,7 +229,7 @@ func TestShouldEncodeLeaseRenewRequestGivenTokenAndTTLWhenPayloadWritten(t *test
 
 	t.Run("zero token", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := encodeLeaseRenew("path", 0, 300) // Zero token (invalid, but tests encoding)
+		payload, err := encodeLeaseRenew("path", "owner-1", 0, 300) // Zero token (invalid, but tests encoding)
 
 		// Assert
 		require.NoError(t, err)
@@ -174,7 +244,7 @@ func TestShouldEncodeLeaseReleaseRequestGivenTokenWhenPayloadWritten(t *testing.
 		token := uint64(0xFEDCBA9876543210)
 
 		// Act
-		payload, err := encodeLeaseRelease("resource", token)
+		payload, err := encodeLeaseRelease("resource", "owner-1", token)
 
 		// Assert
 		require.NoError(t, err)
@@ -184,7 +254,7 @@ func TestShouldEncodeLeaseReleaseRequestGivenTokenWhenPayloadWritten(t *testing.
 
 	t.Run("empty resource", func(t *testing.T) {
 		// Arrange & Act
-		payload, err := encodeLeaseRelease("", 12345)
+		payload, err := encodeLeaseRelease("", "owner-1", 12345)
 
 		// Assert
 		require.NoError(t, err)
@@ -407,7 +477,7 @@ func BenchmarkEncodeLeaseAcquire(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = encodeLeaseAcquire(route, 300)
+			_, _ = encodeLeaseAcquire(route, "owner-1", 300, 0)
 		}
 	})
 
@@ -417,7 +487,7 @@ func BenchmarkEncodeLeaseAcquire(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = encodeLeaseAcquire(route, 300)
+			_, _ = encodeLeaseAcquire(route, "owner-1", 300, 0)
 		}
 	})
 }
@@ -429,7 +499,7 @@ func BenchmarkEncodeLeaseRenew(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_, _ = encodeLeaseRenew("resource", token, 600)
+			_, _ = encodeLeaseRenew("resource", "owner-1", token, 600)
 		}
 	})
 }
@@ -440,7 +510,7 @@ func BenchmarkEncodeLeaseRelease(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = encodeLeaseRelease("resource", token)
+		_, _ = encodeLeaseRelease("resource", "owner-1", token)
 	}
 }
 

@@ -80,15 +80,14 @@ func WriteU32(buf *bytes.Buffer, v uint32) {
 
 // WriteOptionalU64 writes an optional uint64: [u8 has_value][u64 value if has_value=1].
 // Per payload_codec.rs: flag byte (1 = Some, 0 = None), then 8 bytes if present.
-func WriteOptionalU64(buf *bytes.Buffer, v uint64) {
-	if v == 0 {
-		// Treat 0 as not provided (matches server default behavior)
+func WriteOptionalU64(buf *bytes.Buffer, v *uint64) {
+	if v == nil {
 		buf.Grow(1)
 		buf.WriteByte(0)
 	} else {
 		buf.Grow(9)
 		buf.WriteByte(1)
-		connection.WriteU64BE(buf, v)
+		connection.WriteU64BE(buf, *v)
 	}
 }
 

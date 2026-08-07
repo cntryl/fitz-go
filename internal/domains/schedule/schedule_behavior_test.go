@@ -124,7 +124,7 @@ func TestShouldReturnServerScheduleIDGivenPresentWhenCreateCalled(t *testing.T) 
 func TestShouldReturnRouteGivenNoServerScheduleIDWhenCreateCalled(t *testing.T) {
 	// Arrange
 	client, transport := newStartedScheduleClient(t)
-	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleCreate, []byte{0})
+	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleCreate, nil)
 	route := "schedule://realm/area/resource/run"
 
 	// Act
@@ -153,13 +153,11 @@ func TestShouldRejectInvalidCronBeforeSendingRequestWhenCreateCalled(t *testing.
 	}
 }
 
-func TestShouldParseEntriesGivenValidListPageResponseWhenListPageCalled(t *testing.T) {
+func TestShouldParseEntriesAndTotalCountGivenCanonicalListResponse(t *testing.T) {
 	// Arrange
 	client, transport := newStartedScheduleClient(t)
 	buf := connection.GetBuffer()
-	connection.WriteU8(buf, 1)
-	connection.WriteU8(buf, 0)
-	connection.WriteU8(buf, 0)
+	connection.WriteU64BE(buf, 2)
 	connection.WriteU8(buf, 1)
 	connection.WriteString(buf, "schedule://realm/area/one/run")
 	connection.WriteString(buf, "0 0 * * *")
@@ -176,11 +174,11 @@ func TestShouldParseEntriesGivenValidListPageResponseWhenListPageCalled(t *testi
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleListPage, payload)
 
 	// Act
-	page, err := client.ListPage(context.Background(), nil, nil)
+	page, err := client.List(context.Background(), nil, nil)
 
 	// Assert
 	require.NoError(t, err)
-	assert.False(t, page.HasMore)
+	assert.Equal(t, uint64(2), page.TotalCount)
 	require.Len(t, page.Entries, 2)
 	assert.Equal(t, "schedule://realm/area/one/run", page.Entries[0].Route)
 	assert.Equal(t, ScheduleDeliveryBroadcast, page.Entries[0].DeliveryMode)
@@ -207,7 +205,7 @@ func TestShouldReturnErrorGivenShortListPageResponseWhenListPageCalled(t *testin
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleListPage, []byte{1, 2, 3})
 
 	// Act
-	page, err := client.ListPage(context.Background(), nil, nil)
+	page, err := client.List(context.Background(), nil, nil)
 
 	// Assert
 	require.Error(t, err)
@@ -217,9 +215,7 @@ func TestShouldReturnErrorGivenShortListPageResponseWhenListPageCalled(t *testin
 func TestShouldReturnErrorGivenTruncatedEntryWhenListPageCalled(t *testing.T) {
 	client, transport := newStartedScheduleClient(t)
 	buf := connection.GetBuffer()
-	connection.WriteU8(buf, 1)
-	connection.WriteU8(buf, 0)
-	connection.WriteU8(buf, 0)
+	connection.WriteU64BE(buf, 1)
 	connection.WriteU8(buf, 1)
 	connection.WriteString(buf, "schedule://realm/area/one/run")
 	connection.WriteString(buf, "0 0 * * *")
@@ -227,7 +223,7 @@ func TestShouldReturnErrorGivenTruncatedEntryWhenListPageCalled(t *testing.T) {
 	connection.PutBuffer(buf)
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleListPage, payload)
 
-	page, err := client.ListPage(context.Background(), nil, nil)
+	page, err := client.List(context.Background(), nil, nil)
 
 	require.Error(t, err)
 	assert.Empty(t, page.Entries)
@@ -237,16 +233,14 @@ func TestShouldReturnErrorGivenTruncatedEntryWhenListPageCalled(t *testing.T) {
 func TestShouldReturnErrorGivenTrailingBytesAfterTerminatorWhenListPageCalled(t *testing.T) {
 	client, transport := newStartedScheduleClient(t)
 	buf := connection.GetBuffer()
-	connection.WriteU8(buf, 1)
-	connection.WriteU8(buf, 0)
-	connection.WriteU8(buf, 0)
+	connection.WriteU64BE(buf, 0)
 	connection.WriteU8(buf, 0)
 	buf.WriteByte(0xFF)
 	payload := append([]byte(nil), buf.Bytes()...)
 	connection.PutBuffer(buf)
 	respondOnNextWrite(t, transport, protocol.MessageTypeScheduleListPage, payload)
 
-	page, err := client.ListPage(context.Background(), nil, nil)
+	page, err := client.List(context.Background(), nil, nil)
 
 	require.Error(t, err)
 	assert.Empty(t, page.Entries)

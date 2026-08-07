@@ -34,7 +34,7 @@ type cleanupRPCClient struct {
 	callIter iter.Iterator[rpc.ResponseFrame]
 }
 
-func (c *cleanupRPCClient) RegisterWorker(context.Context, string, rpc.RPCHandler) (*rpc.Subscription, error) {
+func (c *cleanupRPCClient) RegisterWorker(context.Context, string, uint32, rpc.RPCHandler) (*rpc.Subscription, error) {
 	return nil, nil
 }
 

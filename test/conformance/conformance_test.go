@@ -573,7 +573,7 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("rpc")
-			sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+			sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, 7, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 				select {
 				case <-workerCtx.Done():
 					return workerCtx.Err()
@@ -581,6 +581,7 @@ func TestConformanceSuite(t *testing.T) {
 					return w.Send([]byte("late"))
 				}
 			})
+
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
@@ -636,7 +637,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			route := uniqueRoute("rpc")
 			var err error
-			_, err = fWorker.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+			_, err = fWorker.Client().RPC().RegisterWorker(ctx, route, 7, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 				select {
 				case <-workerCtx.Done():
 					return workerCtx.Err()
@@ -644,6 +645,7 @@ func TestConformanceSuite(t *testing.T) {
 					return w.Send([]byte("late"))
 				}
 			})
+
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
@@ -1110,7 +1112,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 
 			route := uniqueRoute("rpc")
-			sub, err := f.Client().RPC().RegisterWorker(ctx, route, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+			sub, err := f.Client().RPC().RegisterWorker(ctx, route, 7, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 				select {
 				case <-workerCtx.Done():
 					return workerCtx.Err()
@@ -1118,6 +1120,7 @@ func TestConformanceSuite(t *testing.T) {
 					return w.Send([]byte("delayed"))
 				}
 			})
+
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
@@ -1254,7 +1257,7 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("lease")
-			l1, err := f1.Client().Lease().Acquire(ctx, route, 30)
+			l1, err := f1.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("acquire: %w", err)
 			}
@@ -1264,7 +1267,7 @@ func TestConformanceSuite(t *testing.T) {
 			ev = append(ev, fmt.Sprintf("client1 acquired lease expiresAt=%d", l1.ExpiresAt))
 
 			// Contention: second client must be rejected
-			l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30)
+			l2, err2 := f2.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 			if err2 == nil && l2 != nil {
 				return VerdictFail, ev, errors.New("expected contention error but acquire succeeded")
 			}
@@ -1276,7 +1279,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, "client1 released lease")
 
-			l3, err3 := f2.Client().Lease().Acquire(ctx, route, 30)
+			l3, err3 := f2.Client().Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 			if err3 != nil {
 				return VerdictFail, ev, fmt.Errorf("acquire after release: %w", err3)
 			}

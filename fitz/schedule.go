@@ -14,9 +14,8 @@ type ScheduleEntry struct {
 	Payload      []byte
 }
 type ScheduleListPage struct {
-	Entries      []ScheduleEntry
-	HasMore      bool
-	Continuation *string
+	Entries    []ScheduleEntry
+	TotalCount uint64
 }
 
 type ScheduleDeliveryMode uint8
@@ -47,7 +46,7 @@ func (s *ScheduleSubscription) Unsubscribe() {
 type ScheduleClient interface {
 	Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (id string, err error)
 	Cancel(ctx context.Context, route string) error
-	ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error)
+	List(ctx context.Context, offset *uint64, limit *uint64) (ScheduleListPage, error)
 	ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error)
 	WaitForNotifications(ctx context.Context, route string) (Iterator[ScheduleNotification], error)
 	Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error)
@@ -67,12 +66,12 @@ func (c *scheduleClient) Cancel(ctx context.Context, route string) error {
 	return c.inner.Cancel(ctx, route)
 }
 
-func (c *scheduleClient) ListPage(ctx context.Context, cursor *string, limit *uint64) (ScheduleListPage, error) {
-	page, err := c.inner.ListPage(ctx, cursor, limit)
+func (c *scheduleClient) List(ctx context.Context, offset *uint64, limit *uint64) (ScheduleListPage, error) {
+	page, err := c.inner.List(ctx, offset, limit)
 	if err != nil {
 		return ScheduleListPage{}, err
 	}
-	return ScheduleListPage{Entries: copyScheduleEntries(page.Entries), HasMore: page.HasMore, Continuation: page.Continuation}, nil
+	return ScheduleListPage{Entries: copyScheduleEntries(page.Entries), TotalCount: page.TotalCount}, nil
 }
 
 // ListBySelector returns schedules matching a canonical selector.

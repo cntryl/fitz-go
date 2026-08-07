@@ -7,9 +7,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/cntryl/fitz-go/v2/internal/core/connection"
 	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
@@ -94,7 +94,7 @@ func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("extend request failed: %w", err)
 	}
-	success, _, err := parseQueueResponse(resp)
+	success, _, err := parsePlainQueueResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -130,7 +130,7 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("complete request failed: %w", err)
 	}
-	success, _, err := parseQueueResponse(resp)
+	success, _, err := parsePlainQueueResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -273,55 +273,7 @@ func (c *client) ReserveWithOptions(ctx context.Context, route string, leaseSecs
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 
-	if cfg.waitSeconds == 0 {
-		return c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize)
-	}
-
-	items, err := c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize)
-	if err != nil || len(items) > 0 {
-		return items, err
-	}
-
-	availability := make(chan struct{}, 1)
-	sub, err := c.Subscribe(ctx, route, func(_ context.Context, _ AvailabilityNotification) error {
-		select {
-		case availability <- struct{}{}:
-		default:
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer sub.Unsubscribe()
-
-	deadline := time.Now().Add(time.Duration(cfg.waitSeconds) * time.Second)
-	for {
-		items, err = c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize)
-		if err != nil || len(items) > 0 {
-			return items, err
-		}
-
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return items, nil
-		}
-
-		timer := time.NewTimer(remaining)
-		select {
-		case <-availability:
-			if !timer.Stop() {
-				<-timer.C
-			}
-		case <-timer.C:
-			return c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize)
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return nil, ctx.Err()
-		}
-	}
+	return c.reserveOnce(ctx, route, leaseSecs, cfg.batchSize, cfg.waitSeconds)
 }
 
 func (c *client) reserveOnce(
@@ -329,11 +281,12 @@ func (c *client) reserveOnce(
 	route string,
 	leaseSecs uint64,
 	batchSize uint32,
+	waitSeconds uint64,
 ) ([]*QueueItem, error) {
 	resp, err := c.conn.SendRequestWithWriter(
 		ctx,
 		protocol.MessageTypeQueueReserve,
-		reservePayloadWriter(route, leaseSecs, batchSize),
+		reservePayloadWriter(route, leaseSecs, batchSize, waitSeconds),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("reserve request failed: %w", err)
@@ -347,7 +300,7 @@ func (c *client) reserveOnce(
 		return nil, errors.New("reserve failed: unexpected status")
 	}
 
-	items, err := parseReserveItems(remaining, c.conn)
+	items, err := parseReserveItems(remaining, c.conn, route)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +308,7 @@ func (c *client) reserveOnce(
 	return items, nil
 }
 
-func parseReserveItems(remaining []byte, conn *connection.Connection) ([]*QueueItem, error) {
+func parseReserveItems(remaining []byte, conn *connection.Connection, selector string) ([]*QueueItem, error) {
 	count, offset, err := connection.ReadU32BE(remaining, 0)
 	if err != nil {
 		return nil, fmt.Errorf("parse lease_count: %w", err)
@@ -364,12 +317,15 @@ func parseReserveItems(remaining []byte, conn *connection.Connection) ([]*QueueI
 	items := make([]*QueueItem, 0, count)
 	for i := range count {
 		item := &QueueItem{conn: conn}
-		item.Route, offset, err = connection.ReadString(remaining, offset)
-		if err != nil {
-			return nil, fmt.Errorf("parse concrete route at item %d: %w", i, err)
-		}
-		if err = types.ValidateFixedRoute(item.Route, "queue", 3); err != nil {
-			return nil, fmt.Errorf("parse concrete route at item %d: %w", i, err)
+		item.Route = selector
+		if strings.Contains(selector, "*") {
+			item.Route, offset, err = connection.ReadString(remaining, offset)
+			if err != nil {
+				return nil, fmt.Errorf("parse concrete route at item %d: %w", i, err)
+			}
+			if err = types.ValidateFixedRoute(item.Route, "queue", 3); err != nil {
+				return nil, fmt.Errorf("parse concrete route at item %d: %w", i, err)
+			}
 		}
 
 		item.ID, offset, err = connection.ReadU64BE(remaining, offset)
@@ -492,7 +448,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	if _, _, err := parseQueueResponse(resp); err != nil {
+	if _, _, err := parsePlainQueueResponse(resp); err != nil {
 		return
 	}
 }
@@ -516,7 +472,7 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if _, _, err = parseQueueResponse(resp); err != nil {
+			if _, _, err = parsePlainQueueResponse(resp); err != nil {
 				return err
 			}
 			c.conn.AddSubscriptions(-1)
@@ -531,7 +487,7 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 		return 0, fmt.Errorf("subscribe request failed: %w", err)
 	}
 
-	success, remaining, err := parseQueueResponse(resp)
+	success, remaining, err := parsePlainQueueResponse(resp)
 	if err != nil {
 		return 0, fmt.Errorf("subscribe failed: %w", err)
 	}
@@ -549,19 +505,10 @@ func (c *client) subscribeWire(ctx context.Context, pattern string) (uint64, err
 
 func parseSubscriptionID(remaining []byte) (uint64, error) {
 	switch {
-	case len(remaining) == 8:
-		subID, _, err := connection.ReadU64BE(remaining, 0)
-		if err != nil {
-			return 0, fmt.Errorf("parse subscription_id: %w", err)
-		}
-		return subID, nil
-	case len(remaining) >= 9 && remaining[0] == 1:
+	case len(remaining) == 9 && remaining[0] == 1:
 		subID, _, err := connection.ReadU64BE(remaining, 1)
 		if err != nil {
 			return 0, fmt.Errorf("parse subscription_id: %w", err)
-		}
-		if len(remaining) != 9 {
-			return 0, fmt.Errorf("subscribe response has trailing bytes: got %d bytes", len(remaining))
 		}
 		return subID, nil
 	default:

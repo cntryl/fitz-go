@@ -231,9 +231,10 @@ type Multiplexer struct {
 
 	// Async delivery handlers (Notice NOTIFY, Schedule NOTIFY, RPC REQUEST to worker, RPC RESPONSE per CLIENT_SPEC.md)
 	// notifyHandlers are keyed by message type so every subscription-capable domain can register independently.
-	notifyHandlers map[uint16]func(subID uint64, route string, payload []byte)
-	rpcReqHandler  func(payload []byte) // incoming RPC REQUEST (302) dispatched to worker
-	rpcRespHandler func(correlationID [16]byte, payload []byte)
+	notifyHandlers  map[uint16]func(subID uint64, route string, payload []byte)
+	rawPushHandlers map[uint16]func(payload []byte)
+	rpcReqHandler   func(payload []byte) // incoming RPC REQUEST (302) dispatched to worker
+	rpcRespHandler  func(correlationID [16]byte, payload []byte)
 
 	// Metrics for observability
 	requestsInFlight atomic.Int64
@@ -248,8 +249,9 @@ type Multiplexer struct {
 // NewMultiplexer creates a new multiplexer.
 func NewMultiplexer() *Multiplexer {
 	return &Multiplexer{
-		pending:        make(map[uint16]*requestQueue),
-		notifyHandlers: make(map[uint16]func(subID uint64, route string, payload []byte)),
+		pending:         make(map[uint16]*requestQueue),
+		notifyHandlers:  make(map[uint16]func(subID uint64, route string, payload []byte)),
+		rawPushHandlers: make(map[uint16]func(payload []byte)),
 	}
 }
 
@@ -385,6 +387,10 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	queue, exists := m.pending[msgType]
 	if !exists || queue.len() == 0 {
 		m.mu.Unlock()
+		if handler := m.rawPushHandler(msgType); handler != nil {
+			handler(payload)
+			return
+		}
 		// Unexpected response (no pending request)
 		// This can happen if context was canceled but response arrived
 		m.responsesDropped.Add(1)
@@ -560,6 +566,12 @@ func (m *Multiplexer) SetNotifyHandler(msgType uint16, handler func(subID uint64
 	m.notifyHandlers[msgType] = handler
 }
 
+func (m *Multiplexer) SetRawPushHandler(msgType uint16, handler func(payload []byte)) {
+	m.handlerMu.Lock()
+	defer m.handlerMu.Unlock()
+	m.rawPushHandlers[msgType] = handler
+}
+
 // SetRPCRequestHandler registers the handler for RPC REQUEST messages (302).
 // Called by the RPC domain client so workers receive forwarded requests.
 func (m *Multiplexer) SetRPCRequestHandler(handler func(payload []byte)) {
@@ -580,6 +592,12 @@ func (m *Multiplexer) notifyHandler(msgType uint16) func(subID uint64, route str
 	m.handlerMu.RLock()
 	defer m.handlerMu.RUnlock()
 	return m.notifyHandlers[msgType]
+}
+
+func (m *Multiplexer) rawPushHandler(msgType uint16) func(payload []byte) {
+	m.handlerMu.RLock()
+	defer m.handlerMu.RUnlock()
+	return m.rawPushHandlers[msgType]
 }
 
 func (m *Multiplexer) rpcRequestHandler() func(payload []byte) {

@@ -78,9 +78,10 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 				routeScheme: "rpc",
 				expected:    unauthorizedRPC,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
-					_, err := client.RPC().RegisterWorker(ctx, route, func(context.Context, fitz.RPCInboundRequest, fitz.RPCResponseWriter) error {
+					_, err := client.RPC().RegisterWorker(ctx, route, 7, func(context.Context, fitz.RPCInboundRequest, fitz.RPCResponseWriter) error {
 						return nil
 					})
+
 					return err
 				},
 			},
@@ -90,7 +91,7 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 				routeScheme: "lease",
 				expected:    unauthorizedLease,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
-					_, err := client.Lease().Acquire(ctx, route, 30)
+					_, err := client.Lease().Acquire(ctx, route, 30, fitz.LeaseAcquireOptions{OwnerID: "fitz-go"})
 					return err
 				},
 			},

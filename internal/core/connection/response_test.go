@@ -83,3 +83,15 @@ func TestShouldReturnDecodeErrorGivenTruncatedTypedDomainErrorWhenParseStandardR
 	var domainErr *coreerrors.DomainError
 	assert.False(t, errors.As(err, &domainErr))
 }
+
+func TestShouldParseStringOnlyDomainErrorWhenParsePlainResponseCalled(t *testing.T) {
+	payload := []byte{1}
+	payload = appendU32(payload, 5)
+	payload = append(payload, []byte("hello")...)
+
+	success, remaining, err := ParsePlainResponse(payload)
+
+	assert.False(t, success)
+	assert.Nil(t, remaining)
+	require.EqualError(t, err, "hello")
+}

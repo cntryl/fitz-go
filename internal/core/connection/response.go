@@ -34,6 +34,30 @@ func ParseStandardResponse(payload []byte) (bool, []byte, error) {
 	return true, payload[1:], nil
 }
 
+// ParsePlainResponse handles domains whose error envelope is
+// [status=1][u32 message length][message], without a numeric domain code.
+func ParsePlainResponse(payload []byte) (bool, []byte, error) {
+	if len(payload) < 1 {
+		return false, nil, errors.New("response too short")
+	}
+
+	switch payload[0] {
+	case 0:
+		return true, payload[1:], nil
+	case 1:
+		message, offset, err := ReadString(payload, 1)
+		if err != nil {
+			return false, nil, fmt.Errorf("decode domain error: %w", err)
+		}
+		if offset != len(payload) {
+			return false, nil, errors.New("trailing bytes after domain error")
+		}
+		return false, nil, errors.New(message)
+	default:
+		return false, nil, fmt.Errorf("unknown response status %d", payload[0])
+	}
+}
+
 func parseTypedDomainError(payload []byte) (uint32, string, error) {
 	if len(payload) < 8 {
 		return 0, "", io.ErrUnexpectedEOF

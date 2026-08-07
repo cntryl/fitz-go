@@ -7,7 +7,9 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - Breaking: Stream READ and SUBSCRIBE now accept only concrete resource, area (`realm/area/*`), realm (`realm/*/*`), or global (`stream://**`) selectors. Global continuation reuses the returned fingerprint and watermark pair, and Stream LAST is concrete-route only.
-- Breaking: Schedule listing uses cursor-based `ListPage` with message 707; offset-based listing was removed.
+- Breaking: Schedule listing uses canonical message 702 with offset/limit pages and `TotalCount`.
+- Breaking: Lease acquisition requires explicit owner and wait options; RPC worker registration exposes `maxConcurrent`.
+- Queue reserve, global Stream records, optional zero values, read-only commit, and backend error classification now follow the canonical wire contracts.
 - Breaking: `RPCWorkerRegistration.Deregister` now returns broker and transport errors instead of silently treating deregistration as best-effort.
 - KV commit attempts are terminal even when rejected or interrupted; subsequent rollback is an idempotent no-op.
 - Breaking: Queue reserve, Stream read, and Stream last wire items now require their concrete matched route. `QueueItem`, `StreamReadItem`, and `StreamRecord` expose it.

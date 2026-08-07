@@ -25,9 +25,10 @@ func TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled(t *tes
 		fCaller.ConnectOrFail(ctx)
 		route := fWorker.UniqueRoute("rpc")
 
-		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, 7, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 			return w.Send(req.Body)
 		})
+
 		require.NoError(t, err)
 		defer sub.Deregister()
 
@@ -53,9 +54,10 @@ func TestShouldRestoreWorkerRegistrationGivenLiveDisconnectWhenReconnectEnabled(
 
 		route := worker.UniqueRoute("rpc")
 		var err error
-		_, err = worker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+		_, err = worker.Client().RPC().RegisterWorker(ctx, route, 7, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 			return w.Send(req.Body)
 		})
+
 		require.NoError(t, err)
 
 		callAndExpect := func(payload string) {
@@ -104,7 +106,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 		fCaller.ConnectOrFail(ctx)
 		route := fWorker.UniqueRoute("rpc")
 
-		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, 7, func(_ context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 			for i := range 3 {
 				if err := w.Send([]byte{byte(i)}); err != nil {
 					return err
@@ -112,6 +114,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 			}
 			return nil
 		})
+
 		require.NoError(t, err)
 		defer sub.Deregister()
 
@@ -168,11 +171,11 @@ func TestShouldLoadBalanceGivenMultipleWorkersWhenConcurrentRequests(t *testing.
 			}
 		}
 
-		sub1, err := fW1.Client().RPC().RegisterWorker(ctx, route, echoHandler("w1"))
+		sub1, err := fW1.Client().RPC().RegisterWorker(ctx, route, 7, echoHandler("w1"))
 		require.NoError(t, err)
 		defer sub1.Deregister()
 
-		sub2, err := fW2.Client().RPC().RegisterWorker(ctx, route, echoHandler("w2"))
+		sub2, err := fW2.Client().RPC().RegisterWorker(ctx, route, 7, echoHandler("w2"))
 		require.NoError(t, err)
 		defer sub2.Deregister()
 
@@ -202,9 +205,10 @@ func TestShouldCorrelateResponseGivenCorrectCorrelationIDWhenMultipleRequests(t 
 		fCaller.ConnectOrFail(ctx)
 		route := fWorker.UniqueRoute("rpc")
 
-		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, 7, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 			return w.Send(req.Body)
 		})
+
 		require.NoError(t, err)
 		defer sub.Deregister()
 
@@ -229,9 +233,10 @@ func TestShouldUnregisterWorkerGivenActiveSubscriptionWhenDeregisterCalled(t *te
 		fCaller.ConnectOrFail(ctx)
 		route := fWorker.UniqueRoute("rpc")
 
-		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+		sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, 7, func(_ context.Context, req fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
 			return w.Send(req.Body)
 		})
+
 		require.NoError(t, err)
 
 		iter, err := fCaller.Client().RPC().Call(ctx, route, []byte("alive"))

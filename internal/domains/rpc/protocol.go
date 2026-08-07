@@ -62,10 +62,10 @@ func mapRPCError(err error) error {
 
 // encodeRPCSubscribeWorker encodes an RPC SUBSCRIBE_WORKER request per CLIENT_SPEC.md.
 // Wire format: [string worker_route][u32 max_concurrent]
-func encodeRPCSubscribeWorker(workerRoute string) ([]byte, error) {
+func encodeRPCSubscribeWorker(workerRoute string, maxConcurrent uint32) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, workerRoute)
-		encoding.WriteU32(buf, 1)
+		encoding.WriteU32(buf, maxConcurrent)
 	}), nil
 }
 
@@ -104,10 +104,10 @@ func encodeRPCResponse(correlationID [16]byte, sequence uint64, body []byte, str
 
 // Payload writer helpers for zero-copy frame encoding
 
-func rpcSubscribeWorkerPayloadWriter(workerRoute string) func(*bytes.Buffer) {
+func rpcSubscribeWorkerPayloadWriter(workerRoute string, maxConcurrent uint32) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, workerRoute)
-		encoding.WriteU32(buf, 1)
+		encoding.WriteU32(buf, maxConcurrent)
 	}
 }
 

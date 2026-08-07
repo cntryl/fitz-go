@@ -67,7 +67,7 @@ const (
 	// Schedule Domain (700-799)
 	MessageTypeScheduleCreate      uint16 = 700
 	MessageTypeScheduleCancel      uint16 = 701
-	MessageTypeScheduleListPage    uint16 = 707
+	MessageTypeScheduleListPage    uint16 = 702
 	MessageTypeScheduleSubscribe   uint16 = 703
 	MessageTypeScheduleUnsubscribe uint16 = 704
 	MessageTypeScheduleNotify      uint16 = 705 // Server -> Client only

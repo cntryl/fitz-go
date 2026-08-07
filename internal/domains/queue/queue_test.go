@@ -81,6 +81,7 @@ func queueSubscribeResponsePayload(subID uint64) []byte {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	buf.WriteByte(0)
+	buf.WriteByte(1)
 	connection.WriteU64BE(buf, subID)
 	return append([]byte(nil), buf.Bytes()...)
 }
@@ -363,7 +364,9 @@ func TestShouldRollbackActiveSubscriptionsGivenRestoreFailureWhenRestoreSubscrip
 		waitForRestoreWrites(t, trans, baseWrites+1)
 		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueSubscribe, queueSubscribeResponsePayload(201)))
 		waitForRestoreWrites(t, trans, baseWrites+2)
-		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueSubscribe, queueErrorPayload(queueDomainErrQueueNotFound, "queue not found")))
+		plainError := []byte{1, 0, 0, 0, 15}
+		plainError = append(plainError, []byte("queue not found")...)
+		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueSubscribe, plainError))
 		waitForRestoreWrites(t, trans, baseWrites+3)
 		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueUnsubscribe, []byte{0x00}))
 	}()
@@ -382,16 +385,6 @@ func TestShouldRollbackActiveSubscriptionsGivenRestoreFailureWhenRestoreSubscrip
 
 // TestShouldParseQueueSubscriptionID tests queue subscription response parsing.
 func TestShouldParseQueueSubscriptionIDGivenBrokerPayloadWhenParseSubscriptionIDCalled(t *testing.T) {
-	t.Run("raw subscription id", func(t *testing.T) {
-		subID := uint64(42)
-		payload := make([]byte, 8)
-		binary.BigEndian.PutUint64(payload, subID)
-
-		actual, err := parseSubscriptionID(payload)
-		require.NoError(t, err)
-		assert.Equal(t, subID, actual)
-	})
-
 	t.Run("flagged subscription id", func(t *testing.T) {
 		subID := uint64(42)
 		payload := make([]byte, 9)
@@ -406,7 +399,7 @@ func TestShouldParseQueueSubscriptionIDGivenBrokerPayloadWhenParseSubscriptionID
 
 func TestShouldRejectMalformedQueueReservePayloadWhenParseReserveItemsCalled(t *testing.T) {
 	t.Run("undersized success payload", func(t *testing.T) {
-		_, err := parseReserveItems([]byte{0x00, 0x01, 0x02}, nil)
+		_, err := parseReserveItems([]byte{0x00, 0x01, 0x02}, nil, "queue://acme/app/work")
 
 		require.Error(t, err)
 		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
@@ -426,7 +419,7 @@ func TestShouldRejectMalformedQueueReservePayloadWhenParseReserveItemsCalled(t *
 		payload := make([]byte, buf.Len())
 		copy(payload, buf.Bytes())
 
-		items, err := parseReserveItems(payload, nil)
+		items, err := parseReserveItems(payload, nil, "queue://*/app/*")
 
 		require.Error(t, err)
 		assert.Nil(t, items)
@@ -443,7 +436,7 @@ func TestShouldParseConcreteQueueRouteGivenWildcardReserveResponse(t *testing.T)
 	connection.WriteU64BE(buf, 22)
 	connection.WriteBytes(buf, []byte("job"))
 
-	items, err := parseReserveItems(buf.Bytes(), nil)
+	items, err := parseReserveItems(buf.Bytes(), nil, "queue://*/cats/*")
 
 	require.NoError(t, err)
 	require.Len(t, items, 1)
@@ -459,7 +452,7 @@ func TestShouldRejectWildcardQueueRouteGivenReserveResponse(t *testing.T) {
 	connection.WriteU64BE(buf, 22)
 	connection.WriteBytes(buf, []byte("job"))
 
-	items, err := parseReserveItems(buf.Bytes(), nil)
+	items, err := parseReserveItems(buf.Bytes(), nil, "queue://*/cats/*")
 
 	require.Error(t, err)
 	assert.Nil(t, items)
@@ -628,6 +621,21 @@ func TestShouldEncodeCompleteRequestGivenLeaseFieldsWhenEncodeCompleteCalled(t *
 		require.NotNil(t, payload)
 		// Zero token encodes successfully (validation is server-side)
 	})
+}
+
+func TestParsePlainQueueResponseMapsCanonicalDomainMessages(t *testing.T) {
+	for message, expected := range map[string]error{
+		"InvalidToken":    ErrInvalidToken,
+		"InflightExpired": ErrLeaseExpiredQ,
+		"NotFound":        ErrMessageNotFound,
+		"QueueNotFound":   ErrQueueNotFound,
+	} {
+		t.Run(message, func(t *testing.T) {
+			payload := append([]byte{1, 0, 0, 0, byte(len(message))}, []byte(message)...)
+			_, _, err := parsePlainQueueResponse(payload)
+			require.ErrorIs(t, err, expected)
+		})
+	}
 }
 
 // Benchmarks for new encoding functions

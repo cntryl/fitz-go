@@ -23,6 +23,11 @@ func TestShouldMapKVErrorGivenTypedBrokerMessageWhenMapKVErrorCalled(t *testing.
 		assert.Equal(t, ErrReadOnlyTransaction, mapped)
 	})
 
+	t.Run("map legacy backend-coded readonly write by canonical message", func(t *testing.T) {
+		mapped := mapKVError(coreerrors.NewDomainError(coreerrors.KvBackendError, "Backend error: Cannot write in ReadOnly transaction"))
+		assert.Equal(t, ErrReadOnlyTransaction, mapped)
+	})
+
 	t.Run("preserve unknown typed error", func(t *testing.T) {
 		errMsg := coreerrors.NewDomainError(coreerrors.KvRealmMismatch, "realm mismatch")
 		mapped := mapKVError(errMsg)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cntryl/fitz-go/v2/internal/core/connection"
 	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
 )
 
@@ -62,6 +63,35 @@ func parseQueueResponse(payload []byte) (bool, []byte, error) {
 		return false, nil, fmt.Errorf("malformed queue error response (%d bytes)", len(payload))
 	}
 	return false, nil, mapQueueErrorCode(code, string(payload[9:]))
+}
+
+func parsePlainQueueResponse(payload []byte) (bool, []byte, error) {
+	if len(payload) < 1 {
+		return false, nil, errors.New("response too short")
+	}
+	if payload[0] == 0 {
+		return true, payload[1:], nil
+	}
+	message, end, err := connection.ReadString(payload, 1)
+	if err != nil || end != len(payload) {
+		return false, nil, fmt.Errorf("malformed plain queue error response (%d bytes)", len(payload))
+	}
+	return false, nil, mapPlainQueueError(message)
+}
+
+func mapPlainQueueError(message string) error {
+	switch message {
+	case "InvalidToken":
+		return ErrInvalidToken
+	case "InflightExpired":
+		return ErrLeaseExpiredQ
+	case "NotFound":
+		return ErrMessageNotFound
+	case "QueueNotFound":
+		return ErrQueueNotFound
+	default:
+		return errors.New(message)
+	}
 }
 
 func mapQueueErrorCode(code uint32, msg string) error {
@@ -213,7 +243,7 @@ func enqueuePayloadWriter(route string, body []byte, delaySeconds uint64) func(*
 	}
 }
 
-func reservePayloadWriter(route string, leaseSeconds uint64, batchSize uint32) func(*bytes.Buffer) {
+func reservePayloadWriter(route string, leaseSeconds uint64, batchSize uint32, waitSeconds uint64) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		routeBytes := []byte(route)
 		hasBatchSize := uint8(0)
@@ -231,6 +261,12 @@ func reservePayloadWriter(route string, leaseSeconds uint64, batchSize uint32) f
 		// [u32 BE] batch_size (if has_batch_size)
 		if hasBatchSize == 1 {
 			encoding.WriteU32(buf, batchSize)
+		}
+		if waitSeconds == 0 {
+			buf.WriteByte(0)
+		} else {
+			buf.WriteByte(1)
+			encoding.WriteU64(buf, waitSeconds)
 		}
 	}
 }

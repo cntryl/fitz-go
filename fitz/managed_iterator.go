@@ -2,6 +2,7 @@ package fitz
 
 import (
 	"context"
+	"sync"
 
 	coreiter "github.com/cntryl/fitz-go/v2/internal/core/iter"
 )
@@ -69,7 +70,14 @@ func startManagedPushIterator[T any](
 	helperCtx, cancel := context.WithCancel(ctx)
 	values := make(chan T, capacity)
 	errors := make(chan error, 1)
+	var deliveryMu sync.RWMutex
+	closed := false
 	unsubscribe, err := subscribe(helperCtx, func(value T) error {
+		deliveryMu.RLock()
+		defer deliveryMu.RUnlock()
+		if closed {
+			return context.Cause(helperCtx)
+		}
 		select {
 		case values <- value:
 			return nil
@@ -84,9 +92,12 @@ func startManagedPushIterator[T any](
 	go func() {
 		<-helperCtx.Done()
 		unsubscribe()
+		deliveryMu.Lock()
+		closed = true
 		close(values)
 		errors <- context.Cause(helperCtx)
 		close(errors)
+		deliveryMu.Unlock()
 	}()
 	return coreiter.NewChannelIterator[T](values, errors, cancel), nil
 }

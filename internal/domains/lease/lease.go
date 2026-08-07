@@ -25,10 +25,11 @@ type Lease struct {
 	Token     []byte
 	ExpiresAt int64
 
-	route  string
-	conn   *connection.Connection
-	opMu   sync.Mutex
-	closed bool
+	route   string
+	ownerID string
+	conn    *connection.Connection
+	opMu    sync.Mutex
+	closed  bool
 }
 
 // Extend extends the lease TTL. Returns the new expiry timestamp.
@@ -56,14 +57,14 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 		l.closed = true
 		return 0, err
 	}
-	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRenew, leaseRenewPayloadWriter(l.route, tokenToU64(token), ttlSecs))
-	if isLeaseHeldError(err) {
+	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRenew, leaseRenewPayloadWriter(l.route, l.ownerID, tokenToU64(token), ttlSecs))
+	if err != nil {
 		l.closed = true
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("EXTEND request failed: %w", err)
 	}
-	success, remaining, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := connection.ParsePlainResponse(resp)
 	if err != nil {
 		l.closed = true
 		span.RecordError(err)
@@ -114,13 +115,13 @@ func (l *Lease) releaseWithToken(ctx context.Context, token []byte) error {
 	if err := l.conn.CheckLiveHandle(); err != nil {
 		return err
 	}
-	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRelease, leaseReleasePayloadWriter(l.route, tokenToU64(token)))
+	resp, err := l.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseRelease, leaseReleasePayloadWriter(l.route, l.ownerID, tokenToU64(token)))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("RELEASE request failed: %w", err)
 	}
-	success, _, err := connection.ParseStandardResponse(resp)
+	success, _, err := connection.ParsePlainResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -164,7 +165,7 @@ type Client interface {
 	// Acquire attempts to acquire a lease on the given route.
 	// Returns a Lease handle on success; use Extend and Release on it.
 	// Returns ErrLeaseHeld when the lease is already held by another owner.
-	Acquire(ctx context.Context, route string, ttlSecs uint64) (*Lease, error)
+	Acquire(ctx context.Context, route string, ttlSecs uint64, options AcquireOptions) (*Lease, error)
 
 	// Query returns current lease status for the route.
 	Query(ctx context.Context, route string) (*LeaseInfo, error)
@@ -172,6 +173,11 @@ type Client interface {
 	// Subscribe registers a handler for lease change notifications (released or expired).
 	// Returns a Subscription that can be used to unsubscribe.
 	Subscribe(ctx context.Context, route string, handler ChangeHandler) (*Subscription, error)
+}
+
+type AcquireOptions struct {
+	OwnerID     string
+	WaitSeconds uint32
 }
 
 // LeaseInfo holds lease query results per CLIENT_SPEC.md QUERY response.
@@ -186,9 +192,19 @@ type LeaseInfo struct {
 type client struct {
 	conn *connection.Connection
 
-	mu            sync.RWMutex
-	subscriptions map[uint64]*Subscription // subID -> subscription
-	initialized   bool
+	mu               sync.RWMutex
+	subscriptions    map[uint64]*Subscription // subID -> subscription
+	initialized      bool
+	acquireOnce      sync.Once
+	acquireGateOnce  sync.Once
+	acquireGate      chan struct{}
+	acquireWaitersMu sync.Mutex
+	acquireWaiters   []*acquireWaiter
+}
+
+type acquireWaiter struct {
+	response chan []byte
+	done     bool
 }
 
 // NewClient creates a new Lease domain client.
@@ -204,7 +220,7 @@ var _ reconnect.DomainRestorer = (*client)(nil)
 // Acquire per CLIENT_SPEC.md:
 // Request: [route_len][route][owner_id_len][owner_id][ttl_secs][optional wait_seconds]
 // Response (status=0): [u8 response_type (0=Acquired, 1=AlreadyHeld, 2=Queued, 3=AlreadyQueued)][u64 BE fencing_token]
-func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Lease, error) {
+func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64, options AcquireOptions) (*Lease, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.lease.Acquire", trace.WithAttributes(
 		attribute.String("fitz.route", route),
 		attribute.Int("fitz.ttl_secs", int(ttlSecs)),
@@ -220,15 +236,36 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
+	if options.OwnerID == "" {
+		return nil, errors.New("lease owner ID must not be empty")
+	}
+	c.acquireGateOnce.Do(func() { c.acquireGate = make(chan struct{}, 1) })
+	select {
+	case c.acquireGate <- struct{}{}:
+		defer func() { <-c.acquireGate }()
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	}
+	c.acquireOnce.Do(func() {
+		c.conn.RegisterRawPushHandler(protocol.MessageTypeLeaseAcquire, c.handleDeferredAcquire)
+	})
+	var waiter *acquireWaiter
+	if options.WaitSeconds > 0 {
+		waiter = &acquireWaiter{response: make(chan []byte, 1)}
+		c.acquireWaitersMu.Lock()
+		c.acquireWaiters = append(c.acquireWaiters, waiter)
+		c.acquireWaitersMu.Unlock()
+		defer c.markAcquireWaiterDone(waiter)
+	}
 
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseAcquire, leaseAcquirePayloadWriter(route, ttlSecs))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseAcquire, leaseAcquirePayloadWriter(route, options.OwnerID, ttlSecs, options.WaitSeconds))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("ACQUIRE request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := connection.ParsePlainResponse(resp)
 	if err != nil {
 		if isLeaseHeldError(err) {
 			// Don't record as span error, this is an expected condition
@@ -254,9 +291,29 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 	switch responseType {
 	case 0: // Acquired
 	case 1: // AlreadyHeld (we already hold it, idempotent)
+	case 2, 3:
+		if waiter == nil {
+			return nil, ErrLeaseQueued
+		}
+		select {
+		case deferred := <-waiter.response:
+			success, remaining, err = connection.ParsePlainResponse(deferred)
+			if err != nil {
+				return nil, fmt.Errorf("ACQUIRE deferred failed: %w", mapLeaseError(err))
+			}
+			if !success || len(remaining) < 9 || (remaining[0] != 0 && remaining[0] != 1) {
+				return nil, errors.New("invalid deferred ACQUIRE response")
+			}
+			fencingToken = binary.BigEndian.Uint64(remaining[1:9])
+		case <-ctx.Done():
+			c.markAcquireWaiterDone(waiter)
+			return nil, context.Cause(ctx)
+		}
 	default:
-		// 2=Queued, 3=AlreadyQueued
-		return nil, ErrLeaseQueued
+		return nil, fmt.Errorf("unknown ACQUIRE response type %d", responseType)
+	}
+	if waiter != nil {
+		c.markAcquireWaiterDone(waiter)
 	}
 
 	tokenBytes := make([]byte, 8)
@@ -267,8 +324,39 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64) (*Le
 		Token:     tokenBytes,
 		ExpiresAt: expiresAt,
 		route:     route,
+		ownerID:   options.OwnerID,
 		conn:      c.conn,
 	}, nil
+}
+
+func (c *client) markAcquireWaiterDone(waiter *acquireWaiter) {
+	c.acquireWaitersMu.Lock()
+	for index, candidate := range c.acquireWaiters {
+		if candidate != waiter {
+			continue
+		}
+		waiter.done = true
+		copy(c.acquireWaiters[index:], c.acquireWaiters[index+1:])
+		c.acquireWaiters[len(c.acquireWaiters)-1] = nil
+		c.acquireWaiters = c.acquireWaiters[:len(c.acquireWaiters)-1]
+		break
+	}
+	c.acquireWaitersMu.Unlock()
+}
+
+func (c *client) handleDeferredAcquire(payload []byte) {
+	c.acquireWaitersMu.Lock()
+	defer c.acquireWaitersMu.Unlock()
+	for len(c.acquireWaiters) > 0 {
+		waiter := c.acquireWaiters[0]
+		c.acquireWaiters = c.acquireWaiters[1:]
+		if waiter.done {
+			continue
+		}
+		waiter.done = true
+		waiter.response <- append([]byte(nil), payload...)
+		return
+	}
 }
 
 // Query per CLIENT_SPEC.md:
@@ -293,7 +381,7 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 			return fmt.Errorf("QUERY request failed: %w", err)
 		}
 
-		success, remaining, err := connection.ParseStandardResponse(resp)
+		success, remaining, err := connection.ParsePlainResponse(resp)
 		if err != nil {
 			return fmt.Errorf("QUERY failed: %w", mapLeaseError(err))
 		}
@@ -465,7 +553,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+	if _, _, err := connection.ParsePlainResponse(resp); err != nil {
 		return
 	}
 }
@@ -511,7 +599,7 @@ func (c *client) restoreSubscribe(ctx context.Context, route string, handler Cha
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := connection.ParsePlainResponse(resp)
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
 	}
@@ -547,7 +635,7 @@ func (c *client) rollbackRestoredSubscription(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
+	if _, _, err := connection.ParsePlainResponse(resp); err != nil {
 		return
 	}
 }
@@ -558,7 +646,7 @@ func (c *client) subscribe(ctx context.Context, route string, handler ChangeHand
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParseStandardResponse(resp)
+	success, remaining, err := connection.ParsePlainResponse(resp)
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
 	}

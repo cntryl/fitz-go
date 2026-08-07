@@ -608,7 +608,6 @@ func TestShouldParseStreamRecordGivenFullPayloadWhenParseRecordCalled(t *testing
 func TestShouldParseConcreteRouteGivenLastResponseWhenParseLastResponseCalled(t *testing.T) {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
-	connection.WriteString(buf, "stream://acme/orders/created")
 	connection.WriteU64BE(buf, 7)
 	buf.WriteByte(0)
 	buf.WriteByte(0)
@@ -616,7 +615,7 @@ func TestShouldParseConcreteRouteGivenLastResponseWhenParseLastResponseCalled(t 
 	buf.WriteByte(0)
 	connection.WriteU64BE(buf, 23)
 
-	record, err := parseLastResponse(buf.Bytes())
+	record, err := parseLastResponse(buf.Bytes(), "stream://acme/orders/created")
 
 	require.NoError(t, err)
 	assert.Equal(t, "stream://acme/orders/created", record.Route)
@@ -625,9 +624,7 @@ func TestShouldParseConcreteRouteGivenLastResponseWhenParseLastResponseCalled(t 
 func TestShouldRejectWildcardRouteGivenLastResponseWhenParseLastResponseCalled(t *testing.T) {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
-	connection.WriteString(buf, "stream://*/orders/created")
-
-	record, err := parseLastResponse(buf.Bytes())
+	record, err := parseLastResponse(buf.Bytes(), "stream://*/orders/created")
 
 	require.Error(t, err)
 	assert.Nil(t, record)
@@ -978,7 +975,6 @@ func BenchmarkParseStreamLastResponse(b *testing.B) {
 	// concrete route followed by a single record
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
-	connection.WriteString(buf, "stream://acme/app/events")
 	connection.WriteU64BE(buf, 1)
 	buf.WriteByte(0)
 	buf.WriteByte(0)
@@ -990,6 +986,10 @@ func BenchmarkParseStreamLastResponse(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = parseLastResponse(payload)
+		_, _ = parseLastResponse(payload, "stream://acme/app/events")
 	}
+}
+
+func TestShouldNotRetryInvalidReadBoundsGivenBrokerDomainError(t *testing.T) {
+	assert.False(t, isStreamReadRetryable(ErrStreamReadError))
 }

@@ -34,7 +34,7 @@ var scheduleCronFields = []cronFieldSpec{
 		"NOV": 11,
 		"DEC": 12,
 	}},
-	{name: "day of week", min: 0, max: 7, names: map[string]int{
+	{name: "day of week", min: 0, max: 6, names: map[string]int{
 		"SUN": 0,
 		"MON": 1,
 		"TUE": 2,
