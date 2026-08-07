@@ -225,9 +225,10 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 		route := "queue://acme/app/tasks"
 		leaseSeconds := uint64(30)
 		batchSize := uint32(10)
+		waitSeconds := uint64(5)
 
 		// Act
-		payload := encodeReserve(route, leaseSeconds, batchSize)
+		payload := encodeReserve(route, leaseSeconds, batchSize, waitSeconds)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -248,6 +249,11 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 		actualBatch := binary.BigEndian.Uint32(payload[offset : offset+4])
 		assert.Equal(t, batchSize, actualBatch)
 		offset += 4
+		assert.Equal(t, byte(1), payload[offset])
+		offset++
+		actualWait := binary.BigEndian.Uint64(payload[offset : offset+8])
+		assert.Equal(t, waitSeconds, actualWait)
+		offset += 8
 		assert.Equal(t, len(payload), offset)
 	})
 
@@ -257,7 +263,7 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 		leaseSeconds := uint64(60)
 
 		// Act
-		payload := encodeReserve(route, leaseSeconds, 0)
+		payload := encodeReserve(route, leaseSeconds, 0, 0)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -265,6 +271,8 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 		routeLen := binary.BigEndian.Uint32(payload[offset : offset+4])
 		offset += 4 + int(routeLen)
 		offset += 8
+		assert.Equal(t, byte(0), payload[offset])
+		offset++
 		assert.Equal(t, byte(0), payload[offset])
 		assert.Equal(t, len(payload), offset+1)
 	})
@@ -275,7 +283,7 @@ func TestShouldEncodeReserveGivenOptionsWhenEncodeReserveCalled(t *testing.T) {
 		leaseSeconds := uint64(0)
 
 		// Act
-		payload := encodeReserve(route, leaseSeconds, 1)
+		payload := encodeReserve(route, leaseSeconds, 1, 0)
 
 		// Assert
 		require.NotNil(t, payload)
@@ -502,7 +510,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_ = encodeReserve(route, 30, 10)
+			_ = encodeReserve(route, 30, 10, 0)
 		}
 	})
 
@@ -512,7 +520,7 @@ func BenchmarkEncodeReserve(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			_ = encodeReserve(route, 30, 0)
+			_ = encodeReserve(route, 30, 0, 0)
 		}
 	})
 }

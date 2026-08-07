@@ -157,14 +157,15 @@ func encodeEnqueue(route string, body []byte, delaySeconds uint64) []byte {
 
 // encodeReserve encodes a Queue RESERVE request payload per CLIENT_SPEC.md.
 // Spec: [route_len][route][lease_seconds][has_batch_size][batch_size if present]
-func encodeReserve(route string, leaseSeconds uint64, batchSize uint32) []byte {
+// [has_wait_seconds][wait_seconds if present]
+func encodeReserve(route string, leaseSeconds uint64, batchSize uint32, waitSeconds uint64) []byte {
 	routeBytes := []byte(route)
 	hasBatchSize := uint8(0)
 	if batchSize > 0 {
 		hasBatchSize = 1
 	}
 
-	payloadSize := 4 + len(routeBytes) + 8 + 1
+	payloadSize := 4 + len(routeBytes) + 8 + 1 + 1
 	if hasBatchSize == 1 {
 		payloadSize += 4
 	}
@@ -191,6 +192,15 @@ func encodeReserve(route string, leaseSeconds uint64, batchSize uint32) []byte {
 		batchBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(batchBytes, batchSize)
 		payload = append(payload, batchBytes...)
+	}
+
+	if waitSeconds == 0 {
+		payload = append(payload, 0)
+	} else {
+		payload = append(payload, 1)
+		waitBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(waitBytes, waitSeconds)
+		payload = append(payload, waitBytes...)
 	}
 
 	return payload

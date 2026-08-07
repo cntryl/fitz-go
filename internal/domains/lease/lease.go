@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/v2/internal/core/types"
 	"github.com/cntryl/fitz-go/v2/internal/protocol"
@@ -64,7 +65,7 @@ func (l *Lease) extendWithToken(ctx context.Context, token []byte, ttlSecs uint6
 		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("EXTEND request failed: %w", err)
 	}
-	success, remaining, err := connection.ParsePlainResponse(resp)
+	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		l.closed = true
 		span.RecordError(err)
@@ -121,7 +122,7 @@ func (l *Lease) releaseWithToken(ctx context.Context, token []byte) error {
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("RELEASE request failed: %w", err)
 	}
-	success, _, err := connection.ParsePlainResponse(resp)
+	success, _, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -265,7 +266,7 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64, opti
 		return nil, fmt.Errorf("ACQUIRE request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParsePlainResponse(resp)
+	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		if isLeaseHeldError(err) {
 			// Don't record as span error, this is an expected condition
@@ -297,7 +298,7 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64, opti
 		}
 		select {
 		case deferred := <-waiter.response:
-			success, remaining, err = connection.ParsePlainResponse(deferred)
+			success, remaining, err = connection.ParseStandardResponse(deferred)
 			if err != nil {
 				return nil, fmt.Errorf("ACQUIRE deferred failed: %w", mapLeaseError(err))
 			}
@@ -381,7 +382,7 @@ func (c *client) Query(ctx context.Context, route string) (*LeaseInfo, error) {
 			return fmt.Errorf("QUERY request failed: %w", err)
 		}
 
-		success, remaining, err := connection.ParsePlainResponse(resp)
+		success, remaining, err := connection.ParseStandardResponse(resp)
 		if err != nil {
 			return fmt.Errorf("QUERY failed: %w", mapLeaseError(err))
 		}
@@ -468,6 +469,10 @@ func isLeaseHeldError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		return uint32(domainErr.Code) == coreerrors.LeaseHeld
+	}
 	msg := err.Error()
 	return strings.Contains(msg, "held") || strings.Contains(msg, "already")
 }
@@ -553,7 +558,7 @@ func (c *client) unsubscribe(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	if _, _, err := connection.ParsePlainResponse(resp); err != nil {
+	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
 		return
 	}
 }
@@ -599,7 +604,7 @@ func (c *client) restoreSubscribe(ctx context.Context, route string, handler Cha
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParsePlainResponse(resp)
+	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
 	}
@@ -635,7 +640,7 @@ func (c *client) rollbackRestoredSubscription(sub *Subscription) {
 	if err != nil {
 		return
 	}
-	if _, _, err := connection.ParsePlainResponse(resp); err != nil {
+	if _, _, err := connection.ParseStandardResponse(resp); err != nil {
 		return
 	}
 }
@@ -646,7 +651,7 @@ func (c *client) subscribe(ctx context.Context, route string, handler ChangeHand
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
 
-	success, remaining, err := connection.ParsePlainResponse(resp)
+	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
 	}

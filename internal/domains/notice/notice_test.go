@@ -203,29 +203,46 @@ func TestShouldDecodeNotifyGivenEncodedPayloadWhenDecodeNotifyCalled(t *testing.
 
 func TestShouldRejectMalformedStatusGivenTrailingOrTruncatedEnvelopeWhenDecodeStatusCalled(t *testing.T) {
 	t.Run("success status with trailing bytes", func(t *testing.T) {
-		status, message, ok := decodeStatus([]byte{0x00, 0xAA})
+		status, code, message, ok := decodeStatus([]byte{0x00, 0xAA})
 
 		assert.False(t, ok)
 		assert.Equal(t, uint8(0), status)
+		assert.Equal(t, uint32(0), code)
 		assert.Empty(t, message)
 	})
 
 	t.Run("error status with truncated message envelope", func(t *testing.T) {
-		status, message, ok := decodeStatus([]byte{0x01, 0x00, 0x00, 0x00})
+		status, code, message, ok := decodeStatus([]byte{0x01, 0x00, 0x00, 0x00})
 
 		assert.False(t, ok)
 		assert.Equal(t, uint8(0), status)
+		assert.Equal(t, uint32(0), code)
 		assert.Empty(t, message)
 	})
 
 	t.Run("error status with trailing bytes", func(t *testing.T) {
-		body := []byte{0x01, 0x00, 0x00, 0x00, 0x03, 'b', 'a', 'd', 0xFF}
-		status, message, ok := decodeStatus(body)
+		body := []byte{0x01, 0x00, 0x00, 0x0B, 0xBA, 0x00, 0x00, 0x00, 0x03, 'b', 'a', 'd', 0xFF}
+		status, code, message, ok := decodeStatus(body)
 
 		assert.False(t, ok)
 		assert.Equal(t, uint8(0), status)
+		assert.Equal(t, uint32(0), code)
 		assert.Empty(t, message)
 	})
+}
+
+func TestShouldPreserveDomainCodeGivenTypedNoticeErrorWhenDecodeStatusCalled(t *testing.T) {
+	// Arrange
+	body := []byte{0x01, 0x00, 0x00, 0x0B, 0xBA, 0x00, 0x00, 0x00, 0x03, 'b', 'a', 'd'}
+
+	// Act
+	status, code, message, ok := decodeStatus(body)
+
+	// Assert
+	assert.True(t, ok)
+	assert.Equal(t, uint8(1), status)
+	assert.Equal(t, uint32(3002), code)
+	assert.Equal(t, "bad", message)
 }
 
 // TestShouldDefineNoticeOpcodes tests that Notice opcodes are properly defined.

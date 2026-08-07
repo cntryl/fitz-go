@@ -13,7 +13,7 @@ All notable changes to this project are documented in this file.
 - Breaking: `RPCWorkerRegistration.Deregister` now returns broker and transport errors instead of silently treating deregistration as best-effort.
 - KV commit attempts are terminal even when rejected or interrupted; subsequent rollback is an idempotent no-op.
 - Breaking: Queue reserve, Stream read, and Stream last wire items now require their concrete matched route. `QueueItem`, `StreamReadItem`, and `StreamRecord` expose it.
-- Breaking: domain errors require the typed code-and-message envelope; Queue's one-byte and string-only error decoders were removed.
+- Breaking: domain errors preserve the server's operation-specific envelopes; Queue `ENQUEUE` and `RESERVE` use typed codes, while `EXTEND`, `COMPLETE`, and subscription errors remain message-only.
 - Added `Client.ConnectWhenReady(ctx)` for context-bounded startup retry.
 - Breaking: `ScheduleDeliveryMode` is now a distinct public type. Convert internal or numeric values explicitly when crossing package boundaries.
 - Exported the existing Notice, Stream, and RPC sentinel errors for `errors.Is`.

@@ -3,7 +3,6 @@ package notice
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -149,25 +148,26 @@ func decodePayload(body []byte) ([]byte, bool) {
 	return payload, true
 }
 
-func decodeStatus(body []byte) (uint8, string, bool) {
+func decodeStatus(body []byte) (uint8, uint32, string, bool) {
 	if len(body) < 1 {
-		return 0, "", false
+		return 0, 0, "", false
 	}
 	status := body[0]
 	if status == 0 {
 		if len(body) != 1 {
-			return 0, "", false
+			return 0, 0, "", false
 		}
-		return 0, "", true
+		return 0, 0, "", true
 	}
-	if len(body) < 5 {
-		return 0, "", false
+	if status != 1 || len(body) < 9 {
+		return 0, 0, "", false
 	}
-	msgLen := uint32(body[1])<<24 | uint32(body[2])<<16 | uint32(body[3])<<8 | uint32(body[4])
-	if int(5+msgLen) != len(body) {
-		return 0, "", false
+	code := readU32(body[1:5])
+	msgLen := readU32(body[5:9])
+	if uint64(9)+uint64(msgLen) != uint64(len(body)) {
+		return 0, 0, "", false
 	}
-	return status, string(body[5 : 5+msgLen]), true
+	return status, code, string(body[9 : 9+msgLen]), true
 }
 
 func IsNoticeResponseType(t uint16) bool {
@@ -175,12 +175,12 @@ func IsNoticeResponseType(t uint16) bool {
 }
 
 func DecodeNoticeResponseKey(op uint16, body []byte) (string, error) {
-	status, errMsg, ok := decodeStatus(body)
+	status, code, errMsg, ok := decodeStatus(body)
 	if !ok {
 		return "", nil
 	}
 	if status != 0 {
-		return "", fmt.Errorf("notice error: %s", errMsg)
+		return "", coreerrors.NewDomainError(code, errMsg)
 	}
 	return NoticeWaitKey(op), nil
 }
