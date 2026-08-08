@@ -32,6 +32,9 @@ the exact concrete matched route, and Stream event records expose it through
 any item contains an invalid concrete route, the entire response fails closed;
 the client never returns a partial reservation or read batch.
 
+Queue enqueue preserves the immediate `Enqueue` call and exposes delayed
+visibility through `EnqueueWithOptions(..., WithQueueEnqueueDelaySeconds(n))`.
+
 ## Lifecycle And Resilience
 
 - `Connect(ctx)` is one-shot for the initial connection. Concurrent or repeated
