@@ -335,6 +335,8 @@ scenario coverage in `test/conformance`.
 Notes:
 
 - Queue `201` (ENQUEUE_BATCH) is reserved by spec and intentionally not implemented.
+- Delayed queue visibility is available through `EnqueueWithOptions` and
+  `WithQueueEnqueueDelaySeconds`; `Enqueue` remains the immediate shorthand.
 - CS-001–CS-017 are the shared cross-language suite. CS-018–CS-022 are Go
   additions for Queue, Lease, Notice, Schedule, and queue reconnect coverage.
 - Schedule fire delivery (actual cron trigger) is covered in the integration suite

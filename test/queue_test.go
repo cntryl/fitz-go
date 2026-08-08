@@ -35,6 +35,36 @@ func TestShouldSendAndReceiveMessageGivenValidQueueWhenBasicWorkflow(t *testing.
 	})
 }
 
+func TestShouldDelayVisibilityGivenDelayedEnqueueWhenReserved(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		f.ConnectOrFail(ctx)
+		route := f.UniqueRoute("queue")
+		_, err := f.Client().Queue().EnqueueWithOptions(
+			ctx,
+			route,
+			[]byte("delayed"),
+			fitz.WithQueueEnqueueDelaySeconds(1),
+		)
+		require.NoError(t, err)
+
+		immediate, err := f.Client().Queue().Reserve(ctx, route, 30, 1)
+		require.NoError(t, err)
+		assert.Empty(t, immediate)
+
+		var delayed []*fitz.QueueItem
+		require.Eventually(t, func() bool {
+			delayed, err = f.Client().Queue().Reserve(ctx, route, 30, 1)
+			return err == nil && len(delayed) == 1
+		}, 3*time.Second, 100*time.Millisecond)
+		assert.Equal(t, []byte("delayed"), delayed[0].Body)
+		require.NoError(t, delayed[0].Complete(ctx))
+	})
+}
+
 func TestShouldReturnMessageToQueueGivenExpiredLeaseWhenLeaseExpires(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)

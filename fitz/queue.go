@@ -15,6 +15,20 @@ type QueueAvailabilityNotification struct {
 
 type QueueAvailabilityHandler func(context.Context, QueueAvailabilityNotification) error
 
+type queueEnqueueConfig struct {
+	delaySeconds uint64
+}
+
+// QueueEnqueueOption configures queue message publication.
+type QueueEnqueueOption func(*queueEnqueueConfig)
+
+// WithQueueEnqueueDelaySeconds delays message visibility by the specified number of seconds.
+func WithQueueEnqueueDelaySeconds(delaySeconds uint64) QueueEnqueueOption {
+	return func(cfg *queueEnqueueConfig) {
+		cfg.delaySeconds = delaySeconds
+	}
+}
+
 type queueReserveConfig struct {
 	batchSize   uint32
 	waitSeconds uint64
@@ -47,6 +61,7 @@ func (s *QueueSubscription) Unsubscribe() {
 
 type QueueClient interface {
 	Enqueue(ctx context.Context, route string, body []byte) (uint64, error)
+	EnqueueWithOptions(ctx context.Context, route string, body []byte, opts ...QueueEnqueueOption) (uint64, error)
 	Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error)
 	ReserveWithOptions(ctx context.Context, route string, leaseSecs uint64, opts ...QueueReserveOption) ([]*QueueItem, error)
 	ReserveWhenAvailable(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) (Iterator[[]*QueueItem], error)
@@ -96,6 +111,16 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 
 func (c *queueClient) Enqueue(ctx context.Context, route string, body []byte) (uint64, error) {
 	return c.inner.Enqueue(ctx, route, body)
+}
+
+func (c *queueClient) EnqueueWithOptions(ctx context.Context, route string, body []byte, opts ...QueueEnqueueOption) (uint64, error) {
+	cfg := queueEnqueueConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return c.inner.EnqueueWithOptions(ctx, route, body, internalqueue.WithDelaySeconds(cfg.delaySeconds))
 }
 
 func (c *queueClient) Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error) {

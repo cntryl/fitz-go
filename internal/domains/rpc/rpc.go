@@ -440,8 +440,8 @@ func (c *client) RegisterWorker(ctx context.Context, route string, maxConcurrent
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
-	if maxConcurrent == 0 {
-		return nil, errors.New("maxConcurrent must be positive")
+	if maxConcurrent < 1 || maxConcurrent > 1024 {
+		return nil, errors.New("maxConcurrent must be between 1 and 1024")
 	}
 	c.mu.Lock()
 	_, alreadyRegistered := c.workers[route]

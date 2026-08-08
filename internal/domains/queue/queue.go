@@ -43,6 +43,20 @@ type AvailabilityNotification struct {
 // AvailabilityHandler is called when availability notification arrives.
 type AvailabilityHandler func(ctx context.Context, notif AvailabilityNotification) error
 
+type enqueueConfig struct {
+	delaySeconds uint64
+}
+
+// EnqueueOption configures queue message publication.
+type EnqueueOption func(*enqueueConfig)
+
+// WithDelaySeconds delays message visibility by the specified number of seconds.
+func WithDelaySeconds(delaySeconds uint64) EnqueueOption {
+	return func(cfg *enqueueConfig) {
+		cfg.delaySeconds = delaySeconds
+	}
+}
+
 type reserveConfig struct {
 	batchSize   uint32
 	waitSeconds uint64
@@ -150,6 +164,9 @@ type Client interface {
 	// Enqueue adds a message to the queue. Returns the server-assigned message ID.
 	Enqueue(ctx context.Context, route string, body []byte) (msgID uint64, err error)
 
+	// EnqueueWithOptions adds a message with optional visibility delay.
+	EnqueueWithOptions(ctx context.Context, route string, body []byte, opts ...EnqueueOption) (msgID uint64, err error)
+
 	// Reserve reserves up to batchSize messages with the given lease duration.
 	// Each returned QueueItem has Extend and Complete methods.
 	Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error)
@@ -186,6 +203,17 @@ var _ reconnect.DomainRestorer = (*client)(nil)
 // Request: [route_len][route][body_len][body][has_delay(u8)][delay_secs?]
 // Response: [status][message_id (u64 BE)]
 func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64, error) {
+	return c.EnqueueWithOptions(ctx, route, body)
+}
+
+// EnqueueWithOptions publishes a message with optional visibility delay.
+func (c *client) EnqueueWithOptions(ctx context.Context, route string, body []byte, opts ...EnqueueOption) (uint64, error) {
+	cfg := enqueueConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.queue.Enqueue", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
@@ -201,7 +229,7 @@ func (c *client) Enqueue(ctx context.Context, route string, body []byte) (uint64
 
 	var msgID uint64
 	err := c.conn.RunWithRetry(ctx, func() error {
-		resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueEnqueue, enqueuePayloadWriter(route, body, 0))
+		resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueEnqueue, enqueuePayloadWriter(route, body, cfg.delaySeconds))
 		if err != nil {
 			return fmt.Errorf("enqueue request failed: %w", err)
 		}

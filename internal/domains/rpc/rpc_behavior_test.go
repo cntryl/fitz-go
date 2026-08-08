@@ -64,6 +64,18 @@ func TestShouldReturnBrokerErrorGivenRejectedWorkerUnsubscribe(t *testing.T) {
 	assert.Contains(t, err.Error(), "worker not found")
 }
 
+func TestShouldRejectWorkerConcurrencyAboveWireLimit(t *testing.T) {
+	// Arrange
+	conn := connection.New(testkit.NewMockTransport(), connection.Config{})
+	client := NewClient(conn)
+
+	// Act
+	_, err := client.RegisterWorker(context.Background(), "rpc://realm/area/method", 1025, func(context.Context, InboundRequest, ResponseWriter) error { return nil })
+
+	// Assert
+	require.EqualError(t, err, "maxConcurrent must be between 1 and 1024")
+}
+
 func rpcDomainErrorPayload(code uint32, message string) []byte {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
