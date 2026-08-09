@@ -2,6 +2,7 @@ package connection_test
 
 import (
 	"encoding/binary"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -225,29 +226,31 @@ func TestShouldAllowConcurrentHandlerReplacementGivenNotifyDispatchWhenSetNotify
 	}()
 
 	var delivered atomic.Int64
-	done := make(chan struct{})
+	mux.SetNotifyHandler(protocol.MessageTypeNoticeNotify, func(subID uint64, route string, body []byte) {
+		delivered.Add(1)
+	})
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 
 	wg.Go(func() {
+		<-start
 		for range 500 {
 			mux.SetNotifyHandler(protocol.MessageTypeNoticeNotify, func(subID uint64, route string, body []byte) {
 				delivered.Add(1)
 			})
+			runtime.Gosched()
 		}
-		close(done)
 	})
 
 	wg.Go(func() {
-		for {
-			select {
-			case <-done:
-				return
-			default:
-				mux.Dispatch(protocol.MessageTypeNoticeNotify, payload)
-			}
+		<-start
+		for range 500 {
+			mux.Dispatch(protocol.MessageTypeNoticeNotify, payload)
+			runtime.Gosched()
 		}
 	})
 
+	close(start)
 	wg.Wait()
 	assert.Positive(t, delivered.Load())
 }
