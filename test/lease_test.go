@@ -98,6 +98,36 @@ func TestShouldReleaseLeaseGivenValidTokenWhenReleaseCalled(t *testing.T) {
 	})
 }
 
+func TestShouldIncreaseManagedLeaseAuthorityGivenSuccessiveOwners(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		first := fixture.NewTestFixture(t, transport)
+		second := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		first.ConnectOrFail(ctx)
+		second.ConnectOrFail(ctx)
+		route := first.UniqueRoute("lease")
+		var firstAuthority fitz.LeaseAuthority
+		var firstAuthorityFound bool
+		require.NoError(t, first.Client().Lease().WithLease(ctx, route, 30, func(callbackCtx context.Context) error {
+			firstAuthority, firstAuthorityFound = fitz.LeaseAuthorityFromContext(callbackCtx)
+			return nil
+		}, fitz.WithLeaseOwnerID("first-owner")))
+		require.True(t, firstAuthorityFound)
+
+		var secondAuthority fitz.LeaseAuthority
+		var secondAuthorityFound bool
+		require.NoError(t, second.Client().Lease().WithLease(ctx, route, 30, func(callbackCtx context.Context) error {
+			secondAuthority, secondAuthorityFound = fitz.LeaseAuthorityFromContext(callbackCtx)
+			return nil
+		}, fitz.WithLeaseOwnerID("second-owner")))
+		require.True(t, secondAuthorityFound)
+
+		assert.Greater(t, secondAuthority.FencingToken, firstAuthority.FencingToken)
+	})
+}
+
 func TestShouldRejectReleaseGivenInvalidTokenWhenTokenMismatch(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)

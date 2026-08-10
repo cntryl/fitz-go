@@ -2,6 +2,7 @@ package fitz
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"math"
 	"sync"
@@ -16,6 +17,25 @@ type Lease struct {
 
 	inner *internallease.Lease
 	mu    sync.Mutex
+}
+
+// LeaseAuthority is the immutable admission authority for one managed lease
+// callback invocation. FencingToken is the token returned by the ACQUIRE that
+// admitted the callback, not the live credential used by later renewals.
+type LeaseAuthority struct {
+	FencingToken uint64
+}
+
+type leaseAuthorityContextKey struct{}
+
+// LeaseAuthorityFromContext returns the managed lease admission authority
+// attached to a WithLease callback context.
+func LeaseAuthorityFromContext(ctx context.Context) (LeaseAuthority, bool) {
+	if ctx == nil {
+		return LeaseAuthority{}, false
+	}
+	authority, ok := ctx.Value(leaseAuthorityContextKey{}).(LeaseAuthority)
+	return authority, ok
 }
 
 // Extend renews this lease using its current token.
@@ -53,6 +73,12 @@ func (l *Lease) syncFromInner() {
 	defer l.mu.Unlock()
 	l.token = append(l.token[:0], l.inner.Token...)
 	l.ExpiresAt = l.inner.ExpiresAt
+}
+
+func (l *Lease) admissionAuthority() LeaseAuthority {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return LeaseAuthority{FencingToken: binary.BigEndian.Uint64(l.token)}
 }
 
 type LeaseChangeNotification struct {
@@ -156,7 +182,8 @@ func (c *leaseClient) WithLease(ctx context.Context, route string, ttlSecs uint6
 }
 
 func (c *leaseClient) superviseManagedLease(ctx context.Context, lease *Lease, ttlSecs uint64, callback func(context.Context) error) managedLeaseOutcome {
-	callbackCtx, cancelCallback := context.WithCancelCause(ctx)
+	authorityCtx := context.WithValue(ctx, leaseAuthorityContextKey{}, lease.admissionAuthority())
+	callbackCtx, cancelCallback := context.WithCancelCause(authorityCtx)
 	defer cancelCallback(nil)
 	callbackResult := make(chan callbackOutcome, 1)
 	go func() {

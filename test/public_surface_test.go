@@ -34,6 +34,10 @@ func TestPublicSurface(t *testing.T) {
 	t.Run("lease info remains token-free", func(t *testing.T) {
 		assertNoField(t, reflect.TypeOf(fitz.LeaseInfo{}), "Token")
 	})
+
+	t.Run("lease authority exposes only the admission fencing token", func(t *testing.T) {
+		assertPublicFields(t, reflect.TypeOf(fitz.LeaseAuthority{}), []string{"FencingToken"})
+	})
 }
 
 func assertNoMethod(t *testing.T, typ reflect.Type, name string) {
