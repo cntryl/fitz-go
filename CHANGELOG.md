@@ -23,6 +23,9 @@ All notable changes to this project are documented in this file.
   cleanup internals without changing exported signatures or polling semantics.
 - Split managed Lease execution into acquisition, renewal supervision, and
   release/error composition while preserving context causes and panic behavior.
+- Added `LeaseAuthorityFromContext` so managed Lease callbacks can use the immutable
+  fencing token from the ACQUIRE that admitted that callback without exposing the live
+  renewal credential.
 - Moved the broker-backed acceptance suite behind the `integration` build tag and split the release gate so the default `go test ./...` path stays fast while the broker matrix remains opt-in.
 
 ### Removed

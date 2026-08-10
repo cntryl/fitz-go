@@ -55,6 +55,14 @@ Stateful handles are bound to the connection that created them. `QueueItem`,
 `Lease`, `KVTx`, and `StreamSession` handles from a previous connection fail
 fast with `ErrStaleHandle` after reconnect or close.
 
+Managed `WithLease` callbacks receive their immutable admission fencing epoch through
+`LeaseAuthorityFromContext`. The snapshot is copied from the final successful ACQUIRE,
+including a deferred queue grant, before application code starts. Renewal may rotate the
+private live credential but never changes the callback snapshot. Fencing tokens are ordered
+only for successive owners of the same lease route; external stores retain the greatest
+accepted value and reject lower values. `Lease` and `LeaseInfo` continue to hide raw live
+credentials, and QUERY is not used to recover admission authority.
+
 `NewWakeGate`, `ReserveWhenAvailable`, `ReadWhenCommitted`, and
 `WaitForNotifications` support Go-native consumer loops. Subscriptions are wake
 signals only for queue and stream helpers; reserve/read calls remain

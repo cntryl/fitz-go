@@ -352,3 +352,23 @@ callback cancellation, and release. Add `fitz.WithLeaseWaitSeconds(30)` to use t
 broker's bounded FIFO acquisition queue.
 The callback must honor its context promptly; `context.Cause` reports caller cancellation
 or `fitz.ErrLeaseLost`. Low-level lease methods remain available and serialize token rotation.
+
+Use `fitz.LeaseAuthorityFromContext` inside the callback to obtain the broker-issued
+admission fence from the successful ACQUIRE that started that invocation:
+
+```go
+err := client.Lease().WithLease(ctx, route, 30, func(callbackCtx context.Context) error {
+	if authority, ok := fitz.LeaseAuthorityFromContext(callbackCtx); ok {
+		return runRole(callbackCtx, authority.FencingToken)
+	}
+	return errors.New("managed lease authority is missing")
+}, fitz.WithLeaseOwnerID("worker-1"))
+```
+
+The authority is an immutable value snapshot. A queued acquisition exposes the final
+granted token, and managed renewal does not update the callback snapshot even when it
+rotates the live lease credential. Treat it as an admission fencing epoch, not a live
+renewal credential. Tokens are ordered only across successive ownership of the same lease
+route. An external store enforces fencing by atomically retaining its greatest accepted
+value and rejecting lower values; do not compare the admission snapshot for equality with
+a later live broker token.
