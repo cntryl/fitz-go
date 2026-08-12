@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- Breaking: Stream READ and SUBSCRIBE now accept only concrete resource, area (`realm/area/*`), realm (`realm/*/*`), or global (`stream://**`) selectors. Global continuation reuses the returned fingerprint and watermark pair, and Stream LAST is concrete-route only.
+- Breaking: Stream READ and SUBSCRIBE accept the complete canonical resource, area, realm, and global selector matrix. Global continuation reuses the returned fingerprint and watermark pair, and Stream LAST is concrete-route only.
 - Breaking: Schedule listing uses canonical message 702 with offset/limit pages and `TotalCount`.
 - Breaking: Lease acquisition requires explicit owner and wait options; RPC worker registration exposes `maxConcurrent`.
 - Queue reserve, global Stream records, optional zero values, read-only commit, and backend error classification now follow the canonical wire contracts.

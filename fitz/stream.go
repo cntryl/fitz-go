@@ -2,8 +2,8 @@ package fitz
 
 import (
 	"context"
-	"strings"
 
+	"github.com/cntryl/fitz-go/v2/internal/core/types"
 	internalstream "github.com/cntryl/fitz-go/v2/internal/domains/stream"
 )
 
@@ -277,28 +277,30 @@ func (c *streamClient) ReadWhenCommitted(ctx context.Context, route string, from
 				return managedPollResult[[]StreamRecord]{}, err
 			}
 			records := streamRecordsFromPage(page)
-			if len(page.Items) > 0 {
-				offset = streamCursorOffset(route, page.Cursor) + 1
-				cursorFingerprint = page.Cursor.CursorFingerprint
-				capturedWatermark = page.Cursor.CapturedWatermark
-			}
+			offset = streamNextOffset(route, offset, page.Cursor)
+			cursorFingerprint = page.Cursor.CursorFingerprint
+			capturedWatermark = page.Cursor.CapturedWatermark
 			return managedPollResult[[]StreamRecord]{value: records, emit: len(records) > 0, pollAgain: page.Cursor.HasMore}, nil
 		})
 }
 
-func streamCursorOffset(route string, cursor StreamReadCursor) uint64 {
-	if route == "stream://**" || strings.HasSuffix(route, "/*/*") {
-		if route == "stream://**" && cursor.LastGlobalOffset != nil {
-			return *cursor.LastGlobalOffset
+func streamNextOffset(route string, currentOffset uint64, cursor StreamReadCursor) uint64 {
+	scope, err := types.ClassifyStreamSelector(route)
+	if err == nil {
+		if scope == types.StreamScopeGlobal {
+			if cursor.LastGlobalOffset == nil {
+				return currentOffset
+			}
+			return *cursor.LastGlobalOffset + 1
 		}
-		if cursor.LastRealmOffset != nil {
-			return *cursor.LastRealmOffset
+		if scope == types.StreamScopeRealm && cursor.LastRealmOffset != nil {
+			return *cursor.LastRealmOffset + 1
+		}
+		if scope == types.StreamScopeArea && cursor.LastAreaOffset != nil {
+			return *cursor.LastAreaOffset + 1
 		}
 	}
-	if strings.HasSuffix(route, "/*") && cursor.LastAreaOffset != nil {
-		return *cursor.LastAreaOffset
-	}
-	return cursor.LastResourceOffset
+	return cursor.LastResourceOffset + 1
 }
 
 func streamRecordsFromPage(page *StreamReadPage) []StreamRecord {

@@ -170,8 +170,19 @@ func TestShouldValidateRegistrationPatternsGivenSharedWildcardContract(t *testin
 }
 
 func TestShouldValidateStreamSelectorsGivenServerGrammar(t *testing.T) {
-	valid := []string{"stream://realm/area/resource", "stream://realm/area/*", "stream://realm/*/*", "stream://**"}
-	invalid := []string{"stream://*/area/*", "stream://realm/*/resource", "stream://realm/**", "stream://realm/area/**"}
+	valid := []string{
+		"stream://realm/area/resource",
+		"stream://realm/area/*",
+		"stream://realm/*/resource",
+		"stream://realm/*/*",
+		"stream://realm/**",
+		"stream://*/area/resource",
+		"stream://*/area/*",
+		"stream://*/*/resource",
+		"stream://*/*/*",
+		"stream://**",
+	}
+	invalid := []string{"stream://*/**", "stream://realm/area/**", "stream://realm/area"}
 	for _, selector := range valid {
 		require.NoError(t, ValidateStreamSelector(selector), selector)
 	}

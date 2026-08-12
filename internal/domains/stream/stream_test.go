@@ -735,6 +735,41 @@ func TestShouldParseStreamReadPageGivenFilteredItemsWhenParseReadPageResponseCal
 	assert.Equal(t, FilteredReasonPermission, *page.Items[2].Reason)
 }
 
+func TestShouldDecodeExtendedCursorGivenFilteredGlobalSelector(t *testing.T) {
+	selectors := []string{
+		"stream://*/area/resource",
+		"stream://*/area/*",
+		"stream://*/*/resource",
+	}
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	connection.WriteU32BE(buf, 0)
+	connection.WriteU64BE(buf, 3)
+	buf.WriteByte(0)
+	buf.WriteByte(0)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 5)
+	buf.WriteByte(1)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 7)
+	buf.WriteByte(1)
+	connection.WriteU64BE(buf, 11)
+
+	for _, selector := range selectors {
+		t.Run(selector, func(t *testing.T) {
+			page, err := parseReadPageResponse(buf.Bytes(), selector)
+
+			require.NoError(t, err)
+			require.NotNil(t, page.Cursor.LastGlobalOffset)
+			assert.Equal(t, uint64(5), *page.Cursor.LastGlobalOffset)
+			require.NotNil(t, page.Cursor.CursorFingerprint)
+			assert.Equal(t, uint64(7), *page.Cursor.CursorFingerprint)
+			require.NotNil(t, page.Cursor.CapturedWatermark)
+			assert.Equal(t, uint64(11), *page.Cursor.CapturedWatermark)
+		})
+	}
+}
+
 func TestShouldParseConcreteRoutesGivenWildcardStreamReadPage(t *testing.T) {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)

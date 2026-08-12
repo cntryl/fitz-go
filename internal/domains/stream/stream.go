@@ -555,7 +555,8 @@ func skipOptionalSessionIDAndGetData(remaining []byte) ([]byte, error) {
 
 // parseReadPageResponse parses a raw replay page from a READ response data blob.
 func parseReadPageResponse(data []byte, selector string) (*ReadPage, error) {
-	if err := types.ValidateStreamSelector(selector); err != nil {
+	scope, err := types.ClassifyStreamSelector(selector)
+	if err != nil {
 		return nil, fmt.Errorf("invalid stream selector for READ response: %w", err)
 	}
 	if len(data) == 0 {
@@ -568,7 +569,7 @@ func parseReadPageResponse(data []byte, selector string) (*ReadPage, error) {
 	}
 
 	items := make([]ReadItem, 0, count)
-	global := selector == "stream://**"
+	global := scope == types.StreamScopeGlobal
 	for i := range count {
 		concreteRoute, newOffset, err := connection.ReadString(data, offset)
 		if err != nil {

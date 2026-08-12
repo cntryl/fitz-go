@@ -187,26 +187,53 @@ func ValidateRegistrationPattern(route string, expectedScheme string, requiredSe
 	return nil
 }
 
-// ValidateStreamSelector validates the four route shapes shared by Stream READ and SUBSCRIBE.
-func ValidateStreamSelector(route string) error {
+// StreamSelectorScope is the ordering and cursor axis for a canonical Stream selector.
+type StreamSelectorScope uint8
+
+const (
+	StreamScopeResource StreamSelectorScope = iota
+	StreamScopeArea
+	StreamScopeRealm
+	StreamScopeGlobal
+)
+
+// ClassifyStreamSelector validates a Stream selector and returns its ordering scope.
+func ClassifyStreamSelector(route string) (StreamSelectorScope, error) {
 	if route == "stream://**" {
-		return nil
+		return StreamScopeGlobal, nil
+	}
+	segments := splitRouteSegments(route)
+	if strings.HasPrefix(route, "stream://") && len(segments) == 2 && segments[1] == "**" && segments[0] != "" && !strings.Contains(segments[0], "*") {
+		return StreamScopeRealm, nil
 	}
 	shape, err := scanRoute(route, "stream")
 	if err != nil || shape.segmentCount != 3 {
-		return invalidRoute("stream selector must be realm/area/resource, realm/area/*, realm/*/*, or stream://**")
+		return 0, invalidRoute("stream selector has the wrong shape")
 	}
-	segments := splitRouteSegments(route)
 	if len(segments) != 3 {
-		return invalidRoute("stream selector must be realm/area/resource, realm/area/*, realm/*/*, or stream://**")
+		return 0, invalidRoute("stream selector has the wrong shape")
 	}
-	if strings.Contains(segments[0], "*") || strings.Contains(segments[1], "*") && segments[1] != "*" || strings.Contains(segments[2], "*") && segments[2] != "*" {
-		return invalidRoute("stream selector must use whole-segment wildcards")
+	for _, segment := range segments {
+		if strings.Contains(segment, "*") && segment != "*" {
+			return 0, invalidRoute("stream selector must use whole-segment wildcards")
+		}
 	}
-	if (segments[1] == "*" && segments[2] == "*") || (segments[1] != "*" && segments[2] == "*") || (segments[1] != "*" && segments[2] != "*") {
-		return nil
+	if segments[0] == "*" {
+		return StreamScopeGlobal, nil
 	}
-	return invalidRoute("stream selector must use whole-segment wildcards")
+	if segments[1] == "*" {
+		return StreamScopeRealm, nil
+	}
+	if segments[2] == "*" {
+		return StreamScopeArea, nil
+	}
+	return StreamScopeResource, nil
+}
+
+// ValidateStreamSelector validates the selector matrix shared by Stream READ and SUBSCRIBE.
+func ValidateStreamSelector(route string) error {
+	_, err := ClassifyStreamSelector(route)
+	return err
 }
 
 // RouteMatchesPattern reports whether a validated concrete route matches a
