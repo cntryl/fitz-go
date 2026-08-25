@@ -15,16 +15,17 @@ type managedPollResult[T any] struct {
 
 func startManagedPollingIterator[T any](
 	ctx context.Context,
-	subscribeWake func(context.Context, func()) (func(), error),
+	subscribeWake func(context.Context, func()) (func(), <-chan error, error),
 	poll func(context.Context) (managedPollResult[T], error),
 ) (Iterator[T], error) {
-	helperCtx, cancel := context.WithCancel(ctx)
+	helperCtx, cancel := context.WithCancelCause(ctx)
 	gate := NewWakeGate()
-	unsubscribe, err := subscribeWake(helperCtx, func() { gate.Wake() })
+	unsubscribe, completion, err := subscribeWake(helperCtx, func() { gate.Wake() })
 	if err != nil {
-		cancel()
+		cancel(err)
 		return nil, err
 	}
+	monitorSubscriptionCompletion(helperCtx, cancel, completion)
 
 	values := make(chan T)
 	errors := make(chan error, 1)
@@ -59,20 +60,20 @@ func startManagedPollingIterator[T any](
 		}
 	}()
 
-	return coreiter.NewChannelIterator[T](values, errors, cancel), nil
+	return coreiter.NewChannelIterator[T](values, errors, func() { cancel(context.Canceled) }), nil
 }
 
 func startManagedPushIterator[T any](
 	ctx context.Context,
 	capacity int,
-	subscribe func(context.Context, func(T) error) (func(), error),
+	subscribe func(context.Context, func(T) error) (func(), <-chan error, error),
 ) (Iterator[T], error) {
-	helperCtx, cancel := context.WithCancel(ctx)
+	helperCtx, cancel := context.WithCancelCause(ctx)
 	values := make(chan T, capacity)
 	errors := make(chan error, 1)
 	var deliveryMu sync.RWMutex
 	closed := false
-	unsubscribe, err := subscribe(helperCtx, func(value T) error {
+	unsubscribe, completion, err := subscribe(helperCtx, func(value T) error {
 		deliveryMu.RLock()
 		defer deliveryMu.RUnlock()
 		if closed {
@@ -86,9 +87,10 @@ func startManagedPushIterator[T any](
 		}
 	})
 	if err != nil {
-		cancel()
+		cancel(err)
 		return nil, err
 	}
+	monitorSubscriptionCompletion(helperCtx, cancel, completion)
 	go func() {
 		<-helperCtx.Done()
 		unsubscribe()
@@ -99,5 +101,20 @@ func startManagedPushIterator[T any](
 		close(errors)
 		deliveryMu.Unlock()
 	}()
-	return coreiter.NewChannelIterator[T](values, errors, cancel), nil
+	return coreiter.NewChannelIterator[T](values, errors, func() { cancel(context.Canceled) }), nil
+}
+
+func monitorSubscriptionCompletion(ctx context.Context, cancel context.CancelCauseFunc, completion <-chan error) {
+	if completion == nil {
+		return
+	}
+	go func() {
+		select {
+		case err := <-completion:
+			if err != nil {
+				cancel(err)
+			}
+		case <-ctx.Done():
+		}
+	}()
 }

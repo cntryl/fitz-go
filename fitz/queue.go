@@ -59,6 +59,13 @@ func (s *QueueSubscription) Unsubscribe() {
 	}
 }
 
+func (s *QueueSubscription) Completion() <-chan error {
+	if s == nil || s.inner == nil {
+		return nil
+	}
+	return s.inner.Completion()
+}
+
 type QueueClient interface {
 	Enqueue(ctx context.Context, route string, body []byte) (uint64, error)
 	EnqueueWithOptions(ctx context.Context, route string, body []byte, opts ...QueueEnqueueOption) (uint64, error)
@@ -170,12 +177,12 @@ func (c *queueClient) ReserveWhenAvailable(ctx context.Context, route string, le
 		batchSize = 1
 	}
 	return startManagedPollingIterator(ctx,
-		func(helperCtx context.Context, wake func()) (func(), error) {
+		func(helperCtx context.Context, wake func()) (func(), <-chan error, error) {
 			subscription, err := c.Subscribe(helperCtx, route, func(context.Context, QueueAvailabilityNotification) error { wake(); return nil })
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			return subscription.Unsubscribe, nil
+			return subscription.Unsubscribe, subscription.Completion(), nil
 		},
 		func(helperCtx context.Context) (managedPollResult[[]*QueueItem], error) {
 			reserved, err := c.Reserve(helperCtx, route, leaseSecs, batchSize)

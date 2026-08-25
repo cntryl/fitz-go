@@ -48,6 +48,25 @@ visibility through `EnqueueWithOptions(..., WithQueueEnqueueDelaySeconds(n))`.
   and Queue `Enqueue` only after an explicit retryable broker rejection.
 - The outbound request queue is bounded. When saturated, operations fail with
   `ErrRequestQueueFull`.
+- Detached subscription callbacks use a separate bounded queue. Configure it
+  with `WithAsyncHandlerQueueCapacity` (default `1024`) and configure executing
+  callbacks independently with `WithAsyncHandlerMaxConcurrency` (default
+  `256`). The receive loop never waits for queue space.
+- Every KV, Notice, Queue, Lease, Schedule, and Stream callback subscription
+  exposes `Completion() <-chan error`. Explicit unsubscribe yields `nil`.
+  Saturation yields `*AsyncHandlerOverflowError`, terminates that local
+  registration, and attempts a best-effort wire unsubscribe when it was the
+  final local registration. Queue/Stream polling iterators and Schedule push
+  iterators surface the same terminal error through `Iterator.Err()`.
+- RPC workers retain their protocol-level backpressure response on saturation;
+  they are not converted to subscription completion errors.
+- Async-handler saturation increments `fitz.async_handlers.saturated`; active
+  and queued work are observable through `fitz.async_handlers.active` and
+  `fitz.async_handlers.queued`.
+- Schedule backend unavailability and broker saturation use
+  `ErrCodeScheduleBackendError` (`7010`). `IsRetryable` classifies that code as
+  retryable subject to operation safety. It is distinct from cron and parse
+  errors and is never mapped to malformed schedule input.
 
 ## Handles And Wake Helpers
 

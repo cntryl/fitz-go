@@ -101,6 +101,7 @@ type Connection struct {
 	asyncSlotAcquireFailures metric.Int64Counter
 	asyncHandlersActive      metric.Int64UpDownCounter
 	asyncSlotOccupancyMs     metric.Int64Histogram
+	asyncHandlersSaturated   metric.Int64Counter
 
 	// Observability (optional)
 	logger         *slog.Logger
@@ -126,6 +127,7 @@ type Config struct {
 	MaxRequestQueueSize        int           // Default 1024 waiters beyond MaxInFlightRequests
 	AsyncHandlerTimeout        time.Duration // Default 30s for detached async handler spans
 	AsyncHandlerMaxConcurrency int           // Default 256 concurrent async handlers
+	AsyncHandlerQueueCapacity  int           // Default 1024 queued async handlers
 	ReconnectEnabled           bool
 	ReconnectBackoff           time.Duration
 	RetryEnabled               bool
@@ -147,20 +149,21 @@ type Config struct {
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
-		AuthSettleDelay:     500 * time.Millisecond,
-		ReadTimeout:         30 * time.Second,
-		WriteTimeout:        10 * time.Second,
-		MaxInFlightRequests: 256,
-		MaxRequestQueueSize: 1024,
-		RetryEnabled:        true,
-		RetryConfigured:     true,
-		RetryMaxAttempts:    3,
-		RetryBackoff:        100 * time.Millisecond,
-		RetryMaxBackoff:     time.Second,
-		HeartbeatEnabled:    true,
-		HeartbeatConfigured: true,
-		HeartbeatInterval:   10 * time.Second,
-		HeartbeatTimeout:    30 * time.Second,
+		AuthSettleDelay:           500 * time.Millisecond,
+		ReadTimeout:               30 * time.Second,
+		WriteTimeout:              10 * time.Second,
+		MaxInFlightRequests:       256,
+		MaxRequestQueueSize:       1024,
+		AsyncHandlerQueueCapacity: 1024,
+		RetryEnabled:              true,
+		RetryConfigured:           true,
+		RetryMaxAttempts:          3,
+		RetryBackoff:              100 * time.Millisecond,
+		RetryMaxBackoff:           time.Second,
+		HeartbeatEnabled:          true,
+		HeartbeatConfigured:       true,
+		HeartbeatInterval:         10 * time.Second,
+		HeartbeatTimeout:          30 * time.Second,
 	}
 }
 
@@ -201,6 +204,9 @@ func New(trans transport.Transport, cfg Config) *Connection {
 	if cfg.AsyncHandlerMaxConcurrency <= 0 {
 		cfg.AsyncHandlerMaxConcurrency = 256
 	}
+	if cfg.AsyncHandlerQueueCapacity <= 0 {
+		cfg.AsyncHandlerQueueCapacity = 1024
+	}
 	if !cfg.RetryConfigured {
 		cfg.RetryEnabled = true
 	}
@@ -237,7 +243,7 @@ func New(trans transport.Transport, cfg Config) *Connection {
 		requestSem:       make(chan struct{}, cfg.MaxInFlightRequests),
 		oneWaySem:        make(chan struct{}, cfg.MaxInFlightRequests),
 		asyncHandlerSem:  make(chan struct{}, cfg.AsyncHandlerMaxConcurrency),
-		asyncHandlerJobs: make(chan asyncHandlerJob, cfg.AsyncHandlerMaxConcurrency),
+		asyncHandlerJobs: make(chan asyncHandlerJob, cfg.AsyncHandlerQueueCapacity),
 		token:            cfg.Token,
 		authConfirmed:    make(chan struct{}),
 		mux:              NewMultiplexer(),
@@ -303,6 +309,33 @@ func (c *Connection) initAsyncHandlerMetrics() {
 		metric.WithUnit("ms"),
 	); err == nil {
 		c.asyncSlotOccupancyMs = occupancy
+	}
+	if saturated, err := c.meter.Int64Counter(
+		"fitz.async_handlers.saturated",
+		metric.WithDescription("Count of callback jobs rejected because the async handler queue is full"),
+		metric.WithUnit("{failure}"),
+	); err == nil {
+		c.asyncHandlersSaturated = saturated
+	}
+	if active, err := c.meter.Int64ObservableGauge(
+		"fitz.async_handlers.active",
+		metric.WithDescription("Current number of executing async handlers"),
+		metric.WithUnit("{handler}"),
+	); err == nil {
+		_, _ = c.meter.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
+			observer.ObserveInt64(active, int64(len(c.asyncHandlerSem)))
+			return nil
+		}, active)
+	}
+	if queued, err := c.meter.Int64ObservableGauge(
+		"fitz.async_handlers.queued",
+		metric.WithDescription("Current number of callback jobs waiting in the async handler queue"),
+		metric.WithUnit("{handler}"),
+	); err == nil {
+		_, _ = c.meter.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
+			observer.ObserveInt64(queued, int64(len(c.asyncHandlerJobs)))
+			return nil
+		}, queued)
 	}
 
 	if hist, err := c.meter.Int64Histogram(
@@ -1114,6 +1147,15 @@ func (c *Connection) AsyncHandlerMaxConcurrency() int {
 	return c.cfg.AsyncHandlerMaxConcurrency
 }
 
+// AsyncHandlerQueueCapacity returns the configured number of callback jobs
+// that may wait for an execution slot.
+func (c *Connection) AsyncHandlerQueueCapacity() int {
+	if c == nil || c.cfg.AsyncHandlerQueueCapacity <= 0 {
+		return 1024
+	}
+	return c.cfg.AsyncHandlerQueueCapacity
+}
+
 // MaxInFlightRequests returns the configured maximum number of concurrently
 // admitted outbound request operations.
 func (c *Connection) MaxInFlightRequests() int {
@@ -1296,6 +1338,9 @@ func (c *Connection) LaunchAsyncHandler(parent context.Context, spanName string,
 		return true
 	default:
 		queueErr := errors.New("async handler queue full")
+		if c.asyncHandlersSaturated != nil {
+			c.asyncHandlersSaturated.Add(parent, 1)
+		}
 		span.RecordError(queueErr)
 		span.SetStatus(codes.Error, queueErr.Error())
 		cancel()
@@ -1601,7 +1646,8 @@ func IsTransientRetryable(err error) bool {
 			coreerrors.RpcTimeout,
 			coreerrors.RpcWorkerNotFound,
 			coreerrors.RpcBackpressure,
-			coreerrors.RpcRouteNotRegistered:
+			coreerrors.RpcRouteNotRegistered,
+			coreerrors.ScheduleBackendError:
 			return true
 		}
 	}

@@ -82,6 +82,13 @@ func (s *KVSubscription) Unsubscribe() {
 	}
 }
 
+func (s *KVSubscription) Completion() <-chan error {
+	if s == nil || s.inner == nil {
+		return nil
+	}
+	return s.inner.Completion()
+}
+
 type kvClient struct {
 	inner internalkv.Client
 }

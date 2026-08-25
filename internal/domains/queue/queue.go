@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/v2/internal/core/types"
@@ -79,10 +80,11 @@ func WithWaitSeconds(waitSeconds uint64) ReserveOption {
 // Subscription represents an active queue availability subscription.
 // Call Unsubscribe to stop receiving and release the subscription.
 type Subscription struct {
-	subID     uint64
-	handlerID uint64
-	pattern   string
-	client    *client
+	subID      uint64
+	handlerID  uint64
+	pattern    string
+	client     *client
+	completion *subscriptions.Completion
 }
 
 // Unsubscribe removes this subscription.
@@ -90,6 +92,13 @@ func (s *Subscription) Unsubscribe() {
 	if s.client != nil {
 		s.client.unsubscribe(s)
 	}
+}
+
+func (s *Subscription) Completion() <-chan error {
+	if s == nil || s.completion == nil {
+		return nil
+	}
+	return s.completion.Done()
 }
 
 // Extend extends the lease on this queue item.
@@ -399,8 +408,8 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	if len(payload) != 24 {
 		return
 	}
-	handlers := c.subscriptions.Handlers(subID)
-	if len(handlers) == 0 {
+	registrations := c.subscriptions.Registrations(subID)
+	if len(registrations) == 0 {
 		return
 	}
 
@@ -412,7 +421,8 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 
-	for _, handler := range handlers {
+	for _, registration := range registrations {
+		handler := registration.Handler
 		if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.queue.handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 			if err := handler(handlerCtx, notif); err != nil {
 				span.RecordError(err)
@@ -425,6 +435,8 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 			attribute.Int64("fitz.subscription_id", int64(subID)),
 			attribute.String("fitz.route", route),
 		)) {
+			registration.Completion.Complete(&coreerrors.AsyncHandlerOverflowError{Domain: "queue", SubscriptionID: subID})
+			go c.unsubscribe(&Subscription{subID: subID, handlerID: registration.HandlerID, pattern: registration.Pattern, client: c, completion: registration.Completion})
 			if log := c.conn.Logger(); log != nil {
 				log.Warn("queue notify handler dropped", "route", route, "sub_id", subID, "reason", "async handler queue full")
 			}
@@ -456,10 +468,11 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler Availabi
 		return nil, err
 	}
 	return &Subscription{
-		subID:     subID,
-		handlerID: handlerID,
-		pattern:   pattern,
-		client:    c,
+		subID:      subID,
+		handlerID:  handlerID,
+		pattern:    pattern,
+		client:     c,
+		completion: c.subscriptions.Completion(pattern, handlerID),
 	}, nil
 }
 

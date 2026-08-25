@@ -111,6 +111,7 @@ type Config struct {
 	MaxRequestQueueSize        int
 	AsyncHandlerTimeout        time.Duration
 	AsyncHandlerMaxConcurrency int
+	AsyncHandlerQueueCapacity  int
 
 	// Reconnection
 	ReconnectEnabled  bool
@@ -152,6 +153,7 @@ func defaultConfig() *Config {
 		MaxRequestQueueSize:        1024,
 		AsyncHandlerTimeout:        30 * time.Second,
 		AsyncHandlerMaxConcurrency: 256,
+		AsyncHandlerQueueCapacity:  1024,
 		ReconnectEnabled:           true,
 		ReconnectBackoff:           250 * time.Millisecond,
 		ReconnectMaxDelay:          5 * time.Second,
@@ -211,6 +213,12 @@ func WithAsyncHandlerTimeout(timeout time.Duration) Option {
 // detached async handlers. A value <= 0 uses the default limit.
 func WithAsyncHandlerMaxConcurrency(limit int) Option {
 	return func(c *Config) { c.AsyncHandlerMaxConcurrency = limit }
+}
+
+// WithAsyncHandlerQueueCapacity sets the number of detached callback jobs that
+// may wait for an execution slot. A value <= 0 uses the default capacity.
+func WithAsyncHandlerQueueCapacity(capacity int) Option {
+	return func(c *Config) { c.AsyncHandlerQueueCapacity = capacity }
 }
 
 // WithReconnect enables/disables automatic reconnection.
@@ -669,6 +677,7 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 		MaxRequestQueueSize:        c.config.MaxRequestQueueSize,
 		AsyncHandlerTimeout:        c.config.AsyncHandlerTimeout,
 		AsyncHandlerMaxConcurrency: c.config.AsyncHandlerMaxConcurrency,
+		AsyncHandlerQueueCapacity:  c.config.AsyncHandlerQueueCapacity,
 		RetryEnabled:               c.config.RetryEnabled,
 		RetryConfigured:            true,
 		RetryMaxAttempts:           c.config.RetryMaxAttempts,

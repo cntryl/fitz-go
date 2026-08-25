@@ -8,8 +8,24 @@
 package errors
 
 import (
+	"errors"
 	"fmt"
 )
+
+var ErrAsyncHandlerOverflow = errors.New("async handler queue overflow")
+
+type AsyncHandlerOverflowError struct {
+	Domain         string
+	SubscriptionID uint64
+}
+
+func (e *AsyncHandlerOverflowError) Error() string {
+	return fmt.Sprintf("%s subscription %d: %s", e.Domain, e.SubscriptionID, ErrAsyncHandlerOverflow)
+}
+
+func (e *AsyncHandlerOverflowError) Unwrap() error {
+	return ErrAsyncHandlerOverflow
+}
 
 // Error code ranges by domain (from Fitz server)
 const (
@@ -78,6 +94,7 @@ const (
 	ScheduleInvalidSubscription = 7006
 	ScheduleSubscriptionLimit   = 7007
 	ScheduleInvalidDeliveryMode = 7008
+	ScheduleBackendError        = 7010
 )
 
 // IsBackpressure returns true if the error code indicates backpressure
@@ -207,6 +224,8 @@ func (e ErrorCode) String() string {
 		return "schedule_subscription_limit"
 	case ScheduleInvalidDeliveryMode:
 		return "schedule_invalid_delivery_mode"
+	case ScheduleBackendError:
+		return "schedule_backend_error"
 
 	default:
 		return fmt.Sprintf("unknown_error_%d", e)

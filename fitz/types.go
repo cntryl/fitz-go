@@ -135,6 +135,15 @@ func WithAsyncHandlerMaxConcurrency(limit int) Option {
 	}
 }
 
+// WithAsyncHandlerQueueCapacity sets how many detached subscription callback
+// jobs may wait for an execution slot. It is independent of request admission
+// and WithAsyncHandlerMaxConcurrency. The default is 1024.
+func WithAsyncHandlerQueueCapacity(capacity int) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithAsyncHandlerQueueCapacity(capacity))
+	}
+}
+
 // WithReconnect controls the automatic reconnect behavior. When enabled, the
 // client will attempt to re-establish the transport connection using exponential
 // backoff starting at backoff, doubling up to the ceiling configured by

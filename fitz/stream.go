@@ -157,6 +157,13 @@ func (s *StreamSubscription) Unsubscribe() {
 	}
 }
 
+func (s *StreamSubscription) Completion() <-chan error {
+	if s == nil || s.inner == nil {
+		return nil
+	}
+	return s.inner.Completion()
+}
+
 type StreamSession interface {
 	Append(ctx context.Context, expectedOffset uint64, body []byte, opts ...StreamAppendOption) (offset uint64, err error)
 	Commit(ctx context.Context, mode StreamCommitMode) error
@@ -260,12 +267,12 @@ func (c *streamClient) ReadWhenCommitted(ctx context.Context, route string, from
 	offset := fromOffset
 	var cursorFingerprint, capturedWatermark *uint64
 	return startManagedPollingIterator(ctx,
-		func(helperCtx context.Context, wake func()) (func(), error) {
+		func(helperCtx context.Context, wake func()) (func(), <-chan error, error) {
 			subscription, err := c.Subscribe(helperCtx, route, func(context.Context, StreamCommitNotification) error { wake(); return nil })
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			return subscription.Unsubscribe, nil
+			return subscription.Unsubscribe, subscription.Completion(), nil
 		},
 		func(helperCtx context.Context) (managedPollResult[[]StreamRecord], error) {
 			pollOptions := append([]StreamReadOption{}, opts...)

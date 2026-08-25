@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/cntryl/fitz-go/v2/internal/core/iter"
 	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
@@ -40,6 +41,10 @@ func parsePlainStreamResponse(payload []byte) (bool, []byte, error) {
 		return false, nil, errors.New("trailing bytes after stream error")
 	}
 	return false, nil, errors.New(message)
+}
+
+func parseStreamReadResponse(payload []byte) (bool, []byte, error) {
+	return connection.ParseStandardResponse(payload)
 }
 
 // Record represents a single stream record.
@@ -125,10 +130,11 @@ type CommitHandler func(context.Context, CommitNotification) error
 
 // Subscription represents a stream subscription.
 type Subscription struct {
-	subID     uint64
-	handlerID uint64
-	pattern   string
-	client    *client
+	subID      uint64
+	handlerID  uint64
+	pattern    string
+	client     *client
+	completion *subscriptions.Completion
 }
 
 // Unsubscribe removes the subscription.
@@ -136,6 +142,13 @@ func (sub *Subscription) Unsubscribe() {
 	if sub.client != nil {
 		sub.client.unsubscribe(sub)
 	}
+}
+
+func (sub *Subscription) Completion() <-chan error {
+	if sub == nil || sub.completion == nil {
+		return nil
+	}
+	return sub.completion.Done()
 }
 
 // StreamSession is a write session for appending to a stream.
@@ -406,7 +419,7 @@ func (c *client) ReadPage(ctx context.Context, route string, fromOffset uint64, 
 			return fmt.Errorf("read request failed: %w", err)
 		}
 
-		success, remaining, err := parsePlainStreamResponse(resp)
+		success, remaining, err := parseStreamReadResponse(resp)
 		if err != nil {
 			return fmt.Errorf("read failed: %w", mapStreamError(err))
 		}
@@ -455,7 +468,7 @@ func (c *client) Peek(ctx context.Context, route string) (*Record, error) {
 			return fmt.Errorf("peek request failed: %w", err)
 		}
 
-		success, remaining, err := connection.ParseStandardResponse(resp)
+		success, remaining, err := parsePlainStreamResponse(resp)
 		if err != nil {
 			return fmt.Errorf("peek failed: %w", mapStreamError(err))
 		}
@@ -885,8 +898,8 @@ func (c *client) initNotifyHandler() {
 
 // handleNotify is called by the mux when a NOTIFY (609) frame arrives.
 func (c *client) handleNotify(subID uint64, route string, payload []byte) {
-	handlers := c.subscriptions.Handlers(subID)
-	if len(handlers) == 0 {
+	registrations := c.subscriptions.Registrations(subID)
+	if len(registrations) == 0 {
 		return
 	}
 
@@ -917,7 +930,8 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 
-	for _, handler := range handlers {
+	for _, registration := range registrations {
+		handler := registration.Handler
 		if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.stream.handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 			if err := handler(handlerCtx, notif); err != nil {
 				span.RecordError(err)
@@ -930,6 +944,8 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 			attribute.Int64("fitz.subscription_id", int64(subID)),
 			attribute.String("fitz.route", route),
 		)) {
+			registration.Completion.Complete(&coreerrors.AsyncHandlerOverflowError{Domain: "stream", SubscriptionID: subID})
+			go c.unsubscribe(&Subscription{subID: subID, handlerID: registration.HandlerID, pattern: registration.Pattern, client: c, completion: registration.Completion})
 			if log := c.conn.Logger(); log != nil {
 				log.Warn("stream notify handler dropped", "route", route, "sub_id", subID, "reason", "async handler queue full")
 			}
@@ -961,10 +977,11 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler CommitHa
 		return nil, err
 	}
 	return &Subscription{
-		subID:     subID,
-		handlerID: handlerID,
-		pattern:   pattern,
-		client:    c,
+		subID:      subID,
+		handlerID:  handlerID,
+		pattern:    pattern,
+		client:     c,
+		completion: c.subscriptions.Completion(pattern, handlerID),
 	}, nil
 }
 

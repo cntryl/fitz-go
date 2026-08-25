@@ -54,6 +54,26 @@ func TestShouldSendWireUnsubscribeOnlyForLastHandlerWhenUnsubscribeCalled(t *tes
 	assert.Empty(t, registry.Handlers(subID))
 }
 
+func TestShouldCompleteLocalHandlerGivenUnsubscribeWhenMultipleHandlersShareWireSubscription(t *testing.T) {
+	registry := NewRegistry[string]()
+	_, firstHandlerID, err := registry.Subscribe("stream://realm/area/resource", "first", func(string) (uint64, error) { return 7, nil })
+	require.NoError(t, err)
+	_, _, err = registry.Subscribe("stream://realm/area/resource", "second", func(string) (uint64, error) { return 7, nil })
+	require.NoError(t, err)
+	completion := registry.Completion("stream://realm/area/resource", firstHandlerID)
+
+	assert.False(t, registry.Unsubscribe("stream://realm/area/resource", firstHandlerID))
+	assert.NoError(t, <-completion.Done())
+}
+
+func TestShouldReturnNoCompletionGivenUnknownHandler(t *testing.T) {
+	registry := NewRegistry[string]()
+	_, handlerID, err := registry.Subscribe("stream://realm/area/resource", "first", func(string) (uint64, error) { return 7, nil })
+	require.NoError(t, err)
+
+	assert.Nil(t, registry.Completion("stream://realm/area/resource", handlerID+1))
+}
+
 func TestShouldPreserveHandlersGivenReconnectWhenRestoreCalled(t *testing.T) {
 	registry := NewRegistry[string]()
 	_, firstHandlerID, err := registry.Subscribe("queue://realm/area/resource", "first", func(string) (uint64, error) {

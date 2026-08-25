@@ -80,6 +80,7 @@ const (
 	ErrCodeScheduleInvalidSubscription = uint32(coreerrors.ScheduleInvalidSubscription)
 	ErrCodeScheduleSubscriptionLimit   = uint32(coreerrors.ScheduleSubscriptionLimit)
 	ErrCodeScheduleInvalidDeliveryMode = uint32(coreerrors.ScheduleInvalidDeliveryMode)
+	ErrCodeScheduleBackendError        = uint32(coreerrors.ScheduleBackendError)
 )
 
 // DomainError is a server-returned error carrying a numeric code and message.
@@ -96,6 +97,14 @@ type DomainError = coreerrors.DomainError
 // from server-returned domain errors.
 type TransportError = transport.TransportError
 
+// AsyncHandlerOverflowError terminates a callback subscription when its
+// configured local async-handler queue cannot accept another notification.
+type AsyncHandlerOverflowError = coreerrors.AsyncHandlerOverflowError
+
+// ErrAsyncHandlerOverflow supports errors.Is checks for callback-subscription
+// queue saturation.
+var ErrAsyncHandlerOverflow = coreerrors.ErrAsyncHandlerOverflow
+
 // IsRetryable reports whether err indicates a transient, retryable condition.
 // The following server-signaled situations are considered retryable:
 //   - KV isolation conflict (concurrent transaction collision)      [1004]
@@ -106,6 +115,7 @@ type TransportError = transport.TransportError
 //   - RPC worker not found (route may not yet be registered)        [6002]
 //   - RPC backpressure                                              [6003]
 //   - RPC route not registered (transient routing gap)              [6004]
+//   - Schedule backend unavailable or saturated                    [7010]
 func IsRetryable(err error) bool {
 	var de *coreerrors.DomainError
 	if !errors.As(err, &de) {
@@ -119,7 +129,8 @@ func IsRetryable(err error) bool {
 		ErrCodeRpcTimeout,
 		ErrCodeRpcWorkerNotFound,
 		ErrCodeRpcBackpressure,
-		ErrCodeRpcRouteNotRegistered:
+		ErrCodeRpcRouteNotRegistered,
+		ErrCodeScheduleBackendError:
 		return true
 	}
 	return false

@@ -9,6 +9,8 @@ import (
 
 	"github.com/cntryl/fitz-go/v2/internal/core/connection"
 	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/v2/internal/core/types"
 	"github.com/cntryl/fitz-go/v2/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -24,15 +26,23 @@ type ChangeNotification struct {
 type ChangeHandler func(context.Context, ChangeNotification) error
 
 type Subscription struct {
-	handlerID uint64
-	pattern   string
-	client    *client
+	handlerID  uint64
+	pattern    string
+	client     *client
+	completion *subscriptions.Completion
 }
 
 func (s *Subscription) Unsubscribe() {
 	if s != nil && s.client != nil {
 		s.client.unsubscribe(s)
 	}
+}
+
+func (s *Subscription) Completion() <-chan error {
+	if s == nil || s.completion == nil {
+		return nil
+	}
+	return s.completion.Done()
 }
 
 // Subscribe registers a handler for exact KV routes matched by pattern.
@@ -58,7 +68,7 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler ChangeHa
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
-	return &Subscription{handlerID: handlerID, pattern: pattern, client: c}, nil
+	return &Subscription{handlerID: handlerID, pattern: pattern, client: c, completion: c.subscriptions.Completion(pattern, handlerID)}, nil
 }
 
 func (c *client) initNotifyHandler() {
@@ -75,7 +85,8 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	}
 	notification := ChangeNotification{Route: route, MutationCount: binary.BigEndian.Uint64(payload)}
 	conn := c.currentConnection()
-	for _, handler := range c.subscriptions.Handlers(subID) {
+	for _, registration := range c.subscriptions.Registrations(subID) {
+		handler := registration.Handler
 		if !conn.LaunchAsyncHandler(conn.LifecycleContext(), "fitz.kv.handler", conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
 			if err := handler(handlerCtx, notification); err != nil {
 				span.RecordError(err)
@@ -85,7 +96,8 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 			attribute.Int64("fitz.subscription_id", int64(subID)),
 			attribute.String("fitz.route", route),
 		)) {
-			return
+			registration.Completion.Complete(&coreerrors.AsyncHandlerOverflowError{Domain: "kv", SubscriptionID: subID})
+			go c.unsubscribe(&Subscription{handlerID: registration.HandlerID, pattern: registration.Pattern, client: c, completion: registration.Completion})
 		}
 	}
 }

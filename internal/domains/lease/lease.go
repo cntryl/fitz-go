@@ -14,6 +14,7 @@ import (
 	"github.com/cntryl/fitz-go/v2/internal/core/connection"
 	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
+	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/v2/internal/core/types"
 	"github.com/cntryl/fitz-go/v2/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
@@ -148,10 +149,11 @@ type ChangeHandler func(ctx context.Context, notif ChangeNotification) error
 // Subscription represents an active lease change subscription.
 // Call Unsubscribe to stop receiving and release the subscription.
 type Subscription struct {
-	subID   uint64
-	route   string
-	client  *client
-	handler ChangeHandler
+	subID      uint64
+	route      string
+	client     *client
+	handler    ChangeHandler
+	completion *subscriptions.Completion
 }
 
 // Unsubscribe removes this subscription.
@@ -159,6 +161,13 @@ func (s *Subscription) Unsubscribe() {
 	if s.client != nil {
 		s.client.unsubscribe(s)
 	}
+}
+
+func (s *Subscription) Completion() <-chan error {
+	if s == nil || s.completion == nil {
+		return nil
+	}
+	return s.completion.Done()
 }
 
 // Client is the Lease domain client interface.
@@ -515,6 +524,8 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 		attribute.Int64("fitz.subscription_id", int64(subID)),
 		attribute.String("fitz.route", route),
 	)) {
+		sub.completion.Complete(&coreerrors.AsyncHandlerOverflowError{Domain: "lease", SubscriptionID: subID})
+		go c.unsubscribe(sub)
 		if log := c.conn.Logger(); log != nil {
 			log.Warn("lease notify handler dropped", "route", route, "sub_id", subID, "reason", "async handler queue full")
 		}
@@ -548,8 +559,13 @@ func (c *client) Subscribe(ctx context.Context, route string, handler ChangeHand
 // unsubscribe removes a subscription.
 func (c *client) unsubscribe(sub *Subscription) {
 	c.mu.Lock()
+	if _, exists := c.subscriptions[sub.subID]; !exists {
+		c.mu.Unlock()
+		return
+	}
 	delete(c.subscriptions, sub.subID)
 	c.mu.Unlock()
+	sub.completion.Complete(nil)
 	c.conn.AddSubscriptions(-1)
 
 	// Send UNSUBSCRIBE to server (best-effort, ignore errors).
@@ -576,13 +592,13 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	c.mu.RLock()
 	snapshot := make([]*Subscription, 0, len(c.subscriptions))
 	for _, sub := range c.subscriptions {
-		snapshot = append(snapshot, &Subscription{route: sub.route, handler: sub.handler, client: c})
+		snapshot = append(snapshot, &Subscription{route: sub.route, handler: sub.handler, client: c, completion: sub.completion})
 	}
 	c.mu.RUnlock()
 
 	restored := make(map[uint64]*Subscription, len(snapshot))
 	for _, sub := range snapshot {
-		restoredSub, err := c.restoreSubscribe(ctx, sub.route, sub.handler)
+		restoredSub, err := c.restoreSubscribe(ctx, sub.route, sub.handler, sub.completion)
 		if err != nil {
 			for _, restoredSub := range restored {
 				c.rollbackRestoredSubscription(restoredSub)
@@ -598,7 +614,7 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	return nil
 }
 
-func (c *client) restoreSubscribe(ctx context.Context, route string, handler ChangeHandler) (*Subscription, error) {
+func (c *client) restoreSubscribe(ctx context.Context, route string, handler ChangeHandler, completion *subscriptions.Completion) (*Subscription, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseSubscribe, subscribePayloadWriter(route))
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
@@ -622,10 +638,11 @@ func (c *client) restoreSubscribe(ctx context.Context, route string, handler Cha
 	c.conn.AddSubscriptions(1)
 
 	return &Subscription{
-		subID:   subID,
-		route:   route,
-		client:  c,
-		handler: handler,
+		subID:      subID,
+		route:      route,
+		client:     c,
+		handler:    handler,
+		completion: completion,
 	}, nil
 }
 
@@ -669,10 +686,11 @@ func (c *client) subscribe(ctx context.Context, route string, handler ChangeHand
 	c.conn.AddSubscriptions(1)
 
 	sub := &Subscription{
-		subID:   subID,
-		route:   route,
-		client:  c,
-		handler: handler,
+		subID:      subID,
+		route:      route,
+		client:     c,
+		handler:    handler,
+		completion: subscriptions.NewCompletion(),
 	}
 	c.mu.Lock()
 	c.subscriptions[subID] = sub
