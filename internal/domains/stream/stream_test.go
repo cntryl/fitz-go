@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"sync"
@@ -12,6 +13,38 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestShouldDecodePlainErrorMessageGivenLastResponseWhenParsePlainStreamResponseCalled(t *testing.T) {
+	message := "last failed without a numeric READ code"
+	payload := make([]byte, 5+len(message))
+	payload[0] = 1
+	binary.BigEndian.PutUint32(payload[1:5], uint32(len(message)))
+	copy(payload[5:], message)
+
+	success, remaining, err := parsePlainStreamResponse(payload)
+
+	assert.False(t, success)
+	assert.Nil(t, remaining)
+	assert.EqualError(t, err, message)
+}
+
+func TestShouldPreserveCodedErrorGivenReadResponseWhenParseStreamReadResponseCalled(t *testing.T) {
+	message := "stream read failed"
+	payload := make([]byte, 9+len(message))
+	payload[0] = 1
+	binary.BigEndian.PutUint32(payload[1:5], uint32(coreerrors.StreamResourceNotFound))
+	binary.BigEndian.PutUint32(payload[5:9], uint32(len(message)))
+	copy(payload[9:], message)
+
+	success, remaining, err := parseStreamReadResponse(payload)
+
+	assert.False(t, success)
+	assert.Nil(t, remaining)
+	var domainErr *coreerrors.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, coreerrors.ErrorCode(coreerrors.StreamResourceNotFound), domainErr.Code)
+	assert.Equal(t, message, domainErr.Message)
+}
 
 type staleStreamTransport struct {
 	closed    chan struct{}

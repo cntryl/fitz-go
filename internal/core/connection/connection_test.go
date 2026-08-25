@@ -156,6 +156,26 @@ func TestShouldReturnConfiguredAsyncHandlerMaxConcurrencyGivenConfigWhenNewCalle
 	assert.Equal(t, 8, conn.AsyncHandlerMaxConcurrency())
 }
 
+func TestShouldReturnIndependentDefaultAsyncHandlerQueueCapacityGivenUnsetConfigWhenNewCalled(t *testing.T) {
+	cfg := connection.DefaultConfig()
+	cfg.AsyncHandlerQueueCapacity = 0
+	cfg.AsyncHandlerMaxConcurrency = 3
+	cfg.MaxRequestQueueSize = 7
+
+	conn := connection.New(&testkit.MockTransport{}, cfg)
+
+	assert.Equal(t, 1024, conn.AsyncHandlerQueueCapacity())
+}
+
+func TestShouldReturnConfiguredAsyncHandlerQueueCapacityGivenConfigWhenNewCalled(t *testing.T) {
+	cfg := connection.DefaultConfig()
+	cfg.AsyncHandlerQueueCapacity = 19
+
+	conn := connection.New(&testkit.MockTransport{}, cfg)
+
+	assert.Equal(t, 19, conn.AsyncHandlerQueueCapacity())
+}
+
 func TestShouldUseConfiguredMeterGivenConfigWhenNewCalled(t *testing.T) {
 	// Arrange
 	transport := &testkit.MockTransport{}
@@ -627,6 +647,12 @@ func TestShouldClassifyRetryableGivenTransportErrorWhenRetryPolicyEvaluated(t *t
 
 func TestShouldClassifyRetryableGivenIsolationConflictWhenRetryPolicyEvaluated(t *testing.T) {
 	err := coreerrors.NewDomainError(coreerrors.KvIsolationConflict, "isolation conflict")
+
+	assert.True(t, connection.IsTransientRetryable(err))
+}
+
+func TestShouldClassifyRetryableGivenScheduleBackendErrorWhenRetryPolicyEvaluated(t *testing.T) {
+	err := coreerrors.NewDomainError(coreerrors.ScheduleBackendError, "backend busy")
 
 	assert.True(t, connection.IsTransientRetryable(err))
 }

@@ -12,9 +12,50 @@ import (
 	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/v2/internal/protocol"
+	"github.com/cntryl/fitz-go/v2/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestShouldTerminateSubscriptionWithTypedErrorGivenAsyncHandlerQueueOverflow(t *testing.T) {
+	conn := connection.New(testkit.NewMockTransport(), connection.Config{
+		AsyncHandlerMaxConcurrency: 1,
+		AsyncHandlerQueueCapacity:  1,
+	})
+	t.Cleanup(func() { _ = conn.Close() })
+	c := NewClient(conn).(*client)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls sync.Once
+	subID, handlerID, err := c.subscriptions.Subscribe("notice://realm/area/resource", func(context.Context, NoticeMsg) error {
+		calls.Do(func() { close(started) })
+		<-release
+		return nil
+	}, func(string) (uint64, error) { return 42, nil })
+	require.NoError(t, err)
+	completion := c.subscriptions.Completion("notice://realm/area/resource", handlerID)
+
+	c.handleNotify(subID, "notice://realm/area/resource", []byte("first"))
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first notice handler did not start")
+	}
+	c.handleNotify(subID, "notice://realm/area/resource", []byte("queued"))
+	c.handleNotify(subID, "notice://realm/area/resource", []byte("overflow"))
+
+	select {
+	case terminalErr := <-completion.Done():
+		require.ErrorIs(t, terminalErr, coreerrors.ErrAsyncHandlerOverflow)
+		var overflow *coreerrors.AsyncHandlerOverflowError
+		require.ErrorAs(t, terminalErr, &overflow)
+		assert.Equal(t, "notice", overflow.Domain)
+		assert.Equal(t, uint64(42), overflow.SubscriptionID)
+	case <-time.After(time.Second):
+		t.Fatal("subscription completion did not report queue overflow")
+	}
+	close(release)
+}
 
 type scriptedRestoreTransport struct {
 	mu      sync.Mutex

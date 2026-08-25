@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cntryl/fitz-go/v2/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/v2/internal/core/types"
@@ -31,10 +32,11 @@ type NoticeHandler func(ctx context.Context, msg NoticeMsg) error
 // Subscription represents an active notice subscription.
 // Call Unsubscribe to stop receiving and release the subscription.
 type Subscription struct {
-	subID     uint64
-	handlerID uint64
-	route     string
-	client    *client
+	subID      uint64
+	handlerID  uint64
+	route      string
+	client     *client
+	completion *subscriptions.Completion
 }
 
 // Unsubscribe removes this subscription.
@@ -42,6 +44,13 @@ func (s *Subscription) Unsubscribe() {
 	if s.client != nil {
 		s.client.unsubscribe(s)
 	}
+}
+
+func (s *Subscription) Completion() <-chan error {
+	if s == nil || s.completion == nil {
+		return nil
+	}
+	return s.completion.Done()
 }
 
 // Client is the Notice domain client interface.
@@ -93,13 +102,14 @@ func (c *client) initNotifyHandler() {
 
 // handleNotify is called by the mux when a NOTIFY (504) frame arrives.
 func (c *client) handleNotify(subID uint64, route string, payload []byte) {
-	handlers := c.subscriptions.Handlers(subID)
-	if len(handlers) == 0 {
+	registrations := c.subscriptions.Registrations(subID)
+	if len(registrations) == 0 {
 		return
 	}
 
 	lifecycleCtx := c.currentConn().LifecycleContext()
-	for _, handler := range handlers {
+	for _, registration := range registrations {
+		handler := registration.Handler
 		msg := NoticeMsg{
 			Route: route,
 			Body:  append([]byte(nil), payload...),
@@ -116,6 +126,8 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 			attribute.Int64("fitz.subscription_id", int64(subID)),
 			attribute.String("fitz.route", route),
 		)) {
+			registration.Completion.Complete(&coreerrors.AsyncHandlerOverflowError{Domain: "notice", SubscriptionID: subID})
+			go c.unsubscribe(&Subscription{subID: subID, handlerID: registration.HandlerID, route: registration.Pattern, client: c, completion: registration.Completion})
 			if log := c.currentConn().Logger(); log != nil {
 				log.Warn("notice handler dropped", "route", route, "sub_id", subID, "reason", "async handler queue full")
 			}
@@ -168,10 +180,11 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHa
 		return nil, err
 	}
 	return &Subscription{
-		subID:     subID,
-		handlerID: handlerID,
-		route:     pattern,
-		client:    c,
+		subID:      subID,
+		handlerID:  handlerID,
+		route:      pattern,
+		client:     c,
+		completion: c.subscriptions.Completion(pattern, handlerID),
 	}, nil
 }
 

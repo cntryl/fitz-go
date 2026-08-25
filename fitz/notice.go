@@ -30,6 +30,15 @@ func (s *NoticeSubscription) Unsubscribe() {
 	}
 }
 
+// Completion yields nil after unsubscribe or a typed terminal error when local
+// callback delivery can no longer continue.
+func (s *NoticeSubscription) Completion() <-chan error {
+	if s == nil || s.inner == nil {
+		return nil
+	}
+	return s.inner.Completion()
+}
+
 type NoticeClient interface {
 	Publish(ctx context.Context, route string, body []byte) error
 	Subscribe(ctx context.Context, pattern string, handler NoticeHandler) (*NoticeSubscription, error)

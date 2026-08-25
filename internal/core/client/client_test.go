@@ -438,6 +438,20 @@ func TestShouldUseDefaultAsyncHandlerMaxConcurrencyGivenNoOptionWhenNewClientCre
 	assert.Equal(t, 256, c.config.AsyncHandlerMaxConcurrency)
 }
 
+func TestShouldUseIndependentDefaultAsyncHandlerQueueCapacityGivenNoOptionWhenNewClientCreated(t *testing.T) {
+	c := NewClientWithOptions("localhost:4091", nil, WithMaxRequestQueueSize(7), WithAsyncHandlerMaxConcurrency(3))
+
+	require.NotNil(t, c.config)
+	assert.Equal(t, 1024, c.config.AsyncHandlerQueueCapacity)
+}
+
+func TestShouldApplyAsyncHandlerQueueCapacityOptionGivenOverrideWhenNewClientWithOptionsCalled(t *testing.T) {
+	c := NewClientWithOptions("localhost:4091", nil, WithAsyncHandlerQueueCapacity(19))
+
+	require.NotNil(t, c.config)
+	assert.Equal(t, 19, c.config.AsyncHandlerQueueCapacity)
+}
+
 func TestShouldUseDefaultMaxInFlightRequestsGivenNoOptionWhenNewClientCreated(t *testing.T) {
 	// Act
 	c := NewClient("localhost:4091", nil)

@@ -63,6 +63,9 @@ Use one control plane for request lifetime: `context.Context`.
 
 - RPC calls use context deadlines/cancellation only.
 - KV/Schedule/Notice/Queue/Lease/Stream subscription handlers return `error`.
+- Callback subscriptions expose `Completion()`: it yields `nil` after normal
+  unsubscribe, or a typed `*fitz.AsyncHandlerOverflowError` when the local
+  callback queue saturates and that local subscription is terminated.
 - Streaming iterators should be closed when no longer needed.
 - Clients validate route shape locally: scheme, segment count, empty segments,
   and method-specific wildcard placement. Route existence, permissions,
@@ -89,7 +92,10 @@ Reconnect guarantees:
 
 Production defaults also include heartbeat (`10s` interval, `30s` timeout),
 safe automatic retries for replayable reads, and a bounded outbound request
-queue of `1024`. See [docs/PUBLIC_CONTRACT.md](docs/PUBLIC_CONTRACT.md).
+queue of `1024`. Detached callbacks also use an independent queue capacity of
+`1024`, configurable with `fitz.WithAsyncHandlerQueueCapacity`; changing it does
+not change request admission or callback concurrency. See
+[docs/PUBLIC_CONTRACT.md](docs/PUBLIC_CONTRACT.md).
 
 The broker-backed test suite verifies those guarantees through a live disconnect proxy rather than by closing one client and creating another.
 

@@ -69,6 +69,7 @@ func TestErrorCodeRegistry(t *testing.T) {
 		{"ScheduleInvalidSubscription", ScheduleInvalidSubscription, 7006},
 		{"ScheduleSubscriptionLimit", ScheduleSubscriptionLimit, 7007},
 		{"ScheduleInvalidDeliveryMode", ScheduleInvalidDeliveryMode, 7008},
+		{"ScheduleBackendError", ScheduleBackendError, 7010},
 	}
 
 	for _, tc := range cases {

@@ -98,6 +98,13 @@ func (s *LeaseSubscription) Unsubscribe() {
 	}
 }
 
+func (s *LeaseSubscription) Completion() <-chan error {
+	if s == nil || s.inner == nil {
+		return nil
+	}
+	return s.inner.Completion()
+}
+
 type LeaseInfo struct {
 	Held             bool
 	OwnerID          string

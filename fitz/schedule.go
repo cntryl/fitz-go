@@ -43,6 +43,13 @@ func (s *ScheduleSubscription) Unsubscribe() {
 	}
 }
 
+func (s *ScheduleSubscription) Completion() <-chan error {
+	if s == nil || s.inner == nil {
+		return nil
+	}
+	return s.inner.Completion()
+}
+
 type ScheduleClient interface {
 	Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (id string, err error)
 	Cancel(ctx context.Context, route string) error
@@ -111,14 +118,14 @@ func (c *scheduleClient) Subscribe(ctx context.Context, pattern string, handler 
 // WaitForNotifications returns an iterator of schedule fire notifications.
 func (c *scheduleClient) WaitForNotifications(ctx context.Context, route string) (Iterator[ScheduleNotification], error) {
 	return startManagedPushIterator(ctx, 16,
-		func(helperCtx context.Context, emit func(ScheduleNotification) error) (func(), error) {
+		func(helperCtx context.Context, emit func(ScheduleNotification) error) (func(), <-chan error, error) {
 			subscription, err := c.Subscribe(helperCtx, route, func(_ context.Context, notification ScheduleNotification) error {
 				return emit(notification)
 			})
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			return subscription.Unsubscribe, nil
+			return subscription.Unsubscribe, subscription.Completion(), nil
 		})
 }
 

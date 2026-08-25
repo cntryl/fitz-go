@@ -23,6 +23,42 @@ type Registry[H any] struct {
 	restoreBySubIDScratch  map[uint64]*entry[H]
 }
 
+// Completion reports the terminal state of a local subscription handler.
+// The channel yields exactly one result: nil after an explicit unsubscribe,
+// or the terminal error that caused the handler to be removed.
+type Completion struct {
+	once sync.Once
+	done chan error
+}
+
+func NewCompletion() *Completion {
+	return &Completion{done: make(chan error, 1)}
+}
+
+func (c *Completion) Done() <-chan error {
+	if c == nil {
+		return nil
+	}
+	return c.done
+}
+
+func (c *Completion) Complete(err error) {
+	if c == nil {
+		return
+	}
+	c.once.Do(func() {
+		c.done <- err
+		close(c.done)
+	})
+}
+
+type Registration[H any] struct {
+	Pattern    string
+	HandlerID  uint64
+	Handler    H
+	Completion *Completion
+}
+
 type pendingSubscribe struct {
 	done chan struct{}
 }
@@ -30,7 +66,7 @@ type pendingSubscribe struct {
 type entry[H any] struct {
 	pattern  string
 	subID    uint64
-	handlers map[uint64]H
+	handlers map[uint64]Registration[H]
 }
 
 type restoreEntry struct {
@@ -58,7 +94,9 @@ func (r *Registry[H]) Subscribe(pattern string, handler H, wireSubscribe func(st
 
 		if existing, ok := r.byPattern[pattern]; ok {
 			handlerID := r.nextHandler()
-			existing.handlers[handlerID] = handler
+			existing.handlers[handlerID] = Registration[H]{
+				Pattern: pattern, HandlerID: handlerID, Handler: handler, Completion: NewCompletion(),
+			}
 			r.mu.Unlock()
 			return existing.subID, handlerID, nil
 		}
@@ -93,8 +131,10 @@ func (r *Registry[H]) Subscribe(pattern string, handler H, wireSubscribe func(st
 		registered := &entry[H]{
 			pattern: pattern,
 			subID:   subID,
-			handlers: map[uint64]H{
-				handlerID: handler,
+			handlers: map[uint64]Registration[H]{
+				handlerID: {
+					Pattern: pattern, HandlerID: handlerID, Handler: handler, Completion: NewCompletion(),
+				},
 			},
 		}
 		r.byPattern[pattern] = registered
@@ -116,6 +156,11 @@ func (r *Registry[H]) Unsubscribe(pattern string, handlerID uint64) bool {
 		return false
 	}
 
+	handler, exists := registered.handlers[handlerID]
+	if !exists {
+		return false
+	}
+	handler.Completion.Complete(nil)
 	delete(registered.handlers, handlerID)
 	if len(registered.handlers) != 0 {
 		return false
@@ -136,10 +181,40 @@ func (r *Registry[H]) Handlers(subID uint64) []H {
 	}
 
 	handlers := make([]H, 0, len(registered.handlers))
-	for _, handler := range registered.handlers {
-		handlers = append(handlers, handler)
+	for _, registration := range registered.handlers {
+		handlers = append(handlers, registration.Handler)
 	}
 	return handlers
+}
+
+func (r *Registry[H]) Registrations(subID uint64) []Registration[H] {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	registered, ok := r.bySubID[subID]
+	if !ok {
+		return nil
+	}
+
+	registrations := make([]Registration[H], 0, len(registered.handlers))
+	for _, registration := range registered.handlers {
+		registrations = append(registrations, registration)
+	}
+	return registrations
+}
+
+func (r *Registry[H]) Completion(pattern string, handlerID uint64) *Completion {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	registered, ok := r.byPattern[pattern]
+	if !ok {
+		return nil
+	}
+	registration, ok := registered.handlers[handlerID]
+	if !ok {
+		return nil
+	}
+	return registration.Completion
 }
 
 func (r *Registry[H]) Restore(wireSubscribe func(string) (uint64, error), wireUnsubscribe func(string, uint64) error) error {
