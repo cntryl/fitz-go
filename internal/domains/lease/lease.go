@@ -13,6 +13,7 @@ import (
 
 	"github.com/cntryl/fitz-go/v2/internal/core/connection"
 	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
+	"github.com/cntryl/fitz-go/v2/internal/core/iter"
 	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/v2/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/v2/internal/core/types"
@@ -153,6 +154,7 @@ type Subscription struct {
 	route      string
 	client     *client
 	handler    ChangeHandler
+	preNotify  func(ChangeNotification)
 	completion *subscriptions.Completion
 }
 
@@ -181,8 +183,48 @@ type Client interface {
 	Query(ctx context.Context, route string) (*LeaseInfo, error)
 
 	// Subscribe registers a handler for lease change notifications (released or expired).
+	// Route accepts a wildcard selector (whole-segment "*" in any position, or a single
+	// trailing "**" alias) in addition to an exact lease://realm/area/resource route.
 	// Returns a Subscription that can be used to unsubscribe.
 	Subscribe(ctx context.Context, route string, handler ChangeHandler) (*Subscription, error)
+
+	// List returns an iterator over lease entries matching pattern (wildcards allowed,
+	// per the same grammar as Subscribe). The iterator transparently pages through the
+	// broker's cursor-based LIST protocol.
+	List(ctx context.Context, pattern string, opts ...ListOption) (iter.Iterator[LeaseEntry], error)
+
+	// Observe establishes a race-safe, continuously reconciled inventory
+	// observer for lease entries matching pattern (wildcards allowed, per the
+	// same grammar as Subscribe). The returned InventoryObserver owns the
+	// subscribe-then-list bootstrap sequence, full LIST reconciliation after
+	// invalidations, periodic reconciliation, and reconnect recovery; callers never
+	// need to hand-roll this. Call Close on the observer when done.
+	Observe(ctx context.Context, pattern string, opts ...ObserveOption) (*InventoryObserver, error)
+}
+
+// LeaseEntry describes one lease returned by List.
+type LeaseEntry struct {
+	Route             string
+	OwnerID           string // The logical owner_id passed to ACQUIRE (never a raw session id).
+	HolderIncarnation uint64 // Opaque; stable for one live session, distinct per session/reconnect.
+	AcquiredAt        string // RFC3339 timestamp string.
+	ExpiresInSecs     uint64
+	Renewals          uint32
+}
+
+// ListOptions configures a List call.
+type ListOptions struct {
+	// Limit caps the page size fetched per wire round trip. 0 uses the server
+	// default page size; the server clamps any requested limit to its maximum.
+	Limit uint32
+}
+
+// ListOption configures a List call.
+type ListOption func(*ListOptions)
+
+// WithListLimit sets the page size requested per wire round trip.
+func WithListLimit(limit uint32) ListOption {
+	return func(o *ListOptions) { o.Limit = limit }
 }
 
 type AcquireOptions struct {
@@ -210,6 +252,13 @@ type client struct {
 	acquireGate      chan struct{}
 	acquireWaitersMu sync.Mutex
 	acquireWaiters   []*acquireWaiter
+
+	// reconnectHooks are invoked after RestoreSubscriptions successfully
+	// re-establishes subscriptions on a replacement connection. Used by
+	// InventoryObserver to invalidate and re-bootstrap its view on reconnect
+	// without inventing a separate reconnect-signal mechanism.
+	reconnectHooks map[uint64]func(ctx context.Context)
+	nextHookID     uint64
 }
 
 type acquireWaiter struct {
@@ -501,6 +550,10 @@ func (c *client) initNotifyHandler() {
 func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 	c.mu.RLock()
 	sub, ok := c.subscriptions[subID]
+	var preNotify func(ChangeNotification)
+	if ok {
+		preNotify = sub.preNotify
+	}
 	c.mu.RUnlock()
 
 	if !ok {
@@ -509,6 +562,13 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 
 	notif := ChangeNotification{
 		Route: route,
+	}
+	if preNotify != nil {
+		// Inventory observers must record an invalidation synchronously at
+		// dispatch time. Their user-facing handler still runs through the
+		// bounded async lane below, but cannot then lag behind a LIST response
+		// and briefly expose a stale bootstrap as ready.
+		preNotify(notif)
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
 
@@ -533,21 +593,23 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 }
 
 // Subscribe registers a handler for lease change notifications.
-// Route must be an exact lease route (lease://realm/area/resource).
+// Route accepts an exact lease route (lease://realm/area/resource) or a
+// wildcard selector using whole-segment "*" and non-adjacent "**" segments
+// whose language contains depth-three Lease routes.
 func (c *client) Subscribe(ctx context.Context, route string, handler ChangeHandler) (*Subscription, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.lease.Subscribe", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
 		log.DebugContext(ctx, "lease.Subscribe", "route", route)
 	}
-	if err := types.ValidateFixedRoute(route, "lease", 3); err != nil {
+	if err := validateLeaseSubscribeSelector(route); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("invalid route: %w", err)
 	}
 	c.initNotifyHandler()
 
-	sub, err := c.subscribe(ctx, route, handler)
+	sub, err := c.subscribe(ctx, route, handler, nil)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -592,68 +654,81 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 	c.mu.RLock()
 	snapshot := make([]*Subscription, 0, len(c.subscriptions))
 	for _, sub := range c.subscriptions {
-		snapshot = append(snapshot, &Subscription{route: sub.route, handler: sub.handler, client: c, completion: sub.completion})
+		snapshot = append(snapshot, sub)
 	}
 	c.mu.RUnlock()
 
-	restored := make(map[uint64]*Subscription, len(snapshot))
+	type restoredEntry struct {
+		sub   *Subscription
+		subID uint64
+	}
+	restored := make([]restoredEntry, 0, len(snapshot))
 	for _, sub := range snapshot {
-		restoredSub, err := c.restoreSubscribe(ctx, sub.route, sub.handler, sub.completion)
+		newSubID, err := c.restoreSubscribe(ctx, sub.route)
 		if err != nil {
-			for _, restoredSub := range restored {
-				c.rollbackRestoredSubscription(restoredSub)
+			for _, entry := range restored {
+				c.rollbackRestoredSubscription(entry.sub.route)
 			}
 			return err
 		}
-		restored[restoredSub.subID] = restoredSub
+		restored = append(restored, restoredEntry{sub: sub, subID: newSubID})
 	}
 
 	c.mu.Lock()
-	c.subscriptions = restored
+	newMap := make(map[uint64]*Subscription, len(restored))
+	for _, entry := range restored {
+		// Mutate the existing *Subscription in place (rather than allocating a
+		// replacement) so any handle a caller is holding (e.g. to call
+		// Unsubscribe, or an InventoryObserver tracking its own subscription)
+		// remains valid across a reconnect instead of silently going stale.
+		entry.sub.subID = entry.subID
+		newMap[entry.subID] = entry.sub
+	}
+	c.subscriptions = newMap
+	hooks := make([]func(context.Context), 0, len(c.reconnectHooks))
+	for _, hook := range c.reconnectHooks {
+		hooks = append(hooks, hook)
+	}
 	c.mu.Unlock()
+
+	for _, hook := range hooks {
+		hook(ctx)
+	}
 	return nil
 }
 
-func (c *client) restoreSubscribe(ctx context.Context, route string, handler ChangeHandler, completion *subscriptions.Completion) (*Subscription, error) {
+// restoreSubscribe re-issues SUBSCRIBE for route on the (already replaced)
+// connection and returns the new subscription_id.
+func (c *client) restoreSubscribe(ctx context.Context, route string) (uint64, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseSubscribe, subscribePayloadWriter(route))
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
+		return 0, fmt.Errorf("SUBSCRIBE request failed: %w", err)
 	}
 
 	success, remaining, err := connection.ParseStandardResponse(resp)
 	if err != nil {
-		return nil, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
+		return 0, fmt.Errorf("SUBSCRIBE failed: %w", mapLeaseError(err))
 	}
 	if !success {
-		return nil, errors.New("SUBSCRIBE failed: unexpected status")
+		return 0, errors.New("SUBSCRIBE failed: unexpected status")
 	}
 
 	if len(remaining) < 8 {
-		return nil, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
+		return 0, fmt.Errorf("SUBSCRIBE response too short for subscription_id: got %d bytes", len(remaining))
 	}
 	subID, _, err := connection.ReadU64BE(remaining, 0)
 	if err != nil {
-		return nil, fmt.Errorf("parse subscription_id: %w", err)
+		return 0, fmt.Errorf("parse subscription_id: %w", err)
 	}
 	c.conn.AddSubscriptions(1)
-
-	return &Subscription{
-		subID:      subID,
-		route:      route,
-		client:     c,
-		handler:    handler,
-		completion: completion,
-	}, nil
+	return subID, nil
 }
 
-func (c *client) rollbackRestoredSubscription(sub *Subscription) {
-	if sub == nil {
-		return
-	}
+func (c *client) rollbackRestoredSubscription(route string) {
 	c.conn.AddSubscriptions(-1)
 
 	ctx := c.conn.LifecycleContext()
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseUnsubscribe, unsubscribePayloadWriter(sub.route))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseUnsubscribe, unsubscribePayloadWriter(route))
 	if err != nil {
 		return
 	}
@@ -662,7 +737,32 @@ func (c *client) rollbackRestoredSubscription(sub *Subscription) {
 	}
 }
 
-func (c *client) subscribe(ctx context.Context, route string, handler ChangeHandler) (*Subscription, error) {
+// registerReconnectHook registers a callback invoked after RestoreSubscriptions
+// successfully re-establishes subscriptions on a replacement connection. The
+// returned function unregisters the hook. Used by InventoryObserver to
+// invalidate and re-bootstrap its view on reconnect.
+func (c *client) registerReconnectHook(hook func(ctx context.Context)) func() {
+	c.mu.Lock()
+	if c.reconnectHooks == nil {
+		c.reconnectHooks = make(map[uint64]func(context.Context))
+	}
+	id := c.nextHookID
+	c.nextHookID++
+	c.reconnectHooks[id] = hook
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		delete(c.reconnectHooks, id)
+		c.mu.Unlock()
+	}
+}
+
+func (c *client) subscribe(
+	ctx context.Context,
+	route string,
+	handler ChangeHandler,
+	preNotify func(ChangeNotification),
+) (*Subscription, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseSubscribe, subscribePayloadWriter(route))
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE request failed: %w", err)
@@ -690,10 +790,123 @@ func (c *client) subscribe(ctx context.Context, route string, handler ChangeHand
 		route:      route,
 		client:     c,
 		handler:    handler,
+		preNotify:  preNotify,
 		completion: subscriptions.NewCompletion(),
 	}
 	c.mu.Lock()
 	c.subscriptions[subID] = sub
 	c.mu.Unlock()
 	return sub, nil
+}
+
+// List returns an iterator over lease entries matching pattern (msg_type 410).
+// pattern accepts the same wildcard grammar as Subscribe. The returned
+// iterator lazily pages through the broker's cursor-based LIST protocol: each
+// Next() call may issue a wire round trip when the current page is exhausted.
+func (c *client) List(ctx context.Context, pattern string, opts ...ListOption) (iter.Iterator[LeaseEntry], error) {
+	ctx, span := c.conn.Tracer().Start(ctx, "fitz.lease.List", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
+	defer span.End()
+	if log := c.conn.Logger(); log != nil {
+		log.DebugContext(ctx, "lease.List", "pattern", pattern)
+	}
+	if err := validateLeaseSubscribeSelector(pattern); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("invalid pattern: %w", err)
+	}
+
+	options := ListOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	return &leaseListIterator{
+		ctx:     ctx,
+		conn:    c.conn,
+		pattern: pattern,
+		limit:   options.Limit,
+		index:   -1,
+	}, nil
+}
+
+// leaseListIterator is a pull-based iter.Iterator[LeaseEntry] that pages
+// through LEASE_LIST (410) responses on demand, one wire round trip per
+// exhausted page.
+type leaseListIterator struct {
+	ctx     context.Context
+	conn    *connection.Connection
+	pattern string
+	limit   uint32
+
+	items   []LeaseEntry
+	index   int
+	cursor  *leaseListCursor
+	started bool
+	done    bool
+	err     error
+}
+
+func (it *leaseListIterator) Next() bool {
+	if it.err != nil {
+		return false
+	}
+	for {
+		if it.index+1 < len(it.items) {
+			it.index++
+			return true
+		}
+		if it.started && it.done {
+			return false
+		}
+		if err := it.fetchPage(); err != nil {
+			it.err = err
+			return false
+		}
+	}
+}
+
+func (it *leaseListIterator) fetchPage() error {
+	resp, err := it.conn.SendRequestWithWriter(it.ctx, protocol.MessageTypeLeaseList, leaseListPayloadWriter(it.pattern, it.cursor, it.limit))
+	if err != nil {
+		return fmt.Errorf("LIST request failed: %w", err)
+	}
+	success, remaining, err := connection.ParseStandardResponse(resp)
+	if err != nil {
+		return fmt.Errorf("LIST failed: %w", mapLeaseError(err))
+	}
+	if !success {
+		return errors.New("LIST failed: unexpected status")
+	}
+	items, next, err := parseLeaseListResponse(remaining)
+	if err != nil {
+		return fmt.Errorf("LIST failed: %w", err)
+	}
+	if len(items) == 0 && next != nil {
+		return errors.New("LIST returned an empty page with more results pending")
+	}
+	it.items = items
+	it.index = -1
+	it.cursor = next
+	it.started = true
+	it.done = next == nil
+	return nil
+}
+
+// Value returns the current item (valid only after a successful Next()).
+func (it *leaseListIterator) Value() LeaseEntry {
+	if it.index < 0 || it.index >= len(it.items) {
+		return LeaseEntry{}
+	}
+	return it.items[it.index]
+}
+
+// Err returns the first non-EOF error encountered.
+func (it *leaseListIterator) Err() error {
+	return it.err
+}
+
+// Close releases any resources associated with the iterator.
+// leaseListIterator holds no resources beyond the shared connection, so this is a no-op.
+func (it *leaseListIterator) Close() error {
+	return nil
 }

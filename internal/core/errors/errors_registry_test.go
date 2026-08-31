@@ -52,6 +52,10 @@ func TestErrorCodeRegistry(t *testing.T) {
 		{"LeaseInvalidFence", LeaseInvalidFence, 5002},
 		{"LeaseExpired", LeaseExpired, 5003},
 		{"LeaseNotFound", LeaseNotFound, 5004},
+		{"LeaseBadRequest", LeaseBadRequest, 5008},
+		{"LeaseInvalidSubscriptionRoute", LeaseInvalidSubscriptionRoute, 5010},
+		{"LeaseInvalidListCursor", LeaseInvalidListCursor, 5011},
+		{"LeaseInvalidListPattern", LeaseInvalidListPattern, 5012},
 
 		// RPC Domain (6000-6099)
 		{"RpcTimeout", RpcTimeout, 6001},

@@ -468,6 +468,261 @@ func TestShouldRejectMalformedLeaseQueryResponseGivenInvalidShapeWhenParseLeaseQ
 	})
 }
 
+// --- SUBSCRIBE/UNSUBSCRIBE wildcard selector tests (msg_type 407/408) ---
+
+func TestShouldAcceptWildcardSubscribeRouteGivenValidSelectorMatrixWhenSubscribeCalled(t *testing.T) {
+	valid := []string{
+		"lease://acme/renderers/*",
+		"lease://acme/*/doc-1",
+		"lease://*/*/*",
+		"lease://acme/**",
+		"lease://**",
+		"lease://acme/renderers/resource",
+		"lease://**/renderers/**", // non-adjacent ** occurrences are allowed
+	}
+	for _, route := range valid {
+		t.Run(route, func(t *testing.T) {
+			trans := newScriptedLeaseRestoreTransport()
+			conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+			require.NoError(t, conn.Start(context.Background()))
+			t.Cleanup(func() { _ = conn.Close() })
+			c := NewClient(conn)
+			baseWrites := scriptedLeaseWriteCount(trans)
+
+			go func() {
+				waitForLeaseWrites(t, trans, baseWrites+1)
+				trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, leaseSubscribeResponsePayload(7)))
+			}()
+
+			sub, err := c.Subscribe(context.Background(), route, func(context.Context, ChangeNotification) error { return nil })
+			require.NoError(t, err)
+			require.NotNil(t, sub)
+		})
+	}
+}
+
+func TestShouldRejectMalformedSubscribeRouteGivenInvalidGrammarWhenSubscribeCalled(t *testing.T) {
+	invalid := []string{
+		"lease://acme/renderers/lock*", // partial wildcard
+		"notice://acme/x/y",            // wrong scheme
+		"lease://acme/x",               // wrong segment count
+		"lease://acme//x",              // empty segment
+		"lease://acme/**/**",           // adjacent ** (only a single trailing ** alias allowed)
+	}
+	for _, route := range invalid {
+		t.Run(route, func(t *testing.T) {
+			trans := newScriptedLeaseRestoreTransport()
+			conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+			require.NoError(t, conn.Start(context.Background()))
+			t.Cleanup(func() { _ = conn.Close() })
+			c := NewClient(conn)
+			baseWrites := scriptedLeaseWriteCount(trans)
+
+			sub, err := c.Subscribe(context.Background(), route, func(context.Context, ChangeNotification) error { return nil })
+			require.Error(t, err)
+			require.Nil(t, sub)
+			assert.Equal(t, baseWrites, scriptedLeaseWriteCount(trans), "malformed route must be rejected client-side without a wire round trip")
+		})
+	}
+}
+
+// --- LIST wire codec tests (msg_type 410) ---
+
+func leaseListResponsePayload(t *testing.T, entries []LeaseEntry, next *leaseListCursor) []byte {
+	t.Helper()
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	buf.WriteByte(0) // status = success
+	connection.WriteU32BE(buf, uint32(len(entries)))
+	for _, e := range entries {
+		connection.WriteBytes(buf, []byte(e.Route))
+		connection.WriteBytes(buf, []byte(e.OwnerID))
+		connection.WriteU64BE(buf, e.HolderIncarnation)
+		connection.WriteBytes(buf, []byte(e.AcquiredAt))
+		connection.WriteU64BE(buf, e.ExpiresInSecs)
+		connection.WriteU32BE(buf, e.Renewals)
+	}
+	if next == nil {
+		buf.WriteByte(0)
+	} else {
+		buf.WriteByte(1)
+		connection.WriteU64BE(buf, next.snapshotID)
+		connection.WriteU32BE(buf, next.offset)
+	}
+	return append([]byte(nil), buf.Bytes()...)
+}
+
+func TestShouldEncodeLeaseListRequestGivenPatternAndCursorWhenPayloadWritten(t *testing.T) {
+	t.Run("no cursor, default limit", func(t *testing.T) {
+		payload, err := encodeLeaseList("lease://acme/renderers/*", nil, 0)
+		require.NoError(t, err)
+
+		pattern, offset, err := connection.ReadString(payload, 0)
+		require.NoError(t, err)
+		assert.Equal(t, "lease://acme/renderers/*", pattern)
+		hasCursor, offset, err := connection.ReadU8(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, uint8(0), hasCursor)
+		limit, offset, err := connection.ReadU32BE(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, uint32(0), limit)
+		assert.Equal(t, len(payload), offset)
+	})
+
+	t.Run("with cursor and limit", func(t *testing.T) {
+		cursor := &leaseListCursor{snapshotID: 99, offset: 200}
+		payload, err := encodeLeaseList("lease://**", cursor, 50)
+		require.NoError(t, err)
+
+		_, offset, err := connection.ReadString(payload, 0)
+		require.NoError(t, err)
+		hasCursor, offset, err := connection.ReadU8(payload, offset)
+		require.NoError(t, err)
+		require.Equal(t, uint8(1), hasCursor)
+		snapshotID, offset, err := connection.ReadU64BE(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(99), snapshotID)
+		cursorOffset, offset, err := connection.ReadU32BE(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, uint32(200), cursorOffset)
+		limit, offset, err := connection.ReadU32BE(payload, offset)
+		require.NoError(t, err)
+		assert.Equal(t, uint32(50), limit)
+		assert.Equal(t, len(payload), offset)
+	})
+}
+
+func TestShouldParseLeaseListResponseGivenCanonicalPayloadWhenParseLeaseListResponseCalled(t *testing.T) {
+	t.Run("single page, no more results", func(t *testing.T) {
+		entries := []LeaseEntry{
+			{Route: "lease://acme/renderers/a", OwnerID: "owner-1", HolderIncarnation: 7, AcquiredAt: "2026-08-29T00:00:00Z", ExpiresInSecs: 30, Renewals: 2},
+			{Route: "lease://acme/renderers/b", OwnerID: "owner-2", HolderIncarnation: 8, AcquiredAt: "2026-08-29T00:00:01Z", ExpiresInSecs: 45, Renewals: 0},
+		}
+		payload := leaseListResponsePayload(t, entries, nil)
+
+		success, remaining, err := connection.ParseStandardResponse(payload)
+		require.NoError(t, err)
+		require.True(t, success)
+
+		items, next, err := parseLeaseListResponse(remaining)
+		require.NoError(t, err)
+		require.Nil(t, next)
+		require.Equal(t, entries, items)
+	})
+
+	t.Run("page with cursor for continuation", func(t *testing.T) {
+		entries := []LeaseEntry{{Route: "lease://acme/renderers/a", OwnerID: "owner-1", HolderIncarnation: 1, AcquiredAt: "t", ExpiresInSecs: 1, Renewals: 1}}
+		next := &leaseListCursor{snapshotID: 42, offset: 100}
+		payload := leaseListResponsePayload(t, entries, next)
+
+		success, remaining, err := connection.ParseStandardResponse(payload)
+		require.NoError(t, err)
+		require.True(t, success)
+
+		items, gotNext, err := parseLeaseListResponse(remaining)
+		require.NoError(t, err)
+		require.Equal(t, entries, items)
+		require.NotNil(t, gotNext)
+		assert.Equal(t, next.snapshotID, gotNext.snapshotID)
+		assert.Equal(t, next.offset, gotNext.offset)
+	})
+
+	t.Run("empty result set", func(t *testing.T) {
+		payload := leaseListResponsePayload(t, nil, nil)
+
+		success, remaining, err := connection.ParseStandardResponse(payload)
+		require.NoError(t, err)
+		require.True(t, success)
+
+		items, next, err := parseLeaseListResponse(remaining)
+		require.NoError(t, err)
+		require.Nil(t, next)
+		require.Empty(t, items)
+	})
+
+	t.Run("invalid has_next flag", func(t *testing.T) {
+		payload := leaseListResponsePayload(t, nil, nil)
+		payload[len(payload)-1] = 2 // corrupt has_next flag
+
+		_, next, err := parseLeaseListResponse(payload[1:])
+		require.Error(t, err)
+		require.Nil(t, next)
+	})
+}
+
+// --- List() iterator paging test ---
+
+func TestShouldPageAcrossMultipleResponsesGivenScriptedBrokerWhenListIteratorConsumed(t *testing.T) {
+	trans := newScriptedLeaseRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() { _ = conn.Close() })
+	c := NewClient(conn)
+	baseWrites := scriptedLeaseWriteCount(trans)
+
+	page1 := []LeaseEntry{
+		{Route: "lease://acme/renderers/a", OwnerID: "owner-1", HolderIncarnation: 1, AcquiredAt: "t1", ExpiresInSecs: 10, Renewals: 0},
+		{Route: "lease://acme/renderers/b", OwnerID: "owner-2", HolderIncarnation: 2, AcquiredAt: "t2", ExpiresInSecs: 20, Renewals: 1},
+	}
+	page2 := []LeaseEntry{
+		{Route: "lease://acme/renderers/c", OwnerID: "owner-3", HolderIncarnation: 3, AcquiredAt: "t3", ExpiresInSecs: 30, Renewals: 2},
+	}
+	cursor := &leaseListCursor{snapshotID: 5, offset: 2}
+
+	go func() {
+		waitForLeaseWrites(t, trans, baseWrites+1)
+		trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, page1, cursor)))
+		waitForLeaseWrites(t, trans, baseWrites+2)
+		trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, page2, nil)))
+	}()
+
+	it, err := c.List(context.Background(), "lease://acme/renderers/*")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+
+	var got []LeaseEntry
+	for it.Next() {
+		got = append(got, it.Value())
+	}
+	require.NoError(t, it.Err())
+	require.NoError(t, it.Close())
+	assert.Equal(t, append(append([]LeaseEntry{}, page1...), page2...), got)
+}
+
+func TestShouldRejectMalformedListPatternGivenInvalidGrammarWhenListCalled(t *testing.T) {
+	trans := newScriptedLeaseRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() { _ = conn.Close() })
+	c := NewClient(conn)
+	baseWrites := scriptedLeaseWriteCount(trans)
+
+	it, err := c.List(context.Background(), "lease://acme/renderers/lock*")
+	require.Error(t, err)
+	require.Nil(t, it)
+	assert.Equal(t, baseWrites, scriptedLeaseWriteCount(trans))
+}
+
+// --- New error code decoding tests (5011, 5012) ---
+
+func TestShouldMapNewLeaseListErrorCodesGivenBrokerMessageWhenMapLeaseErrorCalled(t *testing.T) {
+	t.Run("map invalid list cursor error", func(t *testing.T) {
+		errMsg := coreerrors.NewDomainError(coreerrors.LeaseInvalidListCursor, "cursor unknown or evicted")
+
+		mapped := mapLeaseError(errMsg)
+
+		assert.ErrorIs(t, mapped, ErrInvalidListCursor)
+	})
+
+	t.Run("map invalid list pattern error", func(t *testing.T) {
+		errMsg := coreerrors.NewDomainError(coreerrors.LeaseInvalidListPattern, "pattern is malformed")
+
+		mapped := mapLeaseError(errMsg)
+
+		assert.ErrorIs(t, mapped, ErrInvalidListPattern)
+	})
+}
+
 // Benchmarks
 
 func BenchmarkEncodeLeaseAcquire(b *testing.B) {

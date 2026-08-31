@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	internaliter "github.com/cntryl/fitz-go/v2/internal/core/iter"
 	internallease "github.com/cntryl/fitz-go/v2/internal/domains/lease"
 )
 
@@ -112,11 +113,117 @@ type LeaseInfo struct {
 	PendingWaiters   uint32
 }
 
+// LeaseEntry describes one lease returned by List.
+type LeaseEntry struct {
+	Route             string
+	OwnerID           string // The logical owner_id passed to ACQUIRE (never a raw session id).
+	HolderIncarnation uint64 // Opaque; stable for one live session, distinct per session/reconnect.
+	AcquiredAt        string // RFC3339 timestamp string.
+	ExpiresInSecs     uint64
+	Renewals          uint32
+}
+
+// ListOptions configures a List call.
+type ListOptions struct {
+	// Limit caps the page size fetched per wire round trip. 0 uses the server
+	// default page size; the server clamps any requested limit to its maximum.
+	Limit uint32
+}
+
+// ListOption configures a List call.
+type ListOption func(*ListOptions)
+
+// WithListLimit sets the page size requested per wire round trip.
+func WithListLimit(limit uint32) ListOption {
+	return func(o *ListOptions) { o.Limit = limit }
+}
+
 type LeaseClient interface {
 	Acquire(ctx context.Context, route string, ttlSecs uint64, options LeaseAcquireOptions) (*Lease, error)
 	WithLease(ctx context.Context, route string, ttlSecs uint64, callback func(context.Context) error, opts ...WithLeaseOption) error
 	Query(ctx context.Context, route string) (*LeaseInfo, error)
 	Subscribe(ctx context.Context, route string, handler LeaseChangeHandler) (*LeaseSubscription, error)
+
+	// List returns an iterator over lease entries matching pattern (wildcards
+	// allowed, per the same grammar as Subscribe). The iterator transparently
+	// pages through the broker's cursor-based LIST protocol.
+	List(ctx context.Context, pattern string, opts ...ListOption) (Iterator[LeaseEntry], error)
+
+	// Observe establishes a race-safe, continuously reconciled inventory
+	// observer for lease entries matching pattern (wildcards allowed, per the
+	// same grammar as Subscribe). It owns the subscribe-then-list bootstrap
+	// sequence, full LIST reconciliation after invalidations, periodic reconciliation,
+	// and reconnect recovery, so callers never need to hand-roll any of it.
+	// Call Close on the returned observer when done.
+	Observe(ctx context.Context, pattern string, opts ...ObserveOption) (*InventoryObserver, error)
+}
+
+// ObserveOptions configures an Observe call.
+type ObserveOptions struct {
+	// ReconcileInterval is the base interval between full backstop relists.
+	// Defaults to 60s. The actual delay is jittered by +/- ReconcileJitter.
+	ReconcileInterval time.Duration
+	// ReconcileJitter is the fractional jitter applied to ReconcileInterval
+	// (e.g. 0.2 for +/- 20%). Defaults to 0.2. A value <= 0 disables jitter.
+	ReconcileJitter float64
+}
+
+// ObserveOption configures an Observe call.
+type ObserveOption func(*ObserveOptions)
+
+// WithObserveReconcileInterval sets the base periodic full-relist interval.
+func WithObserveReconcileInterval(interval time.Duration) ObserveOption {
+	return func(o *ObserveOptions) { o.ReconcileInterval = interval }
+}
+
+// WithObserveReconcileJitter sets the fractional jitter applied to the
+// reconcile interval. A value <= 0 disables jitter (fixed interval).
+func WithObserveReconcileJitter(fraction float64) ObserveOption {
+	return func(o *ObserveOptions) { o.ReconcileJitter = fraction }
+}
+
+// InventoryObserver maintains a race-safe, continuously reconciled view of
+// lease entries matching a selector pattern. Construct one via
+// LeaseClient.Observe and call Close when done.
+type InventoryObserver struct {
+	inner *internallease.InventoryObserver
+}
+
+// View returns a snapshot of the currently observed lease entries.
+func (o *InventoryObserver) View() []LeaseEntry {
+	internalView := o.inner.View()
+	view := make([]LeaseEntry, 0, len(internalView))
+	for _, entry := range internalView {
+		view = append(view, LeaseEntry{
+			Route:             entry.Route,
+			OwnerID:           entry.OwnerID,
+			HolderIncarnation: entry.HolderIncarnation,
+			AcquiredAt:        entry.AcquiredAt,
+			ExpiresInSecs:     entry.ExpiresInSecs,
+			Renewals:          entry.Renewals,
+		})
+	}
+	return view
+}
+
+// Ready reports whether the observer has completed its initial (or
+// post-reconnect) bootstrap and holds a current view.
+func (o *InventoryObserver) Ready() bool {
+	return o.inner.Ready()
+}
+
+// Changed returns a channel that receives a value whenever the observed view
+// changes. Sends are coalesced (buffered 1, non-blocking): a burst of
+// changes may be represented by a single signal, so callers should always
+// re-read View() rather than assume one signal means one change.
+func (o *InventoryObserver) Changed() <-chan struct{} {
+	return o.inner.Changed()
+}
+
+// Close unsubscribes and stops the observer's background goroutine. It is
+// safe to call more than once; subsequent calls are no-ops.
+func (o *InventoryObserver) Close() error {
+	return o.inner.Close()
 }
 
 type leaseExecutionOptions struct {
@@ -287,9 +394,91 @@ func (c *leaseClient) Subscribe(ctx context.Context, route string, handler Lease
 	return &LeaseSubscription{inner: subscription}, nil
 }
 
+// List returns an iterator over lease entries matching pattern (wildcards
+// allowed, per the same grammar as Subscribe). The iterator transparently
+// pages through the broker's cursor-based LIST protocol.
+func (c *leaseClient) List(ctx context.Context, pattern string, opts ...ListOption) (Iterator[LeaseEntry], error) {
+	options := ListOptions{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
+	it, err := c.inner.List(ctx, pattern, internallease.WithListLimit(options.Limit))
+	if err != nil {
+		return nil, err
+	}
+	return &leaseEntryIterator{inner: it}, nil
+}
+
+type leaseEntryIterator struct {
+	inner   internaliter.Iterator[internallease.LeaseEntry]
+	current LeaseEntry
+}
+
+func (it *leaseEntryIterator) Next() bool {
+	if !it.inner.Next() {
+		return false
+	}
+	value := it.inner.Value()
+	it.current = LeaseEntry{
+		Route:             value.Route,
+		OwnerID:           value.OwnerID,
+		HolderIncarnation: value.HolderIncarnation,
+		AcquiredAt:        value.AcquiredAt,
+		ExpiresInSecs:     value.ExpiresInSecs,
+		Renewals:          value.Renewals,
+	}
+	return true
+}
+
+func (it *leaseEntryIterator) Value() LeaseEntry {
+	return it.current
+}
+
+func (it *leaseEntryIterator) Err() error {
+	return it.inner.Err()
+}
+
+func (it *leaseEntryIterator) Close() error {
+	return it.inner.Close()
+}
+
+// Observe establishes a race-safe, continuously reconciled inventory
+// observer for lease entries matching pattern (wildcards allowed, per the
+// same grammar as Subscribe).
+func (c *leaseClient) Observe(ctx context.Context, pattern string, opts ...ObserveOption) (*InventoryObserver, error) {
+	// Defaults mirror the internal package's own defaults (60s +/- 20%) so an
+	// unset field here behaves identically to an unset field there, rather
+	// than a public zero-value silently disabling jitter.
+	options := ObserveOptions{
+		ReconcileInterval: 60 * time.Second,
+		ReconcileJitter:   0.2,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
+
+	inner, err := c.inner.Observe(ctx, pattern,
+		internallease.WithObserveReconcileInterval(options.ReconcileInterval),
+		internallease.WithObserveReconcileJitter(options.ReconcileJitter),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &InventoryObserver{inner: inner}, nil
+}
+
 var (
 	ErrLeaseHeld   = internallease.ErrLeaseHeld
 	ErrLeaseQueued = internallease.ErrLeaseQueued
 	// ErrLeaseLost marks an uncertain or rejected managed renewal.
 	ErrLeaseLost = errors.New("lease ownership lost")
+	// ErrLeaseInvalidListCursor: LIST cursor is unknown, evicted, or reused
+	// with a different pattern than the scan it was issued for.
+	ErrLeaseInvalidListCursor = internallease.ErrInvalidListCursor
+	// ErrLeaseInvalidListPattern: LIST pattern fails the wildcard selector grammar.
+	ErrLeaseInvalidListPattern = internallease.ErrInvalidListPattern
 )
