@@ -369,6 +369,298 @@ func TestShouldStopBackgroundGoroutineAndUnsubscribeWhenCloseCalled(t *testing.T
 	assert.Equal(t, writesAtClose, scriptedLeaseWriteCount(trans), "no further wire activity after Close: background goroutine must have exited")
 }
 
+// --- (h) async-handler-queue-overflow-triggered unsubscribe must be
+// detected and recovered from automatically, rather than silently freezing
+// the view forever (finding 2). ---
+
+func TestShouldRecoverGivenAsyncQueueOverflowTornDownSubscriptionWhenObserving(t *testing.T) {
+	trans := newScriptedLeaseRestoreTransport()
+	// A tiny async handler queue/concurrency makes overflow deterministic:
+	// one notify occupies the single worker (blocked on an unanswered LIST),
+	// a second fills the one-deep queue, and a third overflows.
+	conn := connection.New(trans, connection.Config{
+		Token:                      "",
+		ReadTimeout:                time.Second,
+		AsyncHandlerMaxConcurrency: 1,
+		AsyncHandlerQueueCapacity:  1,
+	})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() { _ = conn.Close() })
+	raw := NewClient(conn)
+	c, ok := raw.(*client)
+	require.True(t, ok)
+	autoAnswerUnsubscribe(t, trans)
+
+	base := scriptedLeaseWriteCount(trans)
+	pattern := "lease://acme/renderers/*"
+
+	var observed *InventoryObserver
+	obsErr := make(chan error, 1)
+	go func() {
+		o, err := c.Observe(context.Background(), pattern)
+		observed = o
+		obsErr <- err
+	}()
+
+	waitForLeaseWrites(t, trans, base+1)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, leaseSubscribeResponsePayload(71)))
+	waitForLeaseWrites(t, trans, base+2)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, nil, nil)))
+
+	select {
+	case err := <-obsErr:
+		require.NoError(t, err)
+	case <-time.After(observeTestTimeout):
+		t.Fatal("Observe did not complete bootstrap in time")
+	}
+	require.NotNil(t, observed)
+	t.Cleanup(func() { _ = observed.Close() })
+	require.True(t, observed.Ready())
+
+	// notify1: dispatched to the single worker, which calls reconcileView ->
+	// listAll -> LIST. Never answer this LIST: it stands in for a handler
+	// that is still running (holding the one worker slot) when further
+	// notifications arrive.
+	c.handleNotify(71, "lease://acme/renderers/doc-1", nil)
+	waitForLeaseWrites(t, trans, base+3)
+	assertWrittenFrameType(t, trans, base+2, protocol.MessageTypeLeaseList)
+
+	// notify2: fills the one-deep queue behind the busy worker.
+	c.handleNotify(71, "lease://acme/renderers/doc-2", nil)
+
+	// notify3: the queue is now full, so LaunchAsyncHandler reports overflow.
+	// This must tear down the observer's subscription and invoke its
+	// onOverflow hook, which marks the view not-ready and starts a
+	// background resubscribe+rebootstrap.
+	c.handleNotify(71, "lease://acme/renderers/doc-3", nil)
+
+	// The overflow-triggered teardown sends its own UNSUBSCRIBE (answered by
+	// autoAnswerUnsubscribe) and then, via onOverflow, re-issues SUBSCRIBE.
+	require.Eventually(t, func() bool { return !observed.Ready() }, observeTestTimeout, 5*time.Millisecond,
+		"overflow-triggered teardown must mark the observer not-ready rather than silently freezing")
+
+	// Unblock notify1's stuck reconcileView so it releases refreshMu and lets
+	// the background resubscribe+rebootstrap proceed.
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, nil, nil)))
+
+	var subscribeIdx int
+	require.Eventually(t, func() bool {
+		n := scriptedLeaseWriteCount(trans)
+		for i := base + 3; i < n; i++ {
+			frame := scriptedLeaseWrittenFrame(trans, i)
+			msgType, _, err := protocol.DecodeFrame(frame)
+			if err == nil && msgType == protocol.MessageTypeLeaseSubscribe {
+				subscribeIdx = i
+				return true
+			}
+		}
+		return false
+	}, observeTestTimeout, 5*time.Millisecond, "onOverflow must automatically resubscribe")
+	// Make the first replacement SUBSCRIBE fail transiently. The observer
+	// cannot fall back to periodic LIST-only polling here because the overflow
+	// already removed its wire registration; it must keep retrying until a new
+	// subscription is live.
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, leaseErrorResponsePayload(5010, "transient subscribe failure")))
+
+	var retrySubscribeIdx int
+	require.Eventually(t, func() bool {
+		n := scriptedLeaseWriteCount(trans)
+		for i := subscribeIdx + 1; i < n; i++ {
+			frame := scriptedLeaseWrittenFrame(trans, i)
+			msgType, _, err := protocol.DecodeFrame(frame)
+			if err == nil && msgType == protocol.MessageTypeLeaseSubscribe {
+				retrySubscribeIdx = i
+				return true
+			}
+		}
+		return false
+	}, observeTestTimeout, 5*time.Millisecond, "onOverflow must retry a transiently failed replacement subscription")
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, leaseSubscribeResponsePayload(72)))
+
+	require.Eventually(t, func() bool {
+		n := scriptedLeaseWriteCount(trans)
+		for i := retrySubscribeIdx + 1; i < n; i++ {
+			frame := scriptedLeaseWrittenFrame(trans, i)
+			msgType, _, err := protocol.DecodeFrame(frame)
+			if err == nil && msgType == protocol.MessageTypeLeaseList {
+				return true
+			}
+		}
+		return false
+	}, observeTestTimeout, 5*time.Millisecond, "onOverflow must re-bootstrap with a fresh LIST after resubscribing")
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, []LeaseEntry{
+		{Route: "lease://acme/renderers/doc-9", OwnerID: "worker-9", ExpiresInSecs: 10},
+	}, nil)))
+
+	require.Eventually(t, func() bool {
+		return observed.Ready() && len(observed.View()) == 1
+	}, observeTestTimeout, 5*time.Millisecond, "observer must automatically recover after an overflow-triggered subscription teardown")
+
+	// The recovered subscription must be steady-state functional: a notify
+	// against the new subID drives a fresh relist.
+	writesBeforeSteadyState := scriptedLeaseWriteCount(trans)
+	c.handleNotify(72, "lease://acme/renderers/doc-9", nil)
+	waitForLeaseWrites(t, trans, writesBeforeSteadyState+1)
+	assertWrittenFrameType(t, trans, writesBeforeSteadyState, protocol.MessageTypeLeaseList)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, nil, nil)))
+	require.Eventually(t, func() bool {
+		return len(observed.View()) == 0
+	}, observeTestTimeout, 5*time.Millisecond)
+}
+
+// leaseErrorResponsePayload builds a [status=1][u32 code][string message]
+// domain error response body per CLIENT_SPEC.md.
+func leaseErrorResponsePayload(code uint32, msg string) []byte {
+	buf := connection.GetBuffer()
+	defer connection.PutBuffer(buf)
+	buf.WriteByte(1)
+	connection.WriteU32BE(buf, code)
+	connection.WriteBytes(buf, []byte(msg))
+	return append([]byte(nil), buf.Bytes()...)
+}
+
+// --- (g) Ready must be restored once a subsequent reconcile succeeds, even
+// if the post-reconnect background bootstrap itself failed (finding 4). ---
+
+func TestShouldRestoreReadyGivenSuccessfulReconcileAfterFailedReconnectBootstrapWhenObserving(t *testing.T) {
+	c, trans := newObserverTestClient(t)
+	base := scriptedLeaseWriteCount(trans)
+	pattern := "lease://acme/renderers/*"
+
+	var observed *InventoryObserver
+	obsErr := make(chan error, 1)
+	go func() {
+		o, err := c.Observe(context.Background(), pattern)
+		observed = o
+		obsErr <- err
+	}()
+
+	waitForLeaseWrites(t, trans, base+1)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, leaseSubscribeResponsePayload(61)))
+	waitForLeaseWrites(t, trans, base+2)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, nil, nil)))
+
+	select {
+	case err := <-obsErr:
+		require.NoError(t, err)
+	case <-time.After(observeTestTimeout):
+		t.Fatal("Observe did not complete bootstrap in time")
+	}
+	require.NotNil(t, observed)
+	t.Cleanup(func() { _ = observed.Close() })
+	require.True(t, observed.Ready())
+
+	// Simulate reconnect: this marks the observer not-ready and kicks off a
+	// background bootstrap.
+	restoreErr := make(chan error, 1)
+	go func() {
+		restoreErr <- c.RestoreSubscriptions(context.Background())
+	}()
+
+	waitForLeaseWrites(t, trans, base+3)
+	assertWrittenFrameType(t, trans, base+2, protocol.MessageTypeLeaseSubscribe)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, leaseSubscribeResponsePayload(62)))
+
+	select {
+	case err := <-restoreErr:
+		require.NoError(t, err)
+	case <-time.After(observeTestTimeout):
+		t.Fatal("RestoreSubscriptions did not complete in time")
+	}
+	require.Eventually(t, func() bool { return !observed.Ready() }, observeTestTimeout, time.Millisecond)
+
+	// Fail the post-reconnect bootstrap's LIST call outright.
+	waitForLeaseWrites(t, trans, base+4)
+	assertWrittenFrameType(t, trans, base+3, protocol.MessageTypeLeaseList)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseErrorResponsePayload(1, "internal error")))
+
+	// Ready must still be false: the reconnect bootstrap gave up.
+	require.Eventually(t, func() bool { return !observed.Ready() }, observeTestTimeout, 5*time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+	require.False(t, observed.Ready(), "ready must not spuriously flip true on a failed bootstrap")
+
+	// A subsequent notify-triggered reconcile succeeds: the view is correct
+	// and current again, so Ready() must eventually recover to true even
+	// though the reconnect bootstrap itself never succeeded.
+	c.handleNotify(62, "lease://acme/renderers/doc-1", nil)
+	waitForLeaseWrites(t, trans, base+5)
+	assertWrittenFrameType(t, trans, base+4, protocol.MessageTypeLeaseList)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, []LeaseEntry{
+		{Route: "lease://acme/renderers/doc-1", OwnerID: "worker-1", ExpiresInSecs: 30},
+	}, nil)))
+
+	require.Eventually(t, func() bool {
+		return observed.Ready() && len(observed.View()) == 1
+	}, observeTestTimeout, 5*time.Millisecond)
+}
+
+// --- (f) Close must not hang on an in-flight reconnect-triggered bootstrap
+// List call that never gets a response (finding 1: Close() can hang). ---
+
+func TestShouldReturnPromptlyGivenSlowReconnectBootstrapListWhenCloseCalled(t *testing.T) {
+	c, trans := newObserverTestClient(t)
+	base := scriptedLeaseWriteCount(trans)
+	pattern := "lease://acme/renderers/*"
+
+	var observed *InventoryObserver
+	obsErr := make(chan error, 1)
+	go func() {
+		o, err := c.Observe(context.Background(), pattern)
+		observed = o
+		obsErr <- err
+	}()
+
+	waitForLeaseWrites(t, trans, base+1)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, leaseSubscribeResponsePayload(55)))
+	waitForLeaseWrites(t, trans, base+2)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, nil, nil)))
+
+	select {
+	case err := <-obsErr:
+		require.NoError(t, err)
+	case <-time.After(observeTestTimeout):
+		t.Fatal("Observe did not complete bootstrap in time")
+	}
+	require.NotNil(t, observed)
+	require.True(t, observed.Ready())
+
+	// Simulate reconnect: RestoreSubscriptions re-issues SUBSCRIBE, which
+	// triggers onReconnect's background bootstrap.
+	restoreErr := make(chan error, 1)
+	go func() {
+		restoreErr <- c.RestoreSubscriptions(context.Background())
+	}()
+
+	waitForLeaseWrites(t, trans, base+3)
+	assertWrittenFrameType(t, trans, base+2, protocol.MessageTypeLeaseSubscribe)
+	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseSubscribe, leaseSubscribeResponsePayload(56)))
+
+	select {
+	case err := <-restoreErr:
+		require.NoError(t, err)
+	case <-time.After(observeTestTimeout):
+		t.Fatal("RestoreSubscriptions did not complete in time")
+	}
+
+	// The background reconnect-bootstrap now issues a LIST call. Never
+	// answer it: it must hang forever on the wire, standing in for a broker
+	// that never replies.
+	waitForLeaseWrites(t, trans, base+4)
+	assertWrittenFrameType(t, trans, base+3, protocol.MessageTypeLeaseList)
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- observed.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		require.NoError(t, err)
+	case <-time.After(observeTestTimeout):
+		t.Fatal("Close hung on an in-flight reconnect-bootstrap List call that never got a response")
+	}
+}
+
 func scriptedLeaseWrittenFrame(trans *scriptedLeaseRestoreTransport, index int) []byte {
 	trans.mu.Lock()
 	defer trans.mu.Unlock()

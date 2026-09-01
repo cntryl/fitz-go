@@ -2,9 +2,12 @@ package lease
 
 import (
 	"context"
-	"math/rand"
+	"errors"
 	"sync"
 	"time"
+
+	"github.com/cntryl/fitz-go/v2/internal/core/iter"
+	"github.com/cntryl/fitz-go/v2/internal/core/retry"
 )
 
 // Default periodic reconciliation cadence for an InventoryObserver, per
@@ -57,13 +60,15 @@ type InventoryObserver struct {
 	ready bool
 	sub   *Subscription
 
-	// bootstrapMu guards bootstrapping/pendingRoutes, which track whether the
-	// observer is currently in a subscribe-then-list bootstrap window and
-	// which routes were notified (but not yet applied) during that window.
-	bootstrapMu        sync.Mutex
-	bootstrapping      bool
-	pendingRoutes      map[string]struct{}
-	reconcileRequested bool
+	// bootstrapMu guards bootstrapping/pendingInvalidation, which track
+	// whether the observer is currently in a subscribe-then-list bootstrap
+	// window and whether any notification arrived (but was not yet applied)
+	// during that window.
+	bootstrapMu            sync.Mutex
+	bootstrapping          bool
+	pendingInvalidation    bool
+	reconcileRequested     bool
+	subscriptionGeneration uint64
 	// refreshMu serializes bootstrap, notification-triggered relists, and
 	// periodic reconciliation so an older pass can never overwrite a newer
 	// broker-lifetime view.
@@ -76,12 +81,23 @@ type InventoryObserver struct {
 	// lifecycleMu serializes wg.Add (for the background reconnect-bootstrap
 	// goroutine) against Close so a reconnect racing Close can never call
 	// wg.Add concurrently with wg.Wait.
-	lifecycleMu sync.Mutex
-	closing     bool
+	lifecycleMu            sync.Mutex
+	closing                bool
+	recoveryRunning        bool
+	recoveryRequested      bool
+	recoveryNeedsSubscribe bool
 
 	closed    chan struct{}
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+
+	// bgCtx is the context passed to network calls made by the observer's
+	// background goroutines (reconnect-triggered bootstrap, periodic
+	// reconcile). bgCancel is invoked by Close before wg.Wait, so an in-flight
+	// List call started by a background goroutine is cancelled promptly
+	// instead of leaving Close blocked on it indefinitely.
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
 }
 
 // tryStartBackgroundWork registers one more background goroutine with wg,
@@ -119,14 +135,16 @@ func (c *client) Observe(ctx context.Context, pattern string, opts ...ObserveOpt
 		options.ReconcileInterval = defaultReconcileInterval
 	}
 
+	bgCtx, bgCancel := context.WithCancel(context.Background())
 	obs := &InventoryObserver{
-		client:        c,
-		pattern:       pattern,
-		opts:          options,
-		view:          make(map[string]LeaseEntry),
-		pendingRoutes: make(map[string]struct{}),
-		changed:       make(chan struct{}, 1),
-		closed:        make(chan struct{}),
+		client:   c,
+		pattern:  pattern,
+		opts:     options,
+		view:     make(map[string]LeaseEntry),
+		changed:  make(chan struct{}, 1),
+		closed:   make(chan struct{}),
+		bgCtx:    bgCtx,
+		bgCancel: bgCancel,
 	}
 
 	if err := obs.bootstrap(ctx, true); err != nil {
@@ -158,14 +176,14 @@ func (o *InventoryObserver) bootstrap(ctx context.Context, subscribe bool) error
 	o.bootstrapMu.Lock()
 	if !o.bootstrapping {
 		o.bootstrapping = true
-		o.pendingRoutes = make(map[string]struct{})
+		o.pendingInvalidation = false
 	}
 	o.bootstrapMu.Unlock()
 
 	var createdSub *Subscription
 	if subscribe {
 		o.client.initNotifyHandler()
-		sub, err := o.client.subscribe(ctx, o.pattern, o.handleNotify, o.invalidate)
+		sub, err := o.client.subscribe(ctx, o.pattern, o.handleNotify, o.invalidate, o.onOverflow)
 		if err != nil {
 			o.bootstrapMu.Lock()
 			o.bootstrapping = false
@@ -176,9 +194,15 @@ func (o *InventoryObserver) bootstrap(ctx context.Context, subscribe bool) error
 		o.sub = sub
 		o.mu.Unlock()
 		createdSub = sub
+		o.bootstrapMu.Lock()
+		o.subscriptionGeneration++
+		o.bootstrapMu.Unlock()
 	}
 
-	for {
+	for attempt := 0; ; attempt++ {
+		o.bootstrapMu.Lock()
+		passSubscriptionGeneration := o.subscriptionGeneration
+		o.bootstrapMu.Unlock()
 		view, err := o.listAll(ctx)
 		if err != nil {
 			o.bootstrapMu.Lock()
@@ -191,12 +215,22 @@ func (o *InventoryObserver) bootstrap(ctx context.Context, subscribe bool) error
 		}
 
 		o.bootstrapMu.Lock()
-		if len(o.pendingRoutes) > 0 {
-			// At least one invalidation raced this complete pass. Clear the
-			// coalesced set and repeat while still buffering; never expose the
-			// possibly stale pass as ready in between.
-			o.pendingRoutes = make(map[string]struct{})
+		if o.subscriptionGeneration != passSubscriptionGeneration {
 			o.bootstrapMu.Unlock()
+			if createdSub != nil {
+				createdSub.Unsubscribe()
+			}
+			return errObserverSubscriptionChanged
+		}
+		if o.pendingInvalidation {
+			// At least one invalidation raced this complete pass. Clear the
+			// coalesced flag and repeat while still buffering; never expose
+			// the possibly stale pass as ready in between. A bounded backoff
+			// between attempts avoids a livelock spinning at wire speed
+			// against a steady stream of invalidations.
+			o.pendingInvalidation = false
+			o.bootstrapMu.Unlock()
+			waitInvalidationBackoff(ctx, attempt)
 			continue
 		}
 
@@ -220,7 +254,7 @@ func (o *InventoryObserver) invalidate(notif ChangeNotification) {
 	o.bootstrapMu.Lock()
 	defer o.bootstrapMu.Unlock()
 	if o.bootstrapping {
-		o.pendingRoutes[notif.Route] = struct{}{}
+		o.pendingInvalidation = true
 	} else {
 		o.reconcileRequested = true
 	}
@@ -246,7 +280,7 @@ func (o *InventoryObserver) reconcileView(ctx context.Context) error {
 	o.refreshMu.Lock()
 	defer o.refreshMu.Unlock()
 
-	for {
+	for attempt := 0; ; attempt++ {
 		o.bootstrapMu.Lock()
 		if o.bootstrapping || !o.reconcileRequested {
 			o.bootstrapMu.Unlock()
@@ -265,11 +299,21 @@ func (o *InventoryObserver) reconcileView(ctx context.Context) error {
 			return nil
 		}
 		if o.reconcileRequested {
+			// Another invalidation raced this pass; retry with a bounded
+			// backoff so a steady stream of invalidations cannot livelock
+			// this loop spinning at wire speed.
 			o.bootstrapMu.Unlock()
+			waitInvalidationBackoff(ctx, attempt)
 			continue
 		}
 		o.mu.Lock()
 		o.view = view
+		// A successful reconcile pass is itself a sufficient correctness
+		// signal for readiness: restore ready here so that if a post-reconnect
+		// background bootstrap (see onReconnect) fails and gives up, a
+		// subsequent notify-triggered reconcile still recovers Ready() rather
+		// than leaving it permanently false despite a live, correct view.
+		o.ready = true
 		o.mu.Unlock()
 		o.bootstrapMu.Unlock()
 		o.signalChanged()
@@ -284,14 +328,12 @@ func (o *InventoryObserver) listAll(ctx context.Context) (map[string]LeaseEntry,
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = it.Close() }()
 
 	view := make(map[string]LeaseEntry)
-	for it.Next() {
-		entry := it.Value()
+	if err := iter.ForEach(it, func(entry LeaseEntry) error {
 		view[entry.Route] = entry
-	}
-	if err := it.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return view, nil
@@ -304,35 +346,122 @@ func (o *InventoryObserver) signalChanged() {
 	}
 }
 
-// onReconnect is invoked (via the lease client's reconnect hook, itself
-// driven by RestoreSubscriptions) after the underlying connection
-// reconnects and the observer's Subscribe has already been re-established
-// by the normal subscription-restore path. It immediately marks the view
-// not-ready, then re-runs the list-to-completion bootstrap (steps 3-5) in
-// the background so reconnect completion for other domains is not blocked.
-func (o *InventoryObserver) onReconnect(ctx context.Context) {
+// triggerBackgroundBootstrap marks the view not-ready and re-runs the
+// list-to-completion bootstrap (subscribe-then-list steps, or just steps
+// 3-5 if the subscription itself is still valid) in the background, so the
+// caller (a reconnect hook or an overflow hook) is never blocked on it. It
+// is the shared recovery path for both onReconnect and onOverflow.
+func (o *InventoryObserver) triggerBackgroundBootstrap(subscribe bool) {
 	o.mu.Lock()
 	o.ready = false
 	o.mu.Unlock()
 	o.bootstrapMu.Lock()
 	o.bootstrapping = true
-	o.pendingRoutes = make(map[string]struct{})
+	o.pendingInvalidation = false
 	o.reconcileRequested = false
+	o.subscriptionGeneration++
 	o.bootstrapMu.Unlock()
 	o.signalChanged()
 
-	if !o.tryStartBackgroundWork() {
+	o.lifecycleMu.Lock()
+	if o.closing {
+		o.lifecycleMu.Unlock()
 		return
 	}
+	o.recoveryRequested = true
+	o.recoveryNeedsSubscribe = o.recoveryNeedsSubscribe || subscribe
+	if o.recoveryRunning {
+		o.lifecycleMu.Unlock()
+		return
+	}
+	o.recoveryRunning = true
+	o.wg.Add(1)
+	o.lifecycleMu.Unlock()
+
 	go func() {
 		defer o.wg.Done()
-		select {
-		case <-o.closed:
-			return
-		default:
+		attempt := 0
+		for {
+			select {
+			case <-o.closed:
+				o.lifecycleMu.Lock()
+				o.recoveryRunning = false
+				o.lifecycleMu.Unlock()
+				return
+			default:
+			}
+
+			o.lifecycleMu.Lock()
+			needsSubscribe := o.recoveryNeedsSubscribe
+			o.recoveryNeedsSubscribe = false
+			o.recoveryRequested = false
+			o.lifecycleMu.Unlock()
+
+			// bgCtx is cancelled by Close before wg.Wait, so a List (and, for
+			// onOverflow, Subscribe) call in flight when Close is invoked is
+			// cancelled promptly instead of blocking Close indefinitely
+			// (finding: Close() can hang).
+			err := o.bootstrap(o.bgCtx, needsSubscribe)
+			if o.bgCtx.Err() != nil {
+				o.lifecycleMu.Lock()
+				o.recoveryRunning = false
+				o.lifecycleMu.Unlock()
+				return
+			}
+
+			o.lifecycleMu.Lock()
+			requested := o.recoveryRequested
+			if err != nil && needsSubscribe {
+				o.recoveryRequested = true
+				o.recoveryNeedsSubscribe = true
+				requested = true
+			}
+			if err == nil && !requested {
+				o.recoveryRunning = false
+				o.lifecycleMu.Unlock()
+				return
+			}
+			if err != nil && !needsSubscribe && !errors.Is(err, errObserverSubscriptionChanged) {
+				o.recoveryRunning = false
+				o.lifecycleMu.Unlock()
+				return
+			}
+			o.lifecycleMu.Unlock()
+
+			// Overflow removes the wire registration, so a transient failure
+			// while replacing it cannot be left for the periodic LIST-only
+			// reconciler: without a subscription the observer would miss every
+			// subsequent live invalidation. Retry the complete subscribe+LIST
+			// bootstrap with the same bounded backoff used for raced passes.
+			waitInvalidationBackoff(o.bgCtx, attempt)
+			attempt++
 		}
-		_ = o.bootstrap(o.client.conn.LifecycleContext(), false)
 	}()
+}
+
+// onReconnect is invoked (via the lease client's reconnect hook, itself
+// driven by RestoreSubscriptions) after the underlying connection
+// reconnects and the observer's Subscribe has already been re-established
+// by the normal subscription-restore path. subscribe=false: only the
+// list-to-completion steps need to re-run.
+func (o *InventoryObserver) onReconnect(ctx context.Context) {
+	o.triggerBackgroundBootstrap(false)
+}
+
+// onOverflow is registered as the observer's underlying subscription's
+// overflow hook and invoked when the lease client's bounded async
+// notify-handler queue was full, causing handleNotify to tear down the
+// subscription entirely (see lease.go handleNotify). Without this hook,
+// InventoryObserver would have no way to detect the teardown (unlike
+// onReconnect, there was previously no signal at all) and would silently
+// degrade to relying solely on the periodic backstop reconciler, with
+// Ready() still reporting true on an increasingly stale view.
+//
+// subscribe=true here (unlike onReconnect) because the old subscription no
+// longer exists on the broker at all and must be re-established, not just
+// relisted.
+func (o *InventoryObserver) onOverflow() {
+	o.triggerBackgroundBootstrap(true)
 }
 
 // run drives periodic full-relist reconciliation, the backstop against a
@@ -346,12 +475,38 @@ func (o *InventoryObserver) run() {
 			timer.Stop()
 			return
 		case <-timer.C:
-			bgCtx := o.client.conn.LifecycleContext()
 			o.bootstrapMu.Lock()
 			o.reconcileRequested = true
 			o.bootstrapMu.Unlock()
-			_ = o.reconcileView(bgCtx)
+			_ = o.reconcileView(o.bgCtx)
 		}
+	}
+}
+
+// invalidationRetryBackoff bounds the delay between consecutive
+// invalidation-raced retries in bootstrap/reconcileView so a steady stream
+// of invalidations cannot livelock either loop into relisting at wire speed.
+var invalidationRetryBackoff = retry.BackoffConfig{
+	InitialDelay: 10 * time.Millisecond,
+	MaxDelay:     2 * time.Second,
+	Multiplier:   2,
+	JitterFactor: 0.2,
+}
+
+var errObserverSubscriptionChanged = errors.New("lease observer subscription changed during bootstrap")
+
+// waitInvalidationBackoff sleeps for the backoff delay corresponding to
+// attempt (0-based), or returns early if ctx is done.
+func waitInvalidationBackoff(ctx context.Context, attempt int) {
+	delay := retry.CalculateDelay(invalidationRetryBackoff, attempt)
+	if delay <= 0 {
+		return
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
 	}
 }
 
@@ -359,9 +514,16 @@ func jitteredInterval(base time.Duration, fraction float64) time.Duration {
 	if fraction <= 0 || base <= 0 {
 		return base
 	}
-	delta := float64(base) * fraction
-	offset := (rand.Float64()*2 - 1) * delta
-	result := time.Duration(float64(base) + offset)
+	// Reuse the shared retry package's jitter math rather than
+	// reimplementing it: a fixed (non-exponential) delay with +/- fraction
+	// jitter is exactly BackoffConfig{InitialDelay: MaxDelay: base,
+	// Multiplier: 1, JitterFactor: fraction} evaluated at attempt 0.
+	result := retry.CalculateDelay(retry.BackoffConfig{
+		InitialDelay: base,
+		MaxDelay:     base,
+		Multiplier:   1,
+		JitterFactor: fraction,
+	}, 0)
 	if result <= 0 {
 		return base
 	}
@@ -404,6 +566,7 @@ func (o *InventoryObserver) Close() error {
 		o.lifecycleMu.Unlock()
 
 		close(o.closed)
+		o.bgCancel()
 		if o.unregisterReconnectHook != nil {
 			o.unregisterReconnectHook()
 		}

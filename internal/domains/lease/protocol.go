@@ -231,13 +231,41 @@ func encodeLeaseList(pattern string, cursor *leaseListCursor, limit uint32) ([]b
 //	  [string route][string owner_id][u64 holder_incarnation][string acquired_at][u64 expires_in_secs][u32 renewals]
 //	[u8 has_next]
 //	  if has_next == 1: [u64 snapshot_id][u32 offset]
+//
+// minLeaseListEntryWireSize is the smallest possible on-wire size of one
+// LIST item: two empty length-prefixed strings (4 bytes each), an 8-byte
+// holder_incarnation, an empty length-prefixed acquired_at string (4 bytes),
+// an 8-byte expires_in_secs, and a 4-byte renewals count.
+const minLeaseListEntryWireSize = 4 + 4 + 8 + 4 + 8 + 4
+
+// leaseListPreallocCapacity bounds the capacity used to preallocate the
+// parsed items slice. item_count is broker/wire-controlled and unvalidated
+// at this point in parsing, so a corrupted or malicious LEASE_LIST response
+// claiming an item_count near 0xFFFFFFFF must not trigger a multi-gigabyte
+// allocation attempt before the per-item parse would otherwise fail on a
+// truncated buffer. The capacity is capped at the number of items that could
+// plausibly fit in the remaining bytes.
+func leaseListPreallocCapacity(itemCount uint32, remainingBytes int) int {
+	if remainingBytes <= 0 {
+		return 0
+	}
+	maxPlausible := remainingBytes / minLeaseListEntryWireSize
+	// Compare before converting so this remains safe on 32-bit targets: when
+	// itemCount fits below maxPlausible, it is also bounded by the small wire
+	// payload and therefore guaranteed to fit in int.
+	if uint64(itemCount) < uint64(maxPlausible) {
+		return int(itemCount)
+	}
+	return maxPlausible
+}
+
 func parseLeaseListResponse(remaining []byte) ([]LeaseEntry, *leaseListCursor, error) {
 	itemCount, offset, err := connection.ReadU32BE(remaining, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("LIST response missing item_count: %w", err)
 	}
 
-	items := make([]LeaseEntry, 0, itemCount)
+	items := make([]LeaseEntry, 0, leaseListPreallocCapacity(itemCount, len(remaining)-offset))
 	for i := range itemCount {
 		route, newOffset, err := connection.ReadString(remaining, offset)
 		if err != nil {

@@ -156,6 +156,14 @@ type Subscription struct {
 	handler    ChangeHandler
 	preNotify  func(ChangeNotification)
 	completion *subscriptions.Completion
+	// onOverflow, if set, is invoked (in a background goroutine, after the
+	// subscription has been torn down) when the async notify-handler queue
+	// was full and handleNotify tore down this subscription itself, rather
+	// than merely dropping one notification. This is distinct from a
+	// caller-initiated Unsubscribe/Close and lets an InventoryObserver detect
+	// the unexpected teardown and recover, instead of silently degrading to
+	// its periodic backstop reconciler with no signal.
+	onOverflow func()
 }
 
 // Unsubscribe removes this subscription.
@@ -585,7 +593,12 @@ func (c *client) handleNotify(subID uint64, route string, payload []byte) {
 		attribute.String("fitz.route", route),
 	)) {
 		sub.completion.Complete(&coreerrors.AsyncHandlerOverflowError{Domain: "lease", SubscriptionID: subID})
-		go c.unsubscribe(sub)
+		go func() {
+			c.unsubscribe(sub)
+			if sub.onOverflow != nil {
+				sub.onOverflow()
+			}
+		}()
 		if log := c.conn.Logger(); log != nil {
 			log.Warn("lease notify handler dropped", "route", route, "sub_id", subID, "reason", "async handler queue full")
 		}
@@ -609,7 +622,7 @@ func (c *client) Subscribe(ctx context.Context, route string, handler ChangeHand
 	}
 	c.initNotifyHandler()
 
-	sub, err := c.subscribe(ctx, route, handler, nil)
+	sub, err := c.subscribe(ctx, route, handler, nil, nil)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -762,6 +775,7 @@ func (c *client) subscribe(
 	route string,
 	handler ChangeHandler,
 	preNotify func(ChangeNotification),
+	onOverflow func(),
 ) (*Subscription, error) {
 	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeLeaseSubscribe, subscribePayloadWriter(route))
 	if err != nil {
@@ -791,6 +805,7 @@ func (c *client) subscribe(
 		client:     c,
 		handler:    handler,
 		preNotify:  preNotify,
+		onOverflow: onOverflow,
 		completion: subscriptions.NewCompletion(),
 	}
 	c.mu.Lock()
