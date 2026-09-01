@@ -13,6 +13,28 @@ import (
 
 const observeTestTimeout = 3 * time.Second
 
+func TestShouldRejectInvalidObserverOptionsWhenObserving(t *testing.T) {
+	tests := []struct {
+		name string
+		opt  ObserveOption
+	}{
+		{name: "zero reconciliation interval", opt: WithObserveReconcileInterval(0)},
+		{name: "negative reconciliation jitter", opt: WithObserveReconcileJitter(-0.1)},
+		{name: "unit reconciliation jitter", opt: WithObserveReconcileJitter(1)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c, _ := newObserverTestClient(t)
+
+			observer, err := c.Observe(context.Background(), "lease://acme/renderers/*", test.opt)
+
+			require.Error(t, err)
+			require.Nil(t, observer)
+		})
+	}
+}
+
 func newObserverTestClient(t *testing.T) (*client, *scriptedLeaseRestoreTransport) {
 	t.Helper()
 	trans := newScriptedLeaseRestoreTransport()

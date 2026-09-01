@@ -22,10 +22,15 @@ const (
 // ObserveOptions configures an InventoryObserver.
 type ObserveOptions struct {
 	// ReconcileInterval is the base interval between full backstop relists.
-	// Defaults to 60s. The actual delay is jittered by +/- ReconcileJitter.
+	// Defaults to 60s. For a known workload, use
+	// clamp(shortest expected lease TTL / 2, 5s, 60s): this gives at least
+	// two backstop passes during the shortest lease lifetime without
+	// polling faster than one bounded full List every five seconds per
+	// observer. The actual delay is jittered by +/- ReconcileJitter.
 	ReconcileInterval time.Duration
 	// ReconcileJitter is the fractional jitter applied to ReconcileInterval
-	// (e.g. 0.2 for +/- 20%). Defaults to 0.2. A value <= 0 disables jitter.
+	// (e.g. 0.2 for +/- 20%). Defaults to 0.2. Zero disables jitter; values
+	// outside [0, 1) are rejected.
 	ReconcileJitter float64
 }
 
@@ -132,7 +137,10 @@ func (c *client) Observe(ctx context.Context, pattern string, opts ...ObserveOpt
 		}
 	}
 	if options.ReconcileInterval <= 0 {
-		options.ReconcileInterval = defaultReconcileInterval
+		return nil, errors.New("lease observer reconciliation interval must be positive")
+	}
+	if options.ReconcileJitter < 0 || options.ReconcileJitter >= 1 {
+		return nil, errors.New("lease observer reconciliation jitter must be in [0, 1)")
 	}
 
 	bgCtx, bgCancel := context.WithCancel(context.Background())
