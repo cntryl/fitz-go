@@ -44,6 +44,7 @@ const (
 	MessageTypeLeaseSubscribe   uint16 = 407
 	MessageTypeLeaseUnsubscribe uint16 = 408
 	MessageTypeLeaseNotify      uint16 = 409 // Server -> Client only
+	MessageTypeLeaseList        uint16 = 410
 
 	// Notice Domain (500-599)
 	MessageTypeNoticePublish        uint16 = 500

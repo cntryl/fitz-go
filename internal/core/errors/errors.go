@@ -75,6 +75,8 @@ const (
 	LeaseNotFound                 = 5004
 	LeaseBadRequest               = 5008
 	LeaseInvalidSubscriptionRoute = 5010
+	LeaseInvalidListCursor        = 5011
+	LeaseInvalidListPattern       = 5012
 
 	// RPC Domain (6000-6099). 6004 = no workers for route or timeout before any reply (per CLIENT_ACCEPTANCE_CRITERIA).
 	RpcTimeout             = 6001
@@ -190,6 +192,10 @@ func (e ErrorCode) String() string {
 		return "lease_bad_request"
 	case LeaseInvalidSubscriptionRoute:
 		return "lease_invalid_subscription_route"
+	case LeaseInvalidListCursor:
+		return "lease_invalid_list_cursor"
+	case LeaseInvalidListPattern:
+		return "lease_invalid_list_pattern"
 
 	// RPC errors
 	case RpcTimeout:

@@ -61,6 +61,8 @@ const (
 	ErrCodeLeaseNotFound                 = uint32(coreerrors.LeaseNotFound)
 	ErrCodeLeaseBadRequest               = uint32(coreerrors.LeaseBadRequest)
 	ErrCodeLeaseInvalidSubscriptionRoute = uint32(coreerrors.LeaseInvalidSubscriptionRoute)
+	ErrCodeLeaseInvalidListCursor        = uint32(coreerrors.LeaseInvalidListCursor)
+	ErrCodeLeaseInvalidListPattern       = uint32(coreerrors.LeaseInvalidListPattern)
 
 	// RPC domain (6000-6099)
 	ErrCodeRpcTimeout             = uint32(coreerrors.RpcTimeout)
