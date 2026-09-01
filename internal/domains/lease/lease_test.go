@@ -648,6 +648,54 @@ func TestShouldParseLeaseListResponseGivenCanonicalPayloadWhenParseLeaseListResp
 		require.Error(t, err)
 		require.Nil(t, next)
 	})
+
+	// A corrupted/malicious response claiming an enormous item_count with a
+	// short body must fail cleanly (a parse error on the first truncated
+	// item) rather than attempting a multi-gigabyte preallocation.
+	t.Run("huge item_count with short body fails cleanly without huge allocation", func(t *testing.T) {
+		buf := connection.GetBuffer()
+		defer connection.PutBuffer(buf)
+		connection.WriteU32BE(buf, 0xFFFFFFFF) // claimed item_count
+		buf.WriteString("short")               // far too little data for even one item
+		remaining := append([]byte(nil), buf.Bytes()...)
+
+		done := make(chan struct{})
+		var items []LeaseEntry
+		var err error
+		go func() {
+			items, _, err = parseLeaseListResponse(remaining)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("parseLeaseListResponse did not return promptly given a huge item_count and short body")
+		}
+		require.Error(t, err)
+		require.Nil(t, items)
+	})
+}
+
+// TestShouldBoundPreallocCapacityGivenItemCountAndBufferLenWhenComputed
+// verifies leaseListPreallocCapacity never preallocates more capacity than
+// the remaining buffer could plausibly hold, regardless of how large the
+// wire-supplied item_count claims to be.
+func TestShouldBoundPreallocCapacityGivenItemCountAndBufferLenWhenComputed(t *testing.T) {
+	t.Run("huge item_count with short buffer is capped to what could fit", func(t *testing.T) {
+		capacity := leaseListPreallocCapacity(0xFFFFFFFF, 5)
+		assert.Less(t, capacity, 1000, "capacity must not scale with the untrusted item_count")
+	})
+
+	t.Run("small item_count with large buffer uses item_count", func(t *testing.T) {
+		capacity := leaseListPreallocCapacity(3, 10_000)
+		assert.Equal(t, 3, capacity)
+	})
+
+	t.Run("zero remaining bytes yields zero capacity", func(t *testing.T) {
+		assert.Equal(t, 0, leaseListPreallocCapacity(1000, 0))
+		assert.Equal(t, 0, leaseListPreallocCapacity(1000, -1))
+	})
 }
 
 // --- List() iterator paging test ---
