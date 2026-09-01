@@ -156,6 +156,7 @@ func (c *client) Observe(ctx context.Context, pattern string, opts ...ObserveOpt
 	}
 
 	if err := obs.bootstrap(ctx, true); err != nil {
+		bgCancel()
 		return nil, err
 	}
 
@@ -419,9 +420,9 @@ func (o *InventoryObserver) triggerBackgroundBootstrap(subscribe bool) {
 
 			o.lifecycleMu.Lock()
 			requested := o.recoveryRequested
-			if err != nil && needsSubscribe {
+			if err != nil {
 				o.recoveryRequested = true
-				o.recoveryNeedsSubscribe = true
+				o.recoveryNeedsSubscribe = o.recoveryNeedsSubscribe || needsSubscribe
 				requested = true
 			}
 			if err == nil && !requested {
@@ -429,18 +430,12 @@ func (o *InventoryObserver) triggerBackgroundBootstrap(subscribe bool) {
 				o.lifecycleMu.Unlock()
 				return
 			}
-			if err != nil && !needsSubscribe && !errors.Is(err, errObserverSubscriptionChanged) {
-				o.recoveryRunning = false
-				o.lifecycleMu.Unlock()
-				return
-			}
 			o.lifecycleMu.Unlock()
 
-			// Overflow removes the wire registration, so a transient failure
-			// while replacing it cannot be left for the periodic LIST-only
-			// reconciler: without a subscription the observer would miss every
-			// subsequent live invalidation. Retry the complete subscribe+LIST
-			// bootstrap with the same bounded backoff used for raced passes.
+			// A reconnect LIST failure leaves the view knowingly stale, while
+			// overflow removes the wire registration entirely. Retry either
+			// bootstrap with bounded backoff instead of waiting for a later
+			// notification or periodic reconciliation.
 			waitInvalidationBackoff(o.bgCtx, attempt)
 			attempt++
 		}

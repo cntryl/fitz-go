@@ -541,10 +541,9 @@ func leaseErrorResponsePayload(code uint32, msg string) []byte {
 	return append([]byte(nil), buf.Bytes()...)
 }
 
-// --- (g) Ready must be restored once a subsequent reconcile succeeds, even
-// if the post-reconnect background bootstrap itself failed (finding 4). ---
+// --- (g) A transient post-reconnect LIST failure is retried promptly. ---
 
-func TestShouldRestoreReadyGivenSuccessfulReconcileAfterFailedReconnectBootstrapWhenObserving(t *testing.T) {
+func TestShouldRetryTransientListFailureAfterReconnectWhenObserving(t *testing.T) {
 	c, trans := newObserverTestClient(t)
 	base := scriptedLeaseWriteCount(trans)
 	pattern := "lease://acme/renderers/*"
@@ -596,15 +595,12 @@ func TestShouldRestoreReadyGivenSuccessfulReconcileAfterFailedReconnectBootstrap
 	assertWrittenFrameType(t, trans, base+3, protocol.MessageTypeLeaseList)
 	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseErrorResponsePayload(1, "internal error")))
 
-	// Ready must still be false: the reconnect bootstrap gave up.
+	// Ready must stay false while recovery backs off.
 	require.Eventually(t, func() bool { return !observed.Ready() }, observeTestTimeout, 5*time.Millisecond)
-	time.Sleep(20 * time.Millisecond)
 	require.False(t, observed.Ready(), "ready must not spuriously flip true on a failed bootstrap")
 
-	// A subsequent notify-triggered reconcile succeeds: the view is correct
-	// and current again, so Ready() must eventually recover to true even
-	// though the reconnect bootstrap itself never succeeded.
-	c.handleNotify(62, "lease://acme/renderers/doc-1", nil)
+	// Recovery retries LIST without waiting for a notification or the periodic
+	// reconciler, then installs the fresh view.
 	waitForLeaseWrites(t, trans, base+5)
 	assertWrittenFrameType(t, trans, base+4, protocol.MessageTypeLeaseList)
 	trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseList, leaseListResponsePayload(t, []LeaseEntry{
