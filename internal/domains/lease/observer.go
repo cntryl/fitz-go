@@ -94,7 +94,7 @@ type InventoryObserver struct {
 	// bgCtx is the context passed to network calls made by the observer's
 	// background goroutines (reconnect-triggered bootstrap, periodic
 	// reconcile). bgCancel is invoked by Close before wg.Wait, so an in-flight
-	// List call started by a background goroutine is cancelled promptly
+	// List call started by a background goroutine is canceled promptly
 	// instead of leaving Close blocked on it indefinitely.
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
@@ -397,9 +397,9 @@ func (o *InventoryObserver) triggerBackgroundBootstrap(subscribe bool) {
 			o.recoveryRequested = false
 			o.lifecycleMu.Unlock()
 
-			// bgCtx is cancelled by Close before wg.Wait, so a List (and, for
+			// bgCtx is canceled by Close before wg.Wait, so a List (and, for
 			// onOverflow, Subscribe) call in flight when Close is invoked is
-			// cancelled promptly instead of blocking Close indefinitely
+			// canceled promptly instead of blocking Close indefinitely
 			// (finding: Close() can hang).
 			err := o.bootstrap(o.bgCtx, needsSubscribe)
 			if o.bgCtx.Err() != nil {

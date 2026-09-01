@@ -683,13 +683,13 @@ func TestShouldParseLeaseListResponseGivenCanonicalPayloadWhenParseLeaseListResp
 // wire-supplied item_count claims to be.
 func TestShouldBoundPreallocCapacityGivenItemCountAndBufferLenWhenComputed(t *testing.T) {
 	t.Run("huge item_count with short buffer is capped to what could fit", func(t *testing.T) {
-		cap := leaseListPreallocCapacity(0xFFFFFFFF, 5)
-		assert.Less(t, cap, 1000, "capacity must not scale with the untrusted item_count")
+		capacity := leaseListPreallocCapacity(0xFFFFFFFF, 5)
+		assert.Less(t, capacity, 1000, "capacity must not scale with the untrusted item_count")
 	})
 
 	t.Run("small item_count with large buffer uses item_count", func(t *testing.T) {
-		cap := leaseListPreallocCapacity(3, 10_000)
-		assert.Equal(t, 3, cap)
+		capacity := leaseListPreallocCapacity(3, 10_000)
+		assert.Equal(t, 3, capacity)
 	})
 
 	t.Run("zero remaining bytes yields zero capacity", func(t *testing.T) {
