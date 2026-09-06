@@ -30,6 +30,20 @@ func parsePlainStreamResponse(payload []byte) (bool, []byte, error) {
 	if payload[0] == 0 {
 		return true, payload[1:], nil
 	}
+	if payload[0] == 2 {
+		code, offset, err := connection.ReadU32BE(payload, 1)
+		if err != nil {
+			return false, nil, fmt.Errorf("decode stream error code: %w", err)
+		}
+		message, end, err := connection.ReadString(payload, offset)
+		if err != nil {
+			return false, nil, fmt.Errorf("decode stream error: %w", err)
+		}
+		if end != len(payload) {
+			return false, nil, errors.New("trailing bytes after stream error")
+		}
+		return false, nil, coreerrors.NewDomainError(code, message)
+	}
 	if payload[0] != 1 {
 		return false, nil, fmt.Errorf("unknown response status: %d", payload[0])
 	}
@@ -44,6 +58,9 @@ func parsePlainStreamResponse(payload []byte) (bool, []byte, error) {
 }
 
 func parseStreamReadResponse(payload []byte) (bool, []byte, error) {
+	if len(payload) > 0 && payload[0] == 2 {
+		return parsePlainStreamResponse(payload)
+	}
 	return connection.ParseStandardResponse(payload)
 }
 

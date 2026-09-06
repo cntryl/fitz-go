@@ -3,7 +3,6 @@ package stream
 import (
 	"bytes"
 	"errors"
-	"strings"
 
 	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
 	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
@@ -80,25 +79,18 @@ func mapStreamError(err error) error {
 	if errors.As(err, &domainErr) {
 		switch uint32(domainErr.Code) {
 		case coreerrors.StreamConcurrencyConflict:
-			return ErrStreamConflict
+			return errors.Join(ErrStreamConflict, err)
 		case coreerrors.StreamResourceNotFound:
-			return ErrStreamNotFound
+			return errors.Join(ErrStreamNotFound, err)
 		case coreerrors.StreamOffsetTooFarAhead, coreerrors.StreamInvalidReadBound, coreerrors.StreamReadBeyondWatermark:
-			return ErrStreamReadError
+			return errors.Join(ErrStreamReadError, err)
 		default:
 			return err
 		}
 	}
 
-	l := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(l, "not found"):
-		return ErrStreamNotFound
-	case strings.Contains(l, "conflict"):
-		return ErrStreamConflict
-	default:
-		return err
-	}
+	// Legacy errors have no structured classification; preserve the original cause.
+	return err
 }
 
 // encodeStreamBegin encodes a STREAM BEGIN request per CLIENT_SPEC.md.
