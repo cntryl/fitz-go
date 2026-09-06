@@ -91,7 +91,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 		mapped := mapStreamError(errMsg)
 
 		// Assert
-		assert.Equal(t, ErrStreamNotFound, mapped)
+		assert.ErrorIs(t, mapped, ErrStreamNotFound)
 	})
 
 	t.Run("map stream not found case insensitive", func(t *testing.T) {
@@ -102,7 +102,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 		mapped := mapStreamError(errMsg)
 
 		// Assert
-		assert.Equal(t, ErrStreamNotFound, mapped)
+		assert.ErrorIs(t, mapped, ErrStreamNotFound)
 	})
 
 	t.Run("map stream conflict error", func(t *testing.T) {
@@ -113,7 +113,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 		mapped := mapStreamError(errMsg)
 
 		// Assert
-		assert.Equal(t, ErrStreamConflict, mapped)
+		assert.ErrorIs(t, mapped, ErrStreamConflict)
 	})
 
 	t.Run("map stream conflict case insensitive", func(t *testing.T) {
@@ -124,7 +124,7 @@ func TestShouldMapStreamErrorGivenBrokerMessageWhenMapStreamErrorCalled(t *testi
 		mapped := mapStreamError(errMsg)
 
 		// Assert
-		assert.Equal(t, ErrStreamConflict, mapped)
+		assert.ErrorIs(t, mapped, ErrStreamConflict)
 	})
 
 	t.Run("unknown error returns wrapped message", func(t *testing.T) {
