@@ -235,6 +235,23 @@ func TestShouldRejectTrailingBytesGivenExtraFrameDataWhenDecodeFrameCalled(t *te
 	require.EqualError(t, err, "unexpected trailing bytes after frame payload")
 }
 
+func TestShouldDecodeMultipleRecordsGivenCorrelatedTransportFrame(t *testing.T) {
+	label := EncodeFrame(MessageTypeCorrelated, []byte{0, 0, 0, 0, 0, 0, 0, 7})
+	response := EncodeFrame(202, []byte("reserved"))
+
+	frames, err := DecodeFrames(append(label, response...))
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 2 {
+		t.Fatalf("got %d frames", len(frames))
+	}
+	if frames[0].MessageType != MessageTypeCorrelated || frames[1].MessageType != 202 {
+		t.Fatalf("unexpected message types: %d, %d", frames[0].MessageType, frames[1].MessageType)
+	}
+}
+
 func TestShouldHandleMaxSizePayloadGivenExactLimitWhenEncodeFrameCalled(t *testing.T) {
 	// Arrange
 	// Create exactly 65535 byte payload (max allowed)

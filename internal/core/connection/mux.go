@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+
+	"github.com/cntryl/fitz-go/v2/internal/protocol"
 )
 
 // pendingRequest represents one in-flight request awaiting response.
@@ -225,9 +227,11 @@ type Multiplexer struct {
 	// FIFO queue of pending requests per MessageType
 	// Key = MessageType (100-199 for KV, 200-299 for Queue, etc.)
 	// Value = queue of pendingRequest (oldest at front)
-	pending   map[uint16]*requestQueue
-	mu        sync.Mutex
-	handlerMu sync.RWMutex
+	pending     map[uint16]*requestQueue
+	correlated  map[uint64]pendingRequest
+	legacyLanes map[uint16]*sync.Mutex
+	mu          sync.Mutex
+	handlerMu   sync.RWMutex
 
 	// Async delivery handlers (Notice NOTIFY, Schedule NOTIFY, RPC REQUEST to worker, RPC RESPONSE per CLIENT_SPEC.md)
 	// notifyHandlers are keyed by message type so every subscription-capable domain can register independently.
@@ -243,16 +247,54 @@ type Multiplexer struct {
 	responsesDropped atomic.Uint64
 	logger           *slog.Logger
 
-	closed atomic.Bool
+	closed            atomic.Bool
+	protocolVersion   atomic.Uint32
+	capabilities      atomic.Uint32
+	nextCorrelationID atomic.Uint64
 }
 
 // NewMultiplexer creates a new multiplexer.
 func NewMultiplexer() *Multiplexer {
 	return &Multiplexer{
 		pending:         make(map[uint16]*requestQueue),
+		correlated:      make(map[uint64]pendingRequest),
+		legacyLanes:     make(map[uint16]*sync.Mutex),
 		notifyHandlers:  make(map[uint16]func(subID uint64, route string, payload []byte)),
 		rawPushHandlers: make(map[uint16]func(payload []byte)),
 	}
+}
+
+func (m *Multiplexer) SetCapabilities(protocolVersion uint16, capabilities uint32) {
+	m.protocolVersion.Store(uint32(protocolVersion))
+	m.capabilities.Store(capabilities)
+}
+
+func (m *Multiplexer) CorrelationEnabled() bool {
+	return m.capabilities.Load()&protocol.CapabilityCorrelation != 0
+}
+
+func (m *Multiplexer) Capabilities() (uint16, uint32) {
+	return uint16(m.protocolVersion.Load()), m.capabilities.Load()
+}
+
+func (m *Multiplexer) NextCorrelationID() uint64 {
+	for {
+		id := m.nextCorrelationID.Add(1)
+		if id != 0 {
+			return id
+		}
+	}
+}
+
+func (m *Multiplexer) LegacyLane(msgType uint16) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lane := m.legacyLanes[msgType]
+	if lane == nil {
+		lane = &sync.Mutex{}
+		m.legacyLanes[msgType] = lane
+	}
+	return lane
 }
 
 func (m *Multiplexer) setLogger(logger *slog.Logger) {
@@ -300,6 +342,34 @@ func (m *Multiplexer) RegisterRequestWaiter(msgType uint16, waiter *requestWaite
 
 	m.requestsInFlight.Add(1)
 	m.requestsTotal.Add(1)
+}
+
+func (m *Multiplexer) RegisterCorrelatedRequest(id uint64, waiter *requestWaiter) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed.Load() {
+		waiter.fail()
+		return false
+	}
+	if _, exists := m.correlated[id]; exists {
+		return false
+	}
+	m.correlated[id] = pendingRequest{waiter: waiter}
+	m.requestsInFlight.Add(1)
+	m.requestsTotal.Add(1)
+	return true
+}
+
+func (m *Multiplexer) UnregisterCorrelatedRequest(id uint64, waiter *requestWaiter) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	req, exists := m.correlated[id]
+	if !exists || req.waiter != waiter {
+		return false
+	}
+	delete(m.correlated, id)
+	m.requestsInFlight.Add(-1)
+	return true
 }
 
 func (m *Multiplexer) UnregisterRequestWaiter(msgType uint16, waiter *requestWaiter) bool {
@@ -408,6 +478,22 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	m.requestsInFlight.Add(-1)
 	m.responsesTotal.Add(1)
 
+	req.waiter.deliver(payload)
+}
+
+func (m *Multiplexer) DispatchCorrelated(id uint64, msgType uint16, payload []byte) {
+	m.mu.Lock()
+	req, exists := m.correlated[id]
+	if exists {
+		delete(m.correlated, id)
+	}
+	m.mu.Unlock()
+	if !exists {
+		m.Dispatch(msgType, payload)
+		return
+	}
+	m.requestsInFlight.Add(-1)
+	m.responsesTotal.Add(1)
 	req.waiter.deliver(payload)
 }
 
@@ -635,9 +721,17 @@ func (m *Multiplexer) Close() error {
 			req.waiter.fail()
 		}
 	}
+	for _, req := range m.correlated {
+		if req.waiter != nil {
+			req.waiter.fail()
+		}
+	}
 
 	// Clear pending requests
 	m.pending = make(map[uint16]*requestQueue)
+	m.correlated = make(map[uint64]pendingRequest)
+	m.capabilities.Store(0)
+	m.protocolVersion.Store(0)
 
 	return nil
 }
