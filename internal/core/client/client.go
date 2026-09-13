@@ -594,6 +594,23 @@ func (c *Client) Metrics() connection.MultiplexerMetrics {
 	return connection.MultiplexerMetrics{}
 }
 
+// CorrelationEnabled reports whether the current broker session advertised
+// frame-level request correlation.
+func (c *Client) CorrelationEnabled() bool {
+	if conn := c.currentConnection(); conn != nil {
+		return conn.CorrelationEnabled()
+	}
+	return false
+}
+
+// ServerCapabilities returns the current protocol version and capability bits.
+func (c *Client) ServerCapabilities() (uint16, uint32) {
+	if conn := c.currentConnection(); conn != nil {
+		return conn.ServerCapabilities()
+	}
+	return 0, 0
+}
+
 // Domain client accessors.
 
 // KV returns the KV domain client.

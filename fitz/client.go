@@ -66,6 +66,13 @@ func (c *Client) State() ConnectionState {
 	return fromCoreConnectionState(c.inner.State())
 }
 
+// CorrelationEnabled reports whether the current broker session supports
+// frame-level request correlation.
+func (c *Client) CorrelationEnabled() bool { return c.inner.CorrelationEnabled() }
+
+// ServerCapabilities returns the advertised protocol version and capability bits.
+func (c *Client) ServerCapabilities() (uint16, uint32) { return c.inner.ServerCapabilities() }
+
 // Notice returns the Notice domain client for publish/subscribe messaging.
 func (c *Client) Notice() NoticeClient {
 	return &noticeClient{inner: c.inner.Notice()}

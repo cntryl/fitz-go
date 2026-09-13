@@ -3,6 +3,7 @@ package connection
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -145,6 +146,10 @@ type Config struct {
 	Tracer trace.Tracer // When nil, otel.Tracer(module) is used.
 	Meter  metric.Meter // When nil, otel.Meter(module) is used.
 }
+
+func (c *Connection) CorrelationEnabled() bool { return c.mux.CorrelationEnabled() }
+
+func (c *Connection) ServerCapabilities() (uint16, uint32) { return c.mux.Capabilities() }
 
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
@@ -582,8 +587,7 @@ func (c *Connection) dispatchLoop() {
 			}
 			c.recordActivity()
 
-			// Decode frame (MessageType + payload)
-			msgType, payload, err := protocol.DecodeFrame(frame)
+			hasResponse, err := c.dispatchTransportFrame(frame)
 			if err != nil {
 				if c.logger != nil {
 					c.logger.Error("decode frame failed", "error", err)
@@ -591,18 +595,13 @@ func (c *Connection) dispatchLoop() {
 				c.setConnError(fmt.Errorf("decode frame: %w", err))
 				return
 			}
-			if c.logger != nil {
-				c.logger.Debug("frame received", "msg_type", msgType)
-			}
 
 			// First valid response confirms authentication
-			if firstResponse {
+			if firstResponse && hasResponse {
 				c.confirmAuthentication()
 				firstResponse = false
 			}
 
-			// Route to multiplexer (non-blocking dispatch)
-			c.mux.Dispatch(msgType, payload)
 			continue
 		}
 
@@ -613,8 +612,7 @@ func (c *Connection) dispatchLoop() {
 		}
 		c.recordActivity()
 
-		// Decode frame (MessageType + payload)
-		msgType, payload, err := protocol.DecodeFrame(frame)
+		hasResponse, err := c.dispatchTransportFrame(frame)
 		if err != nil {
 			if c.logger != nil {
 				c.logger.Error("decode frame failed", "error", err)
@@ -622,19 +620,55 @@ func (c *Connection) dispatchLoop() {
 			c.setConnError(fmt.Errorf("decode frame: %w", err))
 			return
 		}
-		if c.logger != nil {
-			c.logger.Debug("frame received", "msg_type", msgType)
-		}
-
 		// First valid response confirms authentication
-		if firstResponse {
+		if firstResponse && hasResponse {
 			c.confirmAuthentication()
 			firstResponse = false
 		}
-
-		// Route to multiplexer (non-blocking dispatch)
-		c.mux.Dispatch(msgType, payload)
 	}
+}
+
+func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
+	frames, err := protocol.DecodeFrames(data)
+	if err != nil {
+		return false, err
+	}
+	var correlationID uint64
+	hasResponse := false
+	for _, frame := range frames {
+		if c.logger != nil {
+			c.logger.Debug("frame received", "msg_type", frame.MessageType)
+		}
+		switch frame.MessageType {
+		case protocol.MessageTypeServerHello:
+			if correlationID != 0 {
+				return false, errors.New("CORRELATED record cannot label SERVER_HELLO")
+			}
+			if len(frame.Payload) >= 6 {
+				c.mux.SetCapabilities(binary.BigEndian.Uint16(frame.Payload[:2]), binary.BigEndian.Uint32(frame.Payload[2:6]))
+			}
+		case protocol.MessageTypeCorrelated:
+			if len(frame.Payload) != 8 || correlationID != 0 {
+				return false, errors.New("malformed CORRELATED record")
+			}
+			correlationID = binary.BigEndian.Uint64(frame.Payload)
+			if correlationID == 0 {
+				return false, errors.New("zero CORRELATED identifier")
+			}
+		default:
+			hasResponse = true
+			if correlationID != 0 {
+				c.mux.DispatchCorrelated(correlationID, frame.MessageType, frame.Payload)
+				correlationID = 0
+			} else {
+				c.mux.Dispatch(frame.MessageType, frame.Payload)
+			}
+		}
+	}
+	if correlationID != 0 {
+		return false, errors.New("CORRELATED record did not label a response")
+	}
+	return hasResponse, nil
 }
 
 // handleReadError processes transport read errors.
@@ -698,7 +732,20 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 	}
 	defer c.ReleaseRequestSlot()
 
-	frame := protocol.EncodeFrameOwned(msgType, payload)
+	correlationID := uint64(0)
+	if c.mux.CorrelationEnabled() && msgType != protocol.MessageTypeRpcRequest && msgType != protocol.MessageTypeRpcResponse {
+		correlationID = c.mux.NextCorrelationID()
+	} else {
+		lane := c.mux.LegacyLane(msgType)
+		lane.Lock()
+		defer lane.Unlock()
+	}
+	var frame *protocol.FrameBuffer
+	if correlationID == 0 {
+		frame = protocol.EncodeFrameOwned(msgType, payload)
+	} else {
+		frame = protocol.EncodeCorrelatedFrameOwned(correlationID, msgType, payload)
+	}
 	if frame == nil {
 		err := errors.New("encode frame")
 		span.RecordError(err)
@@ -726,9 +773,20 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 	}
 
 	c.writeMu.Lock()
-	c.mux.RegisterRequestWaiter(msgType, waiter, nil)
+	if correlationID == 0 {
+		c.mux.RegisterRequestWaiter(msgType, waiter, nil)
+	} else if !c.mux.RegisterCorrelatedRequest(correlationID, waiter) {
+		c.writeMu.Unlock()
+		return nil, errors.New("register correlated request")
+	}
 	defer func() {
-		if c.mux.UnregisterRequestWaiter(msgType, waiter) {
+		var removed bool
+		if correlationID == 0 {
+			removed = c.mux.UnregisterRequestWaiter(msgType, waiter)
+		} else {
+			removed = c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
+		}
+		if removed {
 			releaseWaiter = true
 		}
 	}()
@@ -756,7 +814,13 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		}
 		return waiter.response, nil
 	case <-ctx.Done():
-		if c.mux.AbandonRequestWaiter(msgType, waiter) {
+		var removed bool
+		if correlationID == 0 {
+			removed = c.mux.AbandonRequestWaiter(msgType, waiter)
+		} else {
+			removed = c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
+		}
+		if removed {
 			releaseWaiter = true
 		}
 		span.RecordError(ctx.Err())
@@ -822,14 +886,34 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 	}
 	defer c.ReleaseRequestSlot()
 
-	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
+	baseFrame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
 	if err != nil {
 		wrapped := fmt.Errorf("encode frame: %w", err)
 		span.RecordError(wrapped)
 		span.SetStatus(codes.Error, wrapped.Error())
 		return nil, wrapped
 	}
-	defer frame.Release()
+	defer baseFrame.Release()
+	correlationID := uint64(0)
+	if c.mux.CorrelationEnabled() && msgType != protocol.MessageTypeRpcRequest && msgType != protocol.MessageTypeRpcResponse {
+		correlationID = c.mux.NextCorrelationID()
+	} else {
+		lane := c.mux.LegacyLane(msgType)
+		lane.Lock()
+		defer lane.Unlock()
+	}
+	frame := baseFrame
+	if correlationID != 0 {
+		decodedType, decodedPayload, decodeErr := protocol.DecodeFrame(baseFrame.Bytes())
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		frame = protocol.EncodeCorrelatedFrameOwned(correlationID, decodedType, decodedPayload)
+		if frame == nil {
+			return nil, errors.New("encode correlated frame")
+		}
+		defer frame.Release()
+	}
 
 	waiter := acquireRequestWaiter()
 	releaseWaiter := false
@@ -850,9 +934,20 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 	}
 
 	c.writeMu.Lock()
-	c.mux.RegisterRequestWaiter(msgType, waiter, nil)
+	if correlationID == 0 {
+		c.mux.RegisterRequestWaiter(msgType, waiter, nil)
+	} else if !c.mux.RegisterCorrelatedRequest(correlationID, waiter) {
+		c.writeMu.Unlock()
+		return nil, errors.New("register correlated request")
+	}
 	defer func() {
-		if c.mux.UnregisterRequestWaiter(msgType, waiter) {
+		var removed bool
+		if correlationID == 0 {
+			removed = c.mux.UnregisterRequestWaiter(msgType, waiter)
+		} else {
+			removed = c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
+		}
+		if removed {
 			releaseWaiter = true
 		}
 	}()
@@ -880,7 +975,13 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		}
 		return waiter.response, nil
 	case <-ctx.Done():
-		if c.mux.AbandonRequestWaiter(msgType, waiter) {
+		var removed bool
+		if correlationID == 0 {
+			removed = c.mux.AbandonRequestWaiter(msgType, waiter)
+		} else {
+			removed = c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
+		}
+		if removed {
 			releaseWaiter = true
 		}
 		span.RecordError(ctx.Err())

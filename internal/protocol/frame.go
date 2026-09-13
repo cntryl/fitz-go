@@ -94,6 +94,18 @@ const (
 	MessageTypeEscape = 0xFF
 )
 
+const (
+	MessageTypeCorrelate   uint16 = 2
+	MessageTypeCorrelated  uint16 = 3
+	MessageTypeServerHello uint16 = 4
+	CapabilityCorrelation  uint32 = 1 << 0
+)
+
+type Frame struct {
+	MessageType uint16
+	Payload     []byte
+}
+
 // EncodeMessageType encodes MessageType using variable-length encoding
 // Per CLIENT_SPEC.md: types 0-254 = 1 byte, types 255+ = [0xFF][u16 BE]
 func EncodeMessageType(msgType uint16) []byte {
@@ -177,6 +189,32 @@ func EncodeFrameOwned(msgType uint16, payload []byte) *FrameBuffer {
 	return frame
 }
 
+// EncodeCorrelatedFrameOwned encodes CORRELATE immediately before the labeled
+// request in the same transport frame.
+func EncodeCorrelatedFrameOwned(correlationID uint64, msgType uint16, payload []byte) *FrameBuffer {
+	if correlationID == 0 || len(payload) > MaxPayloadSize {
+		return nil
+	}
+	buf := getBuffer()
+	buf.Grow(11 + 3 + 2 + len(payload))
+	buf.WriteByte(byte(MessageTypeCorrelate))
+	writeU16BE(buf, 8)
+	var id [8]byte
+	binary.BigEndian.PutUint64(id[:], correlationID)
+	buf.Write(id[:])
+	if msgType <= 254 {
+		buf.WriteByte(byte(msgType))
+	} else {
+		buf.WriteByte(MessageTypeEscape)
+		writeU16BE(buf, msgType)
+	}
+	writeU16BE(buf, uint16(len(payload)))
+	buf.Write(payload)
+	frame := frameBufferPool.Get().(*FrameBuffer)
+	frame.buf = buf
+	return frame
+}
+
 // EncodeFrameWithPayloadWriter encodes a frame using a payload writer callback.
 // This avoids intermediate payload allocations by writing directly into the frame buffer.
 func EncodeFrameWithPayloadWriter(msgType uint16, writePayload func(*bytes.Buffer)) (*FrameBuffer, error) {
@@ -249,6 +287,28 @@ func DecodeFrame(data []byte) (msgType uint16, payload []byte, err error) {
 
 	payload = data[offset : offset+int(length)]
 	return msgType, payload, nil
+}
+
+// DecodeFrames decodes every TLV record in one message-bounded transport frame.
+func DecodeFrames(data []byte) ([]Frame, error) {
+	frames := make([]Frame, 0, 2)
+	for len(data) > 0 {
+		msgType, typeLen, err := DecodeMessageType(data)
+		if err != nil {
+			return nil, fmt.Errorf("decode message type: %w", err)
+		}
+		if len(data) < typeLen+2 {
+			return nil, errors.New("insufficient data for length field")
+		}
+		length := int(binary.BigEndian.Uint16(data[typeLen : typeLen+2]))
+		end := typeLen + 2 + length
+		if len(data) < end {
+			return nil, fmt.Errorf("insufficient data for payload: need %d, have %d", length, len(data)-typeLen-2)
+		}
+		frames = append(frames, Frame{MessageType: msgType, Payload: data[typeLen+2 : end]})
+		data = data[end:]
+	}
+	return frames, nil
 }
 
 // EncodeTCPFrame encodes a frame for TCP transport using buffer pools

@@ -11,6 +11,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestShouldDispatchCorrelatedRequestsOutOfOrderGivenSameMessageType(t *testing.T) {
+	mux := NewMultiplexer()
+	first := acquireRequestWaiter()
+	second := acquireRequestWaiter()
+	t.Cleanup(func() {
+		releaseRequestWaiter(first)
+		releaseRequestWaiter(second)
+		require.NoError(t, mux.Close())
+	})
+	require.True(t, mux.RegisterCorrelatedRequest(1, first))
+	require.True(t, mux.RegisterCorrelatedRequest(2, second))
+
+	mux.DispatchCorrelated(2, protocol.MessageTypeQueueReserve, []byte("second"))
+	mux.DispatchCorrelated(1, protocol.MessageTypeQueueReserve, []byte("first"))
+
+	<-first.ready
+	<-second.ready
+	require.Equal(t, []byte("first"), first.response)
+	require.Equal(t, []byte("second"), second.response)
+}
+
 func TestShouldRouteRpcWorkerRequestGivenPendingRpcRequestWhenDispatchCalled(t *testing.T) {
 	mux := NewMultiplexer()
 	t.Cleanup(func() {

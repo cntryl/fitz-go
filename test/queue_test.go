@@ -186,6 +186,52 @@ func TestShouldLongPollGivenReserveWithOptionsWhenMessageArrivesLater(t *testing
 	})
 }
 
+func TestShouldCorrelateSameTypeReservesGivenOutOfOrderBrokerResponses(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		require.NoError(t, f.Connect(ctx))
+		require.Eventually(t, f.Client().CorrelationEnabled, time.Second, 10*time.Millisecond)
+		version, capabilities := f.Client().ServerCapabilities()
+		require.Equal(t, uint16(1), version)
+		require.Equal(t, uint32(1), capabilities)
+		parkedRoute := f.UniqueRoute("queue")
+		readyRoute := f.UniqueRoute("queue")
+		_, err := f.Client().Queue().Enqueue(ctx, readyRoute, []byte("second"))
+		require.NoError(t, err)
+
+		type reserveResult struct {
+			items []*fitz.QueueItem
+			err   error
+		}
+		parked := make(chan reserveResult, 1)
+		go func() {
+			items, reserveErr := f.Client().Queue().ReserveWithOptions(
+				ctx, parkedRoute, 30,
+				fitz.WithQueueReserveBatchSize(1),
+				fitz.WithQueueReserveWaitSeconds(5),
+			)
+			parked <- reserveResult{items: items, err: reserveErr}
+		}()
+		time.Sleep(100 * time.Millisecond)
+		second, err := f.Client().Queue().ReserveWithOptions(
+			ctx, readyRoute, 30,
+			fitz.WithQueueReserveBatchSize(1),
+			fitz.WithQueueReserveWaitSeconds(0),
+		)
+		require.NoError(t, err)
+		require.Len(t, second, 1)
+		require.Equal(t, []byte("second"), second[0].Body)
+		_, err = f.Client().Queue().Enqueue(ctx, parkedRoute, []byte("first"))
+		require.NoError(t, err)
+		first := <-parked
+		require.NoError(t, first.err)
+		require.Len(t, first.items, 1)
+		require.Equal(t, []byte("first"), first.items[0].Body)
+	})
+}
+
 func TestShouldDistributeMessagesGivenMultipleConsumersWhenConcurrentReserve(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f1 := fixture.NewTestFixture(t, transport)
