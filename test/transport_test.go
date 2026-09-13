@@ -311,7 +311,15 @@ func TestShouldRejectNonConnectFrameGivenNewTransportWhenFrameSentBeforeAuthenti
 		frame := protocol.EncodeFrameOwned(protocol.MessageTypeKvBegin, nil)
 		defer frame.Release()
 		require.NoError(t, trans.Write(ctx, frame.Bytes()))
-		_, err = trans.Read(ctx)
+		// New brokers may send an unsolicited SERVER_HELLO before rejecting the
+		// unauthenticated domain frame. Drain any such capability advertisement
+		// and assert that the session is ultimately closed.
+		for {
+			_, err = trans.Read(ctx)
+			if err != nil {
+				break
+			}
+		}
 		require.Error(t, err)
 	})
 }
