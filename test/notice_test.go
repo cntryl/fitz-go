@@ -14,6 +14,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestShouldRemoveAllNoticeSubscriptionsGivenUnsubscribeAll(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		f.ConnectOrFail(ctx)
+		first := f.UniqueRoute("notice")
+		second := f.UniqueRoute("notice")
+		handler := func(context.Context, fitz.NoticeMsg) error { return nil }
+		one, err := f.Client().Notice().Subscribe(ctx, first, handler)
+		require.NoError(t, err)
+		two, err := f.Client().Notice().Subscribe(ctx, second, handler)
+		require.NoError(t, err)
+
+		require.NoError(t, f.Client().Notice().UnsubscribeAll(ctx))
+		require.NoError(t, <-one.Completion())
+		require.NoError(t, <-two.Completion())
+		require.NoError(t, f.Client().Notice().UnsubscribeAll(ctx))
+	})
+}
+
 func TestShouldReceiveNotificationGivenActiveSubscriptionWhenPublishMatches(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)

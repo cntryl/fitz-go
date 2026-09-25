@@ -72,6 +72,8 @@ const (
 	MessageTypeScheduleSubscribe   uint16 = 703
 	MessageTypeScheduleUnsubscribe uint16 = 704
 	MessageTypeScheduleNotify      uint16 = 705 // Server -> Client only
+	MessageTypeScheduleCreateBatch uint16 = 706
+	MessageTypeScheduleListV2      uint16 = 707
 )
 
 // RouteDomain returns the domain name for a given MessageType

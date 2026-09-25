@@ -2,6 +2,12 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      broker_tag:
+        description: Fitz broker image tag
+        type: choice
+        options: [main, develop]
+        default: main
   push:
   pull_request:
   schedule:
@@ -11,6 +17,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FITZ_BROKER_IMAGE: ghcr.io/cntryl/fitz:${{ inputs.broker_tag || 'main' }}
+
 jobs:
   ci:
     name: Release Gate
@@ -18,10 +27,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.26"
 
@@ -62,7 +71,7 @@ jobs:
 
       - name: Upload conformance results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fitz-go-conformance-results
           path: artifacts/conformance-*.json

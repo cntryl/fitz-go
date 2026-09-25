@@ -4,6 +4,7 @@ package schedule
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -33,6 +34,12 @@ type ScheduleEntry struct {
 type ScheduleListPage struct {
 	Entries    []ScheduleEntry
 	TotalCount uint64
+}
+
+type ScheduleCursorPage struct {
+	Entries      []ScheduleEntry
+	HasMore      bool
+	Continuation *string
 }
 
 type ScheduleDeliveryMode uint8
@@ -80,11 +87,13 @@ func (s *Subscription) Completion() <-chan error {
 type Client interface {
 	// Create creates a cron-based schedule at the given route (upsert per spec). Returns the schedule route (identity).
 	Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (id string, err error)
+	CreateBatch(ctx context.Context, entries []ScheduleEntry) error
 
 	// Cancel cancels a schedule by route (route-based identity per CLIENT_SPEC).
 	Cancel(ctx context.Context, route string) error
 
 	List(ctx context.Context, offset *uint64, limit *uint64) (ScheduleListPage, error)
+	ListV2(ctx context.Context, cursor *string, limit *uint64) (ScheduleCursorPage, error)
 
 	// ListBySelector retrieves schedules matching a canonical schedule selector.
 	ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error)
@@ -228,6 +237,36 @@ func (c *client) Create(ctx context.Context, route string, cronExpr string, deli
 	return id, nil
 }
 
+// CreateBatch submits multiple schedule definitions in one broker request.
+func (c *client) CreateBatch(ctx context.Context, entries []ScheduleEntry) error {
+	if uint64(len(entries)) > uint64(^uint32(0)) {
+		return errors.New("schedule batch has too many entries")
+	}
+	for _, entry := range entries {
+		if err := types.ValidateScheduleRoute(entry.Route); err != nil {
+			return fmt.Errorf("invalid schedule route: %w", err)
+		}
+		if err := validateCronExpression(entry.Cron); err != nil {
+			return err
+		}
+		if entry.DeliveryMode != ScheduleDeliveryBroadcast && entry.DeliveryMode != ScheduleDeliverySingle {
+			return ErrScheduleInvalidDeliveryMode
+		}
+	}
+	resp, err := c.currentConn().SendRequestWithWriter(ctx, protocol.MessageTypeScheduleCreateBatch, scheduleCreateBatchPayloadWriter(entries))
+	if err != nil {
+		return fmt.Errorf("create batch request failed: %w", err)
+	}
+	success, remaining, err := parseScheduleExtensionResponse(resp)
+	if err != nil {
+		return fmt.Errorf("create batch failed: %w", mapScheduleError(err))
+	}
+	if !success || len(remaining) != 0 {
+		return errors.New("create batch response is malformed")
+	}
+	return nil
+}
+
 // Cancel per CLIENT_SPEC.md: Request [route_len][route] (route-based identity).
 func (c *client) Cancel(ctx context.Context, route string) error {
 	conn := c.currentConn()
@@ -294,6 +333,54 @@ func (c *client) List(ctx context.Context, offset *uint64, limit *uint64) (Sched
 		return ScheduleListPage{}, err
 	}
 	return ScheduleListPage{Entries: entries, TotalCount: totalCount}, nil
+}
+
+// ListV2 reads one optional cursor page using the broker extension wire format.
+func (c *client) ListV2(ctx context.Context, cursor *string, limit *uint64) (ScheduleCursorPage, error) {
+	if limit != nil && *limit > 1000 {
+		return ScheduleCursorPage{}, errors.New("schedule LIST_V2 limit must be at most 1000")
+	}
+	resp, err := c.currentConn().SendRequestWithWriter(ctx, protocol.MessageTypeScheduleListV2, scheduleListV2PayloadWriter(cursor, limit))
+	if err != nil {
+		return ScheduleCursorPage{}, err
+	}
+	success, remaining, err := parseScheduleExtensionResponse(resp)
+	if err != nil {
+		return ScheduleCursorPage{}, err
+	}
+	if !success || len(remaining) < 4 || remaining[0] != 1 || remaining[1] > 1 {
+		return ScheduleCursorPage{}, errors.New("invalid schedule LIST_V2 response header")
+	}
+	page := ScheduleCursorPage{HasMore: remaining[1] == 1}
+	pos := 3
+	switch remaining[2] {
+	case 0:
+	case 1:
+		value, next, readErr := connection.ReadString(remaining, pos)
+		if readErr != nil {
+			return ScheduleCursorPage{}, readErr
+		}
+		page.Continuation = &value
+		pos = next
+	default:
+		return ScheduleCursorPage{}, errors.New("invalid schedule LIST_V2 cursor flag")
+	}
+	if page.HasMore && page.Continuation == nil {
+		return ScheduleCursorPage{}, errors.New("schedule LIST_V2 page is missing continuation")
+	}
+	page.Entries, err = parseScheduleListEntries(remaining[pos:])
+	if err != nil {
+		return ScheduleCursorPage{}, err
+	}
+	return page, nil
+}
+
+// Schedule domain errors are uncoded, while broker ingress errors are coded.
+func parseScheduleExtensionResponse(payload []byte) (bool, []byte, error) {
+	if len(payload) >= 5 && payload[0] == 1 && int(binary.BigEndian.Uint32(payload[1:5]))+5 == len(payload) {
+		return connection.ParsePlainResponse(payload)
+	}
+	return connection.ParseStandardResponse(payload)
 }
 
 func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {

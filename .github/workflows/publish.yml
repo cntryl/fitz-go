@@ -2,7 +2,17 @@ name: Publish
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version to tag, without the v prefix
+        required: true
+        type: string
   workflow_call:
+    inputs:
+      version:
+        description: Semantic version to tag, without the v prefix
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,21 +21,17 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
-  version:
-    uses: ./.github/workflows/version.yml
-
   tag:
     name: Create and push tag
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs:
-      - ci
-      - version
+    needs: ci
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -33,9 +39,17 @@ jobs:
       - name: Create tag if missing
         id: tag
         shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          tag="v${{ needs.version.outputs.semver }}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semantic version: $VERSION" >&2
+            exit 1
+          fi
+
+          tag="v$VERSION"
           if git show-ref --tags --verify --quiet "refs/tags/$tag"; then
+            test "$(git rev-list -n1 "$tag")" = "$GITHUB_SHA"
             echo "created=false" >> "$GITHUB_OUTPUT"
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
             exit 0

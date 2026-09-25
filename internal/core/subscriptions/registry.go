@@ -171,6 +171,25 @@ func (r *Registry[H]) Unsubscribe(pattern string, handlerID uint64) bool {
 	return true
 }
 
+// Clear completes and removes all local registrations and returns the number
+// of distinct wire subscriptions that were held.
+func (r *Registry[H]) Clear() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for r.restoring {
+		r.cond.Wait()
+	}
+	count := len(r.byPattern)
+	for _, registered := range r.byPattern {
+		for _, handler := range registered.handlers {
+			handler.Completion.Complete(nil)
+		}
+	}
+	clear(r.byPattern)
+	clear(r.bySubID)
+	return count
+}
+
 func (r *Registry[H]) Handlers(subID uint64) []H {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -18,6 +18,8 @@ const (
 	ScheduleSubscribe    uint16 = 703
 	ScheduleUnsubscribe  uint16 = 704
 	ScheduleNotify       uint16 = 705 // Server -> Client only
+	ScheduleCreateBatch  uint16 = 706
+	ScheduleListV2       uint16 = 707
 )
 
 // Domain-specific errors. Returned when the server rejects a schedule operation.
@@ -63,6 +65,30 @@ func scheduleCreatePayloadWriter(route string, cronExpr string, deliveryMode Sch
 		encoding.WriteString(buf, cronExpr)
 		buf.WriteByte(byte(deliveryMode))
 		encoding.WriteBytes(buf, payload)
+	}
+}
+
+func scheduleCreateBatchPayloadWriter(entries []ScheduleEntry) func(*bytes.Buffer) {
+	return func(buf *bytes.Buffer) {
+		encoding.WriteU32(buf, uint32(len(entries)))
+		for _, entry := range entries {
+			encoding.WriteRoute(buf, entry.Route)
+			encoding.WriteString(buf, entry.Cron)
+			buf.WriteByte(byte(entry.DeliveryMode))
+			encoding.WriteBytes(buf, entry.Payload)
+		}
+	}
+}
+
+func scheduleListV2PayloadWriter(cursor *string, limit *uint64) func(*bytes.Buffer) {
+	return func(buf *bytes.Buffer) {
+		if cursor == nil {
+			buf.WriteByte(0)
+		} else {
+			buf.WriteByte(1)
+			encoding.WriteString(buf, *cursor)
+		}
+		encoding.WriteOptionalU64(buf, limit)
 	}
 }
 
