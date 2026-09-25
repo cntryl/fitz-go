@@ -362,6 +362,8 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 			if log := c.conn.Logger(); log != nil {
 				log.Warn("rpc worker handler failed", "route", route, "error", err)
 			}
+			w.sendError(err)
+			return
 		}
 		// Send stream_end
 		w.sendEnd()
@@ -595,6 +597,22 @@ func (w *responseWriter) sendEnd() {
 	// been removed from the in-flight map, so there is no state to roll back.
 	// The caller observes the cancellation/end via iterator.Err() or context.
 	_ = w.conn.SendFireAndForgetWithWriter(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, rpcResponsePayloadWriter(w.correlationID, seq, nil, true))
+}
+
+func (w *responseWriter) sendError(err error) {
+	w.mu.Lock()
+	seq := w.seq
+	w.mu.Unlock()
+	message := err.Error()
+	if len(message) > 1024 {
+		message = strings.ToValidUTF8(message[:1024], "")
+	}
+	body := make([]byte, 9+len(message))
+	body[0] = 1
+	binary.BigEndian.PutUint32(body[1:5], 6010)
+	binary.BigEndian.PutUint32(body[5:9], uint32(len(message)))
+	copy(body[9:], message)
+	_ = w.conn.SendFireAndForgetWithWriter(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, rpcResponsePayloadWriter(w.correlationID, seq, body, true))
 }
 
 // rpcIterator iterates over response frames from a Call.

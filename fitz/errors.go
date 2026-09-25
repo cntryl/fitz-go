@@ -29,21 +29,27 @@ const (
 	ErrCodeKvUnauthorized        = uint32(coreerrors.KvUnauthorized)
 	ErrCodeKvInvalidSubscription = uint32(coreerrors.KvInvalidSubscription)
 	ErrCodeKvSubscriptionLimit   = uint32(coreerrors.KvSubscriptionLimit)
+	ErrCodeKvBusy                = uint32(coreerrors.KvBusy)
 
 	// Stream domain (2000-2099)
-	ErrCodeStreamConcurrencyConflict = uint32(coreerrors.StreamConcurrencyConflict)
-	ErrCodeStreamOffsetTooFarAhead   = uint32(coreerrors.StreamOffsetTooFarAhead)
-	ErrCodeStreamInvalidReadBound    = uint32(coreerrors.StreamInvalidReadBound)
-	ErrCodeStreamReadBeyondWatermark = uint32(coreerrors.StreamReadBeyondWatermark)
-	ErrCodeStreamResourceNotFound    = uint32(coreerrors.StreamResourceNotFound)
-	ErrCodeStreamInvalidSubscription = uint32(coreerrors.StreamInvalidSubscription)
-	ErrCodeStreamSubscriptionLimit   = uint32(coreerrors.StreamSubscriptionLimit)
+	ErrCodeStreamConcurrencyConflict  = uint32(coreerrors.StreamConcurrencyConflict)
+	ErrCodeStreamSessionAlreadyActive = uint32(coreerrors.StreamSessionAlreadyActive)
+	ErrCodeStreamSessionNotFound      = uint32(coreerrors.StreamSessionNotFound)
+	ErrCodeStreamInvalidReadBound     = uint32(coreerrors.StreamInvalidReadBound)
+	ErrCodeStreamResourceNotFound     = uint32(coreerrors.StreamResourceNotFound)
+	ErrCodeStreamInvalidSubscription  = uint32(coreerrors.StreamInvalidSubscription)
+	ErrCodeStreamSubscriptionLimit    = uint32(coreerrors.StreamSubscriptionLimit)
+	ErrCodeStreamBusy                 = uint32(coreerrors.StreamBusy)
+	// Deprecated: use the broker-aligned Stream constants above.
+	ErrCodeStreamOffsetTooFarAhead   = ErrCodeStreamSessionAlreadyActive
+	ErrCodeStreamReadBeyondWatermark = ErrCodeStreamInvalidReadBound
 
 	// Notice domain (3000-3099)
 	ErrCodeNoticeInvalidRoute      = uint32(coreerrors.NoticeInvalidRoute)
 	ErrCodeNoticeInvalidPattern    = uint32(coreerrors.NoticeInvalidPattern)
 	ErrCodeNoticeSubscriptionLimit = uint32(coreerrors.NoticeSubscriptionLimit)
 	ErrCodeNoticeTransportClosed   = uint32(coreerrors.NoticeTransportClosed)
+	ErrCodeNoticeBusy              = uint32(coreerrors.NoticeBusy)
 
 	// Queue domain (4000-4099)
 	ErrCodeQueueInvalidToken        = uint32(coreerrors.QueueInvalidToken)
@@ -63,6 +69,7 @@ const (
 	ErrCodeLeaseInvalidSubscriptionRoute = uint32(coreerrors.LeaseInvalidSubscriptionRoute)
 	ErrCodeLeaseInvalidListCursor        = uint32(coreerrors.LeaseInvalidListCursor)
 	ErrCodeLeaseInvalidListPattern       = uint32(coreerrors.LeaseInvalidListPattern)
+	ErrCodeLeaseQueueFull                = uint32(coreerrors.LeaseQueueFull)
 
 	// RPC domain (6000-6099)
 	ErrCodeRpcTimeout             = uint32(coreerrors.RpcTimeout)
@@ -110,9 +117,10 @@ var ErrAsyncHandlerOverflow = coreerrors.ErrAsyncHandlerOverflow
 // IsRetryable reports whether err indicates a transient, retryable condition.
 // The following server-signaled situations are considered retryable:
 //   - KV isolation conflict (concurrent transaction collision)      [1004]
-//   - Stream read beyond watermark (catchup not yet available)      [2004]
+//   - KV, Stream, and Notice mailbox saturation                     [1014, 2014, 3006]
 //   - Queue full (backpressure)                                     [4005]
 //   - Lease held (contention, retry after backoff)                  [5001]
+//   - Lease queue full                                               [5007]
 //   - RPC timeout (worker temporarily overloaded)                   [6001]
 //   - RPC worker not found (route may not yet be registered)        [6002]
 //   - RPC backpressure                                              [6003]
@@ -125,9 +133,12 @@ func IsRetryable(err error) bool {
 	}
 	switch uint32(de.Code) {
 	case ErrCodeKvIsolationConflict,
-		ErrCodeStreamReadBeyondWatermark,
+		ErrCodeKvBusy,
+		ErrCodeStreamBusy,
+		ErrCodeNoticeBusy,
 		ErrCodeQueueFull,
 		ErrCodeLeaseHeld,
+		ErrCodeLeaseQueueFull,
 		ErrCodeRpcTimeout,
 		ErrCodeRpcWorkerNotFound,
 		ErrCodeRpcBackpressure,

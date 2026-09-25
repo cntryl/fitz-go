@@ -43,21 +43,27 @@ const (
 	KvUnauthorized        = 1011
 	KvInvalidSubscription = 1012
 	KvSubscriptionLimit   = 1013
+	KvBusy                = 1014
 
 	// Stream Domain (2000-2099)
-	StreamConcurrencyConflict = 2001
-	StreamOffsetTooFarAhead   = 2002
-	StreamInvalidReadBound    = 2003
-	StreamReadBeyondWatermark = 2004
-	StreamResourceNotFound    = 2005
-	StreamInvalidSubscription = 2010
-	StreamSubscriptionLimit   = 2011
+	StreamConcurrencyConflict  = 2001
+	StreamSessionAlreadyActive = 2002
+	StreamSessionNotFound      = 2003
+	StreamInvalidReadBound     = 2004
+	StreamResourceNotFound     = 2005
+	StreamInvalidSubscription  = 2010
+	StreamSubscriptionLimit    = 2011
+	StreamBusy                 = 2014
+	// Deprecated: the former names describe different broker errors. Use the corrected constants.
+	StreamOffsetTooFarAhead   = StreamSessionAlreadyActive
+	StreamReadBeyondWatermark = StreamInvalidReadBound
 
 	// Notice Domain (3000-3099)
 	NoticeInvalidRoute      = 3001
 	NoticeInvalidPattern    = 3002
 	NoticeSubscriptionLimit = 3003
 	NoticeTransportClosed   = 3004
+	NoticeBusy              = 3006
 
 	// Queue Domain (4000-4099)
 	QueueInvalidToken        = 4001
@@ -77,6 +83,7 @@ const (
 	LeaseInvalidSubscriptionRoute = 5010
 	LeaseInvalidListCursor        = 5011
 	LeaseInvalidListPattern       = 5012
+	LeaseQueueFull                = 5007
 
 	// RPC Domain (6000-6099). 6004 = no workers for route or timeout before any reply (per CLIENT_ACCEPTANCE_CRITERIA).
 	RpcTimeout             = 6001
@@ -101,7 +108,7 @@ const (
 
 // IsBackpressure returns true if the error code indicates backpressure
 func IsBackpressure(code uint32) bool {
-	return code == QueueFull || code == RpcBackpressure
+	return code == KvBusy || code == StreamBusy || code == NoticeBusy || code == QueueFull || code == LeaseQueueFull || code == RpcBackpressure
 }
 
 // ErrorCode represents a Fitz protocol error
@@ -136,22 +143,26 @@ func (e ErrorCode) String() string {
 		return "kv_invalid_subscription"
 	case KvSubscriptionLimit:
 		return "kv_subscription_limit"
+	case KvBusy:
+		return "kv_busy"
 
 	// Stream errors
 	case StreamConcurrencyConflict:
 		return "concurrency_conflict"
-	case StreamOffsetTooFarAhead:
-		return "offset_too_far_ahead"
+	case StreamSessionAlreadyActive:
+		return "session_already_active"
+	case StreamSessionNotFound:
+		return "session_not_found"
 	case StreamInvalidReadBound:
 		return "invalid_read_bound"
-	case StreamReadBeyondWatermark:
-		return "read_beyond_watermark"
 	case StreamResourceNotFound:
 		return "stream_resource_not_found"
 	case StreamInvalidSubscription:
 		return "stream_invalid_subscription"
 	case StreamSubscriptionLimit:
 		return "stream_subscription_limit"
+	case StreamBusy:
+		return "stream_busy"
 
 	// Notice errors
 	case NoticeInvalidRoute:
@@ -162,6 +173,8 @@ func (e ErrorCode) String() string {
 		return "notice_subscription_limit"
 	case NoticeTransportClosed:
 		return "notice_transport_closed"
+	case NoticeBusy:
+		return "notice_busy"
 
 	// Queue errors
 	case QueueInvalidToken:
@@ -190,6 +203,8 @@ func (e ErrorCode) String() string {
 		return "lease_not_found"
 	case LeaseBadRequest:
 		return "lease_bad_request"
+	case LeaseQueueFull:
+		return "lease_queue_full"
 	case LeaseInvalidSubscriptionRoute:
 		return "lease_invalid_subscription_route"
 	case LeaseInvalidListCursor:

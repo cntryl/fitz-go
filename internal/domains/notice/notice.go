@@ -3,6 +3,7 @@
 package notice
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -61,11 +62,13 @@ type Client interface {
 	// Subscribe registers a handler for notifications matching the pattern.
 	// Returns a Subscription that can be used to unsubscribe.
 	Subscribe(ctx context.Context, pattern string, handler NoticeHandler) (*Subscription, error)
+	UnsubscribeAll(ctx context.Context) error
 }
 
 type client struct {
-	conn   *connection.Connection
-	connMu sync.RWMutex
+	conn       *connection.Connection
+	connMu     sync.RWMutex
+	operations sync.Mutex
 
 	mu                      sync.Mutex
 	subscriptions           *subscriptions.Registry[NoticeHandler]
@@ -161,6 +164,8 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 // Request: [pattern_len][pattern]
 // Response: [status][subscription_id(u64)]
 func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHandler) (*Subscription, error) {
+	c.operations.Lock()
+	defer c.operations.Unlock()
 	ctx, span := c.currentConn().Tracer().Start(ctx, "fitz.notice.Subscribe", trace.WithAttributes(attribute.String("fitz.pattern", pattern)))
 	defer span.End()
 	if log := c.currentConn().Logger(); log != nil {
@@ -188,8 +193,31 @@ func (c *client) Subscribe(ctx context.Context, pattern string, handler NoticeHa
 	}, nil
 }
 
+// UnsubscribeAll removes every Notice registration from the broker session and
+// completes its local handles only after the broker acknowledges the request.
+func (c *client) UnsubscribeAll(ctx context.Context) error {
+	c.operations.Lock()
+	defer c.operations.Unlock()
+	resp, err := c.currentConn().SendRequestWithWriter(ctx, protocol.MessageTypeNoticeUnsubscribeAll, func(*bytes.Buffer) {})
+	if err != nil {
+		return fmt.Errorf("unsubscribe all request failed: %w", err)
+	}
+	success, remaining, err := connection.ParseStandardResponse(resp)
+	if err != nil {
+		return fmt.Errorf("unsubscribe all failed: %w", mapNoticeError(err))
+	}
+	if !success || len(remaining) != 0 {
+		return errors.New("unsubscribe all response is malformed")
+	}
+	removed := c.subscriptions.Clear()
+	c.currentConn().AddSubscriptions(-int64(removed))
+	return nil
+}
+
 // unsubscribe removes a subscription.
 func (c *client) unsubscribe(sub *Subscription) {
+	c.operations.Lock()
+	defer c.operations.Unlock()
 	if !c.subscriptions.Unsubscribe(sub.route, sub.handlerID) {
 		return
 	}
@@ -219,6 +247,8 @@ func (c *client) ReplaceConnection(conn *connection.Connection) {
 }
 
 func (c *client) RestoreSubscriptions(ctx context.Context) error {
+	c.operations.Lock()
+	defer c.operations.Unlock()
 	return c.subscriptions.Restore(
 		func(pattern string) (uint64, error) {
 			return c.subscribeWire(ctx, pattern)
