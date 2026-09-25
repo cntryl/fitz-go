@@ -1740,10 +1740,12 @@ func IsTransientRetryable(err error) bool {
 	if errors.As(err, &domainErr) {
 		switch uint32(domainErr.Code) {
 		case coreerrors.KvIsolationConflict,
-			coreerrors.KvBackendError,
-			coreerrors.StreamReadBeyondWatermark,
+			coreerrors.KvBusy,
+			coreerrors.StreamBusy,
+			coreerrors.NoticeBusy,
 			coreerrors.QueueFull,
 			coreerrors.LeaseHeld,
+			coreerrors.LeaseQueueFull,
 			coreerrors.RpcTimeout,
 			coreerrors.RpcWorkerNotFound,
 			coreerrors.RpcBackpressure,

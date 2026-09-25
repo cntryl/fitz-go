@@ -132,6 +132,13 @@ if err != nil {
 defer sub.Unsubscribe()
 ```
 
+`client.Notice().UnsubscribeAll(ctx)` removes all Notice subscriptions for the
+current broker session and completes their local handles. Schedule's canonical
+`Create` and offset-based `List` remain portable; brokers supporting the 706/707
+extensions also accept `CreateBatch(ctx, entries)` and
+`ListV2(ctx, cursor, limit)`. `ListV2` returns `HasMore` and an opaque
+`Continuation` for the next page.
+
 Stream replay pattern:
 
 ```go
@@ -334,9 +341,9 @@ scenario coverage in `test/conformance`.
 | Queue | 200, 202-204, 207-209 | ENQUEUE, RESERVE, EXTEND, COMPLETE, SUBSCRIBE | CS-018, CS-022 |
 | RPC | 300-303 | SUBSCRIBE_WORKER, UNSUBSCRIBE_WORKER, REQUEST, RESPONSE | CS-004, CS-006, CS-007, CS-008, CS-009, CS-017 |
 | Lease | 400-403, 407-409 | ACQUIRE, RENEW, RELEASE, QUERY, NOTIFY | CS-019 |
-| Notice | 500-504 | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, NOTIFY | CS-010, CS-020 |
+| Notice | 500-504 | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, UNSUBSCRIBE_ALL, NOTIFY | CS-010, CS-020 |
 | Stream | 600-609 | BEGIN, APPEND, COMMIT, READ, SUBSCRIBE | CS-011, CS-012, CS-013, CS-016 |
-| Schedule | 700-705 | CREATE, CANCEL, LIST, SUBSCRIBE, NOTIFY | CS-021 |
+| Schedule | 700-707 | CREATE, CANCEL, LIST, SUBSCRIBE, NOTIFY, CREATE_BATCH, LIST_V2 | CS-021 |
 
 Notes:
 

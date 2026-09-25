@@ -76,7 +76,8 @@ func TestShouldClassifyRetryabilityGivenErrorCodeWhenIsRetryableCalled(t *testin
 		want bool
 	}{
 		{name: "kv isolation conflict", code: fitz.ErrCodeKvIsolationConflict, want: true},
-		{name: "stream read beyond watermark", code: fitz.ErrCodeStreamReadBeyondWatermark, want: true},
+		{name: "stream invalid read bound", code: fitz.ErrCodeStreamInvalidReadBound, want: false},
+		{name: "stream busy", code: fitz.ErrCodeStreamBusy, want: true},
 		{name: "queue full", code: fitz.ErrCodeQueueFull, want: true},
 		{name: "lease held", code: fitz.ErrCodeLeaseHeld, want: true},
 		{name: "kv key not found", code: fitz.ErrCodeKvKeyNotFound, want: false},

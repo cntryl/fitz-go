@@ -17,6 +17,11 @@ type ScheduleListPage struct {
 	Entries    []ScheduleEntry
 	TotalCount uint64
 }
+type ScheduleCursorPage struct {
+	Entries      []ScheduleEntry
+	HasMore      bool
+	Continuation *string
+}
 
 type ScheduleDeliveryMode uint8
 
@@ -52,8 +57,10 @@ func (s *ScheduleSubscription) Completion() <-chan error {
 
 type ScheduleClient interface {
 	Create(ctx context.Context, route string, cronExpr string, deliveryMode ScheduleDeliveryMode, payload []byte) (id string, err error)
+	CreateBatch(ctx context.Context, entries []ScheduleEntry) error
 	Cancel(ctx context.Context, route string) error
 	List(ctx context.Context, offset *uint64, limit *uint64) (ScheduleListPage, error)
+	ListV2(ctx context.Context, cursor *string, limit *uint64) (ScheduleCursorPage, error)
 	ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error)
 	WaitForNotifications(ctx context.Context, route string) (Iterator[ScheduleNotification], error)
 	Subscribe(ctx context.Context, pattern string, handler ScheduleHandler) (*ScheduleSubscription, error)
@@ -68,6 +75,19 @@ func (c *scheduleClient) Create(ctx context.Context, route string, cronExpr stri
 	return c.inner.Create(ctx, route, cronExpr, internalschedule.ScheduleDeliveryMode(deliveryMode), payload)
 }
 
+// CreateBatch submits schedule definitions using broker extension 706.
+func (c *scheduleClient) CreateBatch(ctx context.Context, entries []ScheduleEntry) error {
+	internalEntries := make([]internalschedule.ScheduleEntry, len(entries))
+	for i, entry := range entries {
+		internalEntries[i] = internalschedule.ScheduleEntry{
+			Route: entry.Route, Cron: entry.Cron,
+			DeliveryMode: internalschedule.ScheduleDeliveryMode(entry.DeliveryMode),
+			Payload:      entry.Payload,
+		}
+	}
+	return c.inner.CreateBatch(ctx, internalEntries)
+}
+
 // Cancel removes a schedule by route.
 func (c *scheduleClient) Cancel(ctx context.Context, route string) error {
 	return c.inner.Cancel(ctx, route)
@@ -79,6 +99,18 @@ func (c *scheduleClient) List(ctx context.Context, offset *uint64, limit *uint64
 		return ScheduleListPage{}, err
 	}
 	return ScheduleListPage{Entries: copyScheduleEntries(page.Entries), TotalCount: page.TotalCount}, nil
+}
+
+// ListV2 reads a broker cursor page without changing canonical offset-based List.
+func (c *scheduleClient) ListV2(ctx context.Context, cursor *string, limit *uint64) (ScheduleCursorPage, error) {
+	page, err := c.inner.ListV2(ctx, cursor, limit)
+	if err != nil {
+		return ScheduleCursorPage{}, err
+	}
+	return ScheduleCursorPage{
+		Entries: copyScheduleEntries(page.Entries), HasMore: page.HasMore,
+		Continuation: page.Continuation,
+	}, nil
 }
 
 // ListBySelector returns schedules matching a canonical selector.

@@ -27,9 +27,10 @@ func TestErrorCodeRegistry(t *testing.T) {
 
 		// Stream Domain (2000-2099)
 		{"StreamConcurrencyConflict", StreamConcurrencyConflict, 2001},
-		{"StreamOffsetTooFarAhead", StreamOffsetTooFarAhead, 2002},
-		{"StreamInvalidReadBound", StreamInvalidReadBound, 2003},
-		{"StreamReadBeyondWatermark", StreamReadBeyondWatermark, 2004},
+		{"StreamSessionAlreadyActive", StreamSessionAlreadyActive, 2002},
+		{"StreamSessionNotFound", StreamSessionNotFound, 2003},
+		{"StreamInvalidReadBound", StreamInvalidReadBound, 2004},
+		{"StreamBusy", StreamBusy, 2014},
 		{"StreamResourceNotFound", StreamResourceNotFound, 2005},
 		{"StreamInvalidSubscription", StreamInvalidSubscription, 2010},
 		{"StreamSubscriptionLimit", StreamSubscriptionLimit, 2011},
