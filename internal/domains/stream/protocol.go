@@ -82,7 +82,7 @@ func mapStreamError(err error) error {
 			return errors.Join(ErrStreamConflict, err)
 		case coreerrors.StreamResourceNotFound:
 			return errors.Join(ErrStreamNotFound, err)
-		case coreerrors.StreamOffsetTooFarAhead, coreerrors.StreamInvalidReadBound, coreerrors.StreamReadBeyondWatermark:
+		case coreerrors.StreamSessionAlreadyActive, coreerrors.StreamSessionNotFound, coreerrors.StreamInvalidReadBound:
 			return errors.Join(ErrStreamReadError, err)
 		default:
 			return err

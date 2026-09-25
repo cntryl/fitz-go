@@ -17,6 +17,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestShouldCreateBatchAndContinueListV2GivenBrokerExtensions(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		f.ConnectOrFail(ctx)
+		one := f.UniqueRoute("schedule")
+		two := f.UniqueRoute("schedule")
+		entries := []fitz.ScheduleEntry{
+			{Route: one, Cron: "0 0 * * *", DeliveryMode: fitz.ScheduleDeliveryBroadcast, Payload: []byte("one")},
+			{Route: two, Cron: "0 0 * * *", DeliveryMode: fitz.ScheduleDeliverySingle, Payload: []byte("two")},
+		}
+		require.NoError(t, f.Client().Schedule().CreateBatch(ctx, entries))
+		defer func() {
+			_ = f.Client().Schedule().Cancel(ctx, one)
+			_ = f.Client().Schedule().Cancel(ctx, two)
+		}()
+		limit := uint64(1)
+		seen := map[string]bool{}
+		var cursor *string
+		for {
+			page, err := f.Client().Schedule().ListV2(ctx, cursor, &limit)
+			require.NoError(t, err)
+			for _, entry := range page.Entries {
+				seen[entry.Route] = true
+			}
+			if !page.HasMore {
+				break
+			}
+			require.NotNil(t, page.Continuation)
+			cursor = page.Continuation
+		}
+		assert.True(t, seen[one] && seen[two])
+	})
+}
+
 func TestShouldCreateScheduleGivenValidCronExpressionWhenCreateCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)

@@ -4,15 +4,97 @@ package integration
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/cntryl/fitz-go/v2/fitz"
+	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
 	"github.com/cntryl/fitz-go/v2/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestShouldReturnTypedFailureGivenThrowingRPCWorker(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		worker := fixture.NewTestFixture(t, transport)
+		caller := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		worker.ConnectOrFail(ctx)
+		caller.ConnectOrFail(ctx)
+		route := worker.UniqueRoute("rpc")
+		sub, err := worker.Client().RPC().RegisterWorker(ctx, route, 7, func(context.Context, fitz.RPCInboundRequest, fitz.RPCResponseWriter) error {
+			return errors.New("worker failed")
+		})
+		require.NoError(t, err)
+		defer sub.Deregister()
+
+		iter, err := caller.Client().RPC().Call(ctx, route, []byte("request"))
+		require.NoError(t, err)
+		defer closeQuietly(iter)
+		require.False(t, iter.Next())
+		var domainErr *coreerrors.DomainError
+		require.ErrorAs(t, iter.Err(), &domainErr)
+		assert.Equal(t, uint32(6010), uint32(domainErr.Code))
+	})
+}
+
+func TestShouldPreservePriorChunkThenFailGivenThrowingRPCWorker(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		worker := fixture.NewTestFixture(t, transport)
+		caller := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		worker.ConnectOrFail(ctx)
+		caller.ConnectOrFail(ctx)
+		route := worker.UniqueRoute("rpc")
+		sub, err := worker.Client().RPC().RegisterWorker(ctx, route, 7, func(_ context.Context, _ fitz.RPCInboundRequest, writer fitz.RPCResponseWriter) error {
+			if err := writer.Send([]byte("first")); err != nil {
+				return err
+			}
+			return errors.New("worker failed later")
+		})
+		require.NoError(t, err)
+		defer sub.Deregister()
+
+		iter, err := caller.Client().RPC().Call(ctx, route, nil)
+		require.NoError(t, err)
+		defer closeQuietly(iter)
+		require.True(t, iter.Next())
+		assert.Equal(t, []byte("first"), iter.Value().Body)
+		require.False(t, iter.Next())
+		var domainErr *coreerrors.DomainError
+		require.ErrorAs(t, iter.Err(), &domainErr)
+		assert.Equal(t, uint32(6010), uint32(domainErr.Code))
+	})
+}
+
+func TestShouldBoundTerminalErrorGivenVeryLongWorkerFailure(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		worker := fixture.NewTestFixture(t, transport)
+		caller := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		worker.ConnectOrFail(ctx)
+		caller.ConnectOrFail(ctx)
+		route := worker.UniqueRoute("rpc")
+		sub, err := worker.Client().RPC().RegisterWorker(ctx, route, 7, func(context.Context, fitz.RPCInboundRequest, fitz.RPCResponseWriter) error {
+			return errors.New(strings.Repeat("x", 70000))
+		})
+		require.NoError(t, err)
+		defer sub.Deregister()
+		iter, err := caller.Client().RPC().Call(ctx, route, nil)
+		require.NoError(t, err)
+		defer closeQuietly(iter)
+		require.False(t, iter.Next())
+		var domainErr *coreerrors.DomainError
+		require.ErrorAs(t, iter.Err(), &domainErr)
+		assert.Equal(t, uint32(6010), uint32(domainErr.Code))
+	})
+}
 
 func TestShouldRouteRequestToWorkerGivenRegisteredWorkerWhenRequestCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {

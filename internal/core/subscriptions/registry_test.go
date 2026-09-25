@@ -227,6 +227,21 @@ func TestShouldRollbackRestoredSubscriptionsGivenRestoreFailureWhenWireSubscribe
 	assert.ElementsMatch(t, []string{"third"}, registry.Handlers(12))
 }
 
+func TestShouldCompleteAndRemoveAllHandlersGivenClear(t *testing.T) {
+	registry := NewRegistry[string]()
+	_, firstID, err := registry.Subscribe("notice://realm/one", "first", func(string) (uint64, error) { return 10, nil })
+	require.NoError(t, err)
+	_, _, err = registry.Subscribe("notice://realm/two", "second", func(string) (uint64, error) { return 11, nil })
+	require.NoError(t, err)
+	completion := registry.Completion("notice://realm/one", firstID)
+
+	assert.Equal(t, 2, registry.Clear())
+	assert.Empty(t, registry.Registrations(10))
+	assert.Empty(t, registry.Registrations(11))
+	assert.False(t, registry.Unsubscribe("notice://realm/one", firstID))
+	assert.NoError(t, <-completion.Done())
+}
+
 func BenchmarkRestoreHighFanout(b *testing.B) {
 	registry := NewRegistry[string]()
 	for patternIdx := range 8 {
