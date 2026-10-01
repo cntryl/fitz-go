@@ -12,10 +12,17 @@ type KVPair struct {
 }
 
 type KVScanQuery struct {
+	// StartKey is inclusive: lower bound in forward scans, upper bound in reverse scans.
 	StartKey []byte
-	EndKey   []byte
-	Limit    uint32
-	Reverse  bool
+	// EndKey is exclusive: upper bound in forward scans, lower bound in reverse scans.
+	EndKey []byte
+	// Limit is the maximum items in this page; zero leaves the item count to the server frame budget.
+	Limit uint32
+	// Reverse selects descending key order.
+	Reverse bool
+	// StartExclusive resumes strictly after StartKey in the selected direction.
+	// The broker must advertise exclusive SCAN resume support before this is set.
+	StartExclusive bool
 }
 
 type KVDurabilityMode uint8
@@ -154,10 +161,11 @@ func (t *kvTx) Get(ctx context.Context, key []byte) (KVGetResult, error) {
 // Scan reads a page of key/value pairs and returns an iterator over the page.
 func (t *kvTx) Scan(ctx context.Context, query KVScanQuery) (Iterator[KVPair], bool, error) {
 	iter, hasMore, err := t.inner.Scan(ctx, internalkv.ScanQuery{
-		StartKey: query.StartKey,
-		EndKey:   query.EndKey,
-		Limit:    query.Limit,
-		Reverse:  query.Reverse,
+		StartKey:       query.StartKey,
+		EndKey:         query.EndKey,
+		Limit:          query.Limit,
+		Reverse:        query.Reverse,
+		StartExclusive: query.StartExclusive,
 	})
 	if err != nil {
 		return nil, false, err

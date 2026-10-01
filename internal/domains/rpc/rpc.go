@@ -246,35 +246,19 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 	c.mu.Unlock()
 
 	if isCall {
-		// This is a response to our Call
-		// Parse: [u64 sequence][u8 flags][bytes body]
-		offset := 0
-		if offset+8 > len(payload) {
+		// This is a response to our Call. Validate the entire frame before
+		// exposing its body so malformed terminal errors cannot look successful.
+		response, err := decodeRPCResponsePayload(payload)
+		if err != nil {
+			c.mu.Lock()
+			delete(c.pendingRPCs, correlationID)
+			c.mu.Unlock()
+			stream.fail(fmt.Errorf("malformed RPC response: %w", err))
 			return
 		}
-		seq := binary.BigEndian.Uint64(payload[offset : offset+8])
-		offset += 8
 
-		if offset >= len(payload) {
-			return
-		}
-		streamEnd := payload[offset]&1 != 0
-		offset++
-
-		// body is TLV bytes: [u32 len][data]
-		if offset+4 > len(payload) {
-			return
-		}
-		bodyLen := binary.BigEndian.Uint32(payload[offset : offset+4])
-		offset += 4
-
-		if offset+int(bodyLen) > len(payload) {
-			return
-		}
-		body := payload[offset : offset+int(bodyLen)]
-
-		if streamEnd && len(body) > 0 && body[0] == 1 {
-			if _, _, terminalErr := connection.ParseStandardResponse(body); terminalErr != nil {
+		if response.streamEnd && len(response.body) > 0 && response.body[0] == 1 {
+			if _, _, terminalErr := connection.ParseStandardResponse(response.body); terminalErr != nil {
 				c.mu.Lock()
 				delete(c.pendingRPCs, correlationID)
 				c.mu.Unlock()
@@ -283,10 +267,10 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 			}
 		}
 
-		if !streamEnd || len(body) > 0 {
-			_ = stream.enqueue(ResponseFrame{Body: body, Sequence: seq})
+		if !response.streamEnd || len(response.body) > 0 {
+			_ = stream.enqueue(ResponseFrame{Body: response.body, Sequence: response.sequence})
 		}
-		if streamEnd {
+		if response.streamEnd {
 			c.mu.Lock()
 			delete(c.pendingRPCs, correlationID)
 			c.mu.Unlock()
@@ -294,6 +278,34 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		}
 		return
 	}
+}
+
+type decodedRPCResponse struct {
+	sequence  uint64
+	streamEnd bool
+	body      []byte
+}
+
+func decodeRPCResponsePayload(payload []byte) (decodedRPCResponse, error) {
+	const fixedSize = 8 + 1 + 4
+	if len(payload) < fixedSize {
+		return decodedRPCResponse{}, fmt.Errorf("response is too short: %d bytes", len(payload))
+	}
+	sequence := binary.BigEndian.Uint64(payload[:8])
+	flags := payload[8]
+	if flags&^byte(1) != 0 {
+		return decodedRPCResponse{}, fmt.Errorf("unsupported response flags: %#x", flags)
+	}
+	bodyLen := uint64(binary.BigEndian.Uint32(payload[9:13]))
+	bodyStart := uint64(fixedSize)
+	if bodyLen != uint64(len(payload))-bodyStart {
+		return decodedRPCResponse{}, fmt.Errorf("response body length %d does not match remaining bytes %d", bodyLen, uint64(len(payload))-bodyStart)
+	}
+	return decodedRPCResponse{
+		sequence:  sequence,
+		streamEnd: flags&1 != 0,
+		body:      payload[fixedSize:],
+	}, nil
 }
 
 // handleWorkerRequest processes an incoming request for a registered worker.

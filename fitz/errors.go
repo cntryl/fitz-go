@@ -77,6 +77,7 @@ const (
 	ErrCodeRpcBackpressure        = uint32(coreerrors.RpcBackpressure)
 	ErrCodeRpcRouteNotRegistered  = uint32(coreerrors.RpcRouteNotRegistered)
 	ErrCodeRpcCorrelationNotFound = uint32(coreerrors.RpcCorrelationNotFound)
+	ErrCodeRpcBackendError        = uint32(coreerrors.RpcBackendError)
 	ErrCodeRpcInvalidSubscription = uint32(coreerrors.RpcInvalidSubscription)
 	ErrCodeRpcSubscriptionLimit   = uint32(coreerrors.RpcSubscriptionLimit)
 

@@ -1,6 +1,7 @@
 package kv
 
 import (
+	"bytes"
 	"testing"
 
 	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
@@ -38,11 +39,40 @@ func TestShouldMapKVErrorGivenTypedBrokerMessageWhenMapKVErrorCalled(t *testing.
 	})
 }
 
-func TestShouldRejectInvertedRangeGivenScanQueryWhenEncodeScanCalled(t *testing.T) {
-	_, err := encodeScan(1, "kv://realm/area/resource", ScanQuery{
+func TestShouldEncodeInvertedRangeGivenScanQueryWhenEncodeScanCalled(t *testing.T) {
+	payload, err := encodeScan(1, "kv://realm/area/resource", ScanQuery{
 		StartKey: []byte("z"),
 		EndKey:   []byte("a"),
 		Limit:    10,
 	})
-	assert.ErrorIs(t, err, ErrInvalidRange)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, payload)
+}
+
+func TestShouldEncodeReverseRangeGivenDescendingBoundsWhenEncodeScanCalled(t *testing.T) {
+	payload, err := encodeScan(1, "kv://realm/area/resource", ScanQuery{
+		StartKey: []byte("z"),
+		EndKey:   []byte("a"),
+		Reverse:  true,
+	})
+	assert.NoError(t, err)
+	assert.NotEmpty(t, payload)
+}
+
+func TestShouldEncodeExclusiveFlagOnlyWhenRequestedGivenScanQuery(t *testing.T) {
+	query := ScanQuery{StartKey: []byte("key"), StartExclusive: true}
+	payload, err := encodeScan(1, "kv://realm/area/resource", query)
+	assert.NoError(t, err)
+	assert.Equal(t, byte(1), payload[len(payload)-1])
+
+	writer, err := scanPayloadWriter(1, "kv://realm/area/resource", query)
+	assert.NoError(t, err)
+	var encoded bytes.Buffer
+	writer(&encoded)
+	assert.Equal(t, payload, encoded.Bytes())
+
+	query.StartExclusive = false
+	legacyPayload, err := encodeScan(1, "kv://realm/area/resource", query)
+	assert.NoError(t, err)
+	assert.NotEqual(t, len(payload), len(legacyPayload))
 }
