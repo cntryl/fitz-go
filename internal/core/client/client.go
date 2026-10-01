@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/cntryl/fitz-go/v2/internal/core/connection"
 	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
@@ -104,6 +106,8 @@ type Client struct {
 type Config struct {
 	// Connection
 	URL                        string
+	ServiceName                string
+	serviceNameSet             bool
 	AuthSettleDelay            time.Duration
 	ReadTimeout                time.Duration
 	WriteTimeout               time.Duration
@@ -174,6 +178,14 @@ type Option func(*Config)
 // WithURL sets the server URL.
 func WithURL(url string) Option {
 	return func(c *Config) { c.URL = url }
+}
+
+// WithServiceName reports a friendly service name to brokers that advertise session metadata.
+func WithServiceName(name string) Option {
+	return func(c *Config) {
+		c.ServiceName = name
+		c.serviceNameSet = true
+	}
 }
 
 // WithAuthSettleDelay sets the silent CONNECT settle window.
@@ -514,6 +526,16 @@ func (c *Config) validate() error {
 	if c.URL == "" {
 		return errors.New("url is required")
 	}
+	if c.serviceNameSet || c.ServiceName != "" {
+		if strings.TrimSpace(c.ServiceName) == "" || !utf8.ValidString(c.ServiceName) || len([]byte(c.ServiceName)) > 128 {
+			return errors.New("service name must be non-empty and at most 128 UTF-8 bytes")
+		}
+		for _, character := range c.ServiceName {
+			if unicode.IsControl(character) {
+				return errors.New("service name must not contain control characters")
+			}
+		}
+	}
 	return nil
 }
 
@@ -687,6 +709,7 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 
 	connCfg := connection.Config{
 		Token:                      token,
+		ServiceName:                c.config.ServiceName,
 		AuthSettleDelay:            c.config.AuthSettleDelay,
 		ReadTimeout:                c.config.ReadTimeout,
 		WriteTimeout:               c.config.WriteTimeout,

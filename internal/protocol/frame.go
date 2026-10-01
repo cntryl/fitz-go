@@ -95,11 +95,13 @@ const (
 )
 
 const (
-	MessageTypeCorrelate      uint16 = 2
-	MessageTypeCorrelated     uint16 = 3
-	MessageTypeServerHello    uint16 = 4
-	CapabilityCorrelation     uint32 = 1 << 0
-	CapabilityKVScanExclusive uint32 = 1 << 1
+	MessageTypeCorrelate       uint16 = 2
+	MessageTypeCorrelated      uint16 = 3
+	MessageTypeServerHello     uint16 = 4
+	MessageTypeSessionMetadata uint16 = 5
+	CapabilityCorrelation      uint32 = 1 << 0
+	CapabilitySessionMetadata  uint32 = 1 << 1
+	CapabilityKVScanExclusive  uint32 = 1 << 2
 )
 
 type Frame struct {

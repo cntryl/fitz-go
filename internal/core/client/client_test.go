@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,6 +27,20 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
+
+func TestServiceNameValidatesUTF8ByteBoundary(t *testing.T) {
+	valid := Config{URL: "tcp://localhost:4091", ServiceName: strings.Repeat("é", 64)}
+	require.NoError(t, valid.validate())
+
+	tooLong := Config{URL: "tcp://localhost:4091", ServiceName: strings.Repeat("é", 65)}
+	require.ErrorContains(t, tooLong.validate(), "128 UTF-8 bytes")
+
+	invalidUTF8 := Config{URL: "tcp://localhost:4091", ServiceName: string([]byte{0xff})}
+	require.ErrorContains(t, invalidUTF8.validate(), "128 UTF-8 bytes")
+
+	emptyOption := Config{URL: "tcp://localhost:4091", serviceNameSet: true}
+	require.ErrorContains(t, emptyOption.validate(), "service name must be non-empty")
+}
 
 type cleanupRPCClient struct {
 	once     sync.Once

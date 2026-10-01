@@ -86,11 +86,12 @@ type Connection struct {
 	mux *Multiplexer
 
 	// Dispatch loop control
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{} // Closed when dispatch loop exits
-	started atomic.Bool   // Set once Start has launched the dispatch loop
-	closed  atomic.Bool   // Set once Close has begun shutdown
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	serviceMetadataSent atomic.Bool
+	done                chan struct{} // Closed when dispatch loop exits
+	started             atomic.Bool   // Set once Start has launched the dispatch loop
+	closed              atomic.Bool   // Set once Close has begun shutdown
 
 	// Connection error (set when connection closes)
 	connError atomic.Value // stores error
@@ -121,6 +122,7 @@ type Connection struct {
 // Config contains connection configuration.
 type Config struct {
 	Token                      string
+	ServiceName                string
 	AuthSettleDelay            time.Duration // Optional CONNECT rejection-observation window.
 	ReadTimeout                time.Duration // Default 30s (per-read timeout)
 	WriteTimeout               time.Duration // Default 10s
@@ -389,6 +391,7 @@ func (c *Connection) Start(ctx context.Context) error {
 	if !c.started.CompareAndSwap(false, true) {
 		return ErrConnectionAlreadyStarted
 	}
+	c.serviceMetadataSent.Store(false)
 
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.start")
 	defer span.End()
@@ -541,6 +544,32 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 	return nil
 }
 
+func (c *Connection) sendSessionMetadata() error {
+	if !c.serviceMetadataSent.CompareAndSwap(false, true) {
+		return nil
+	}
+	name := []byte(c.cfg.ServiceName)
+	payload := make([]byte, 4+len(name))
+	binary.BigEndian.PutUint32(payload[:4], uint32(len(name)))
+	copy(payload[4:], name)
+	frame := protocol.EncodeFrame(protocol.MessageTypeSessionMetadata, payload)
+	ctx := c.ctx
+	if c.cfg.WriteTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.cfg.WriteTimeout)
+		defer cancel()
+	}
+	c.writeMu.Lock()
+	err := c.transport.Write(ctx, frame)
+	c.writeMu.Unlock()
+	if err != nil {
+		c.serviceMetadataSent.Store(false)
+		return fmt.Errorf("send session metadata: %w", err)
+	}
+	c.recordActivity()
+	return nil
+}
+
 // confirmAuthentication marks authentication as successful.
 // Called when first valid response arrives (or immediately for anonymous).
 func (c *Connection) confirmAuthentication() {
@@ -645,7 +674,13 @@ func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
 				return false, errors.New("CORRELATED record cannot label SERVER_HELLO")
 			}
 			if len(frame.Payload) >= 6 {
-				c.mux.SetCapabilities(binary.BigEndian.Uint16(frame.Payload[:2]), binary.BigEndian.Uint32(frame.Payload[2:6]))
+				capabilities := binary.BigEndian.Uint32(frame.Payload[2:6])
+				c.mux.SetCapabilities(binary.BigEndian.Uint16(frame.Payload[:2]), capabilities)
+				if c.cfg.ServiceName != "" && capabilities&protocol.CapabilitySessionMetadata != 0 {
+					if err := c.sendSessionMetadata(); err != nil {
+						return false, err
+					}
+				}
 			}
 		case protocol.MessageTypeCorrelated:
 			if len(frame.Payload) != 8 || correlationID != 0 {

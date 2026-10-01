@@ -26,7 +26,7 @@ func main() {
 
 	client := fitz.NewClient("ws://localhost:4090/ws", func(context.Context) (string, error) {
 		return "your-jwt-token", nil
-	})
+	}, fitz.WithServiceName("orders-worker"))
 
 	if err := client.Connect(ctx); err != nil {
 		panic(err)
@@ -56,6 +56,9 @@ func main() {
 	}
 }
 ```
+
+`WithServiceName` is optional. New brokers record it on the active session after
+advertising the `SESSION_METADATA` capability; older brokers receive no metadata frame.
 
 ## Canonical usage patterns
 
