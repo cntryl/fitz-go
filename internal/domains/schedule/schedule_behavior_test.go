@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 
-	"github.com/cntryl/fitz-go/v2/internal/core/connection"
-	coretypes "github.com/cntryl/fitz-go/v2/internal/core/types"
-	"github.com/cntryl/fitz-go/v2/internal/protocol"
+	"github.com/cntryl/fitz-go/internal/core/connection"
+	coretypes "github.com/cntryl/fitz-go/internal/core/types"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/stretchr/testify/require"
 )
 

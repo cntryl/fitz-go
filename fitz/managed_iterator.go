@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	coreiter "github.com/cntryl/fitz-go/v2/internal/core/iter"
+	coreiter "github.com/cntryl/fitz-go/internal/core/iter"
 )
 
 type managedPollResult[T any] struct {

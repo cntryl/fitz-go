@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/cntryl/fitz-go/v2/fitz"
+	"github.com/cntryl/fitz-go/fitz"
 )
 
 func TestPublicSurface(t *testing.T) {

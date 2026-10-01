@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cntryl/fitz-go/v2/internal/core/connection"
-	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
+	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/encoding"
 )
 
 // Wire opcodes for Queue domain (per CLIENT_SPEC.md). Values are message type identifiers.

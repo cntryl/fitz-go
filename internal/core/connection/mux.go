@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/cntryl/fitz-go/v2/internal/protocol"
+	"github.com/cntryl/fitz-go/internal/protocol"
 )
 
 // pendingRequest represents one in-flight request awaiting response.

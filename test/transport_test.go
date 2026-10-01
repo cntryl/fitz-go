@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/v2/fitz"
-	coretransport "github.com/cntryl/fitz-go/v2/internal/core/transport"
-	"github.com/cntryl/fitz-go/v2/internal/protocol"
-	"github.com/cntryl/fitz-go/v2/test/fixture"
+	"github.com/cntryl/fitz-go/fitz"
+	coretransport "github.com/cntryl/fitz-go/internal/core/transport"
+	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

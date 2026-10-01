@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cntryl/fitz-go/v2/internal/core/connection"
-	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
-	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
-	"github.com/cntryl/fitz-go/v2/internal/core/types"
+	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/internal/core/types"
 )
 
 // Wire opcodes for Lease domain (per CLIENT_SPEC.md 400–403).

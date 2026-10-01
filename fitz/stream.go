@@ -3,8 +3,8 @@ package fitz
 import (
 	"context"
 
-	"github.com/cntryl/fitz-go/v2/internal/core/types"
-	internalstream "github.com/cntryl/fitz-go/v2/internal/domains/stream"
+	"github.com/cntryl/fitz-go/internal/core/types"
+	internalstream "github.com/cntryl/fitz-go/internal/domains/stream"
 )
 
 var (
