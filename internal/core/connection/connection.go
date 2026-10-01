@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -548,7 +549,7 @@ func (c *Connection) sendSessionMetadata() error {
 	if !c.serviceMetadataSent.CompareAndSwap(false, true) {
 		return nil
 	}
-	name := []byte(c.cfg.ServiceName)
+	name := []byte(strings.TrimSpace(c.cfg.ServiceName))
 	payload := make([]byte, 4+len(name))
 	binary.BigEndian.PutUint32(payload[:4], uint32(len(name)))
 	copy(payload[4:], name)

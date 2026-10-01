@@ -31,6 +31,8 @@ import (
 func TestServiceNameValidatesUTF8ByteBoundary(t *testing.T) {
 	valid := Config{URL: "tcp://localhost:4091", ServiceName: strings.Repeat("é", 64)}
 	require.NoError(t, valid.validate())
+	padded := Config{URL: "tcp://localhost:4091", ServiceName: " " + strings.Repeat("é", 64) + " "}
+	require.NoError(t, padded.validate())
 
 	tooLong := Config{URL: "tcp://localhost:4091", ServiceName: strings.Repeat("é", 65)}
 	require.ErrorContains(t, tooLong.validate(), "128 UTF-8 bytes")

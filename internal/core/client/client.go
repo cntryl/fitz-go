@@ -527,10 +527,11 @@ func (c *Config) validate() error {
 		return errors.New("url is required")
 	}
 	if c.serviceNameSet || c.ServiceName != "" {
-		if strings.TrimSpace(c.ServiceName) == "" || !utf8.ValidString(c.ServiceName) || len([]byte(c.ServiceName)) > 128 {
+		serviceName := strings.TrimSpace(c.ServiceName)
+		if serviceName == "" || !utf8.ValidString(serviceName) || len([]byte(serviceName)) > 128 {
 			return errors.New("service name must be non-empty and at most 128 UTF-8 bytes")
 		}
-		for _, character := range c.ServiceName {
+		for _, character := range serviceName {
 			if unicode.IsControl(character) {
 				return errors.New("service name must not contain control characters")
 			}

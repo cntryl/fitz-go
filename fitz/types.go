@@ -87,7 +87,7 @@ func WithAuthSettleDelay(delay time.Duration) Option {
 	}
 }
 
-// WithServiceName reports a friendly service name to brokers that advertise session metadata.
+// WithServiceName reports a trimmed friendly service name to brokers that advertise session metadata.
 func WithServiceName(name string) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithServiceName(name))
