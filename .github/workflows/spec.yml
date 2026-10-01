@@ -1,0 +1,71 @@
+name: Spec
+
+on:
+  workflow_dispatch:
+    inputs:
+      broker_tag:
+        description: Fitz broker image tag
+        type: choice
+        options: [main, develop]
+        default: main
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FITZ_BROKER_IMAGE: ghcr.io/cntryl/fitz:${{ inputs.broker_tag || 'main' }}
+
+jobs:
+  spec:
+    name: Broker acceptance and shared spec
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Start broker stack
+        run: docker compose up -d
+
+      - name: Run broker acceptance tests
+        run: go test -count=1 -tags=integration ./test -timeout 10m
+
+      - name: Run conformance matrix
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          for transport in tcp ws; do
+            for auth_mode in anonymous valid_jwt; do
+              output="$PWD/artifacts/conformance-${transport}-${auth_mode}.json"
+              CONFORMANCE_TRANSPORT="$transport" \
+                CONFORMANCE_AUTH_MODE="$auth_mode" \
+                CONFORMANCE_OUTPUT="$output" \
+                go test -count=1 -tags=integration ./test/conformance/... \
+                  -run TestConformanceSuite -timeout 10m
+            done
+          done
+
+      - name: Upload conformance results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fitz-go-conformance-results
+          path: artifacts/conformance-*.json
+          if-no-files-found: warn
+
+      - name: Stop broker stack
+        if: always()
+        run: docker compose down --volumes
