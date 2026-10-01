@@ -189,10 +189,11 @@ func deleteRangePayloadWriter(txID uint64, route string, startKey, endKey []byte
 
 // ScanQuery represents SCAN operation parameters.
 type ScanQuery struct {
-	StartKey []byte // Inclusive lower bound (nil = from beginning)
-	EndKey   []byte // Exclusive upper bound (nil = to end)
-	Limit    uint32 // Max items to return (0 = unlimited)
-	Reverse  bool   // true = descending order
+	StartKey       []byte // Inclusive start bound (nil = unbounded)
+	EndKey         []byte // Exclusive end bound (nil = unbounded)
+	Limit          uint32 // Maximum items in the page; zero uses the server frame budget.
+	Reverse        bool   // true = descending order
+	StartExclusive bool   // Resume strictly after StartKey in the selected direction.
 }
 
 // encodeScan encodes a KV SCAN request payload per CLIENT_SPEC.md.
@@ -211,10 +212,6 @@ func encodeScan(txID uint64, route string, query ScanQuery) ([]byte, error) {
 			return nil, err
 		}
 	}
-	if err := validateScanRange(query.StartKey, query.EndKey); err != nil {
-		return nil, err
-	}
-
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, txID)
 		encoding.WriteRoute(buf, route)
@@ -249,6 +246,9 @@ func encodeScan(txID uint64, route string, query ScanQuery) ([]byte, error) {
 		} else {
 			buf.WriteByte(0)
 		}
+		if query.StartExclusive {
+			buf.WriteByte(1)
+		}
 	}), nil
 }
 
@@ -263,10 +263,6 @@ func scanPayloadWriter(txID uint64, route string, query ScanQuery) (func(*bytes.
 			return nil, err
 		}
 	}
-	if err := validateScanRange(query.StartKey, query.EndKey); err != nil {
-		return nil, err
-	}
-
 	return func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, txID)
 		encoding.WriteRoute(buf, route)
@@ -301,14 +297,10 @@ func scanPayloadWriter(txID uint64, route string, query ScanQuery) (func(*bytes.
 		} else {
 			buf.WriteByte(0)
 		}
+		if query.StartExclusive {
+			buf.WriteByte(1)
+		}
 	}, nil
-}
-
-func validateScanRange(startKey, endKey []byte) error {
-	if startKey != nil && endKey != nil && bytes.Compare(startKey, endKey) > 0 {
-		return ErrInvalidRange
-	}
-	return nil
 }
 
 // encodeCommit encodes a KV COMMIT request payload per CLIENT_SPEC.md.

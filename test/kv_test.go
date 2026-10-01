@@ -305,7 +305,7 @@ func TestShouldRespectLimitGivenScanLimitWhenScanCalled(t *testing.T) {
 	})
 }
 
-func TestShouldRejectInvertedRangeGivenScanQueryWhenScanCalled(t *testing.T) {
+func TestShouldReturnEmptyPageGivenInvertedRangeWhenScanCalled(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -316,9 +316,13 @@ func TestShouldRejectInvertedRangeGivenScanQueryWhenScanCalled(t *testing.T) {
 
 		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
 		require.NoError(t, err)
-		_, _, err = tx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("z"), EndKey: []byte("a"), Limit: 10})
-		require.Error(t, err)
-		assert.ErrorIs(t, err, fitz.ErrKVInvalidRange)
+		iter, hasMore, err := tx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("z"), EndKey: []byte("a"), Limit: 10})
+		require.NoError(t, err)
+		require.NotNil(t, iter)
+		defer closeQuietly(iter)
+		assert.False(t, iter.Next())
+		assert.NoError(t, iter.Err())
+		assert.False(t, hasMore)
 	})
 }
 

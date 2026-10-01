@@ -87,6 +87,13 @@ func WithAuthSettleDelay(delay time.Duration) Option {
 	}
 }
 
+// WithServiceName reports a friendly service name to brokers that advertise session metadata.
+func WithServiceName(name string) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithServiceName(name))
+	}
+}
+
 // WithReadTimeout sets the per-read deadline on the underlying transport
 // connection. A zero duration disables the timeout.
 func WithReadTimeout(timeout time.Duration) Option {

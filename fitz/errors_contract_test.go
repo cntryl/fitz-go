@@ -33,11 +33,21 @@ func TestShouldClassifyBrokerDomainCodesGivenRetryabilityTable(t *testing.T) {
 		{1004, true}, {1014, true}, {2014, true}, {3006, true},
 		{4005, true}, {5001, true}, {5007, true}, {6001, true},
 		{6002, true}, {6003, true}, {6004, true}, {7010, true},
+		{ErrCodeRpcBackendError, false},
 		{1009, false}, {2004, false}, {5006, false}, {1011, false},
 	}
 	for _, tc := range cases {
 		if got := IsRetryable(coreerrors.NewDomainError(tc.code, "test")); got != tc.want {
 			t.Errorf("code %d: got %t, want %t", tc.code, got, tc.want)
 		}
+	}
+}
+
+func TestShouldNameRPCBackendErrorGivenServerCode(t *testing.T) {
+	if ErrCodeRpcBackendError != 6010 {
+		t.Fatalf("RPC backend error code: got %d, want 6010", ErrCodeRpcBackendError)
+	}
+	if got := coreerrors.ErrorCode(ErrCodeRpcBackendError).String(); got != "rpc_backend_error" {
+		t.Fatalf("RPC backend error name: got %q", got)
 	}
 }

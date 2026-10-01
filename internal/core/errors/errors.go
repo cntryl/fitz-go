@@ -91,6 +91,7 @@ const (
 	RpcBackpressure        = 6003 // Backpressure signal
 	RpcRouteNotRegistered  = 6004
 	RpcCorrelationNotFound = 6005
+	RpcBackendError        = 6010 // Dispatch timed out or the domain outcome is unknown
 	RpcInvalidSubscription = 6012
 	RpcSubscriptionLimit   = 6013
 
@@ -223,6 +224,8 @@ func (e ErrorCode) String() string {
 		return "rpc_route_not_registered"
 	case RpcCorrelationNotFound:
 		return "rpc_correlation_not_found"
+	case RpcBackendError:
+		return "rpc_backend_error"
 	case RpcInvalidSubscription:
 		return "rpc_invalid_subscription"
 	case RpcSubscriptionLimit:

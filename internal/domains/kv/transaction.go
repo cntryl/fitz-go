@@ -327,6 +327,12 @@ func (t *transaction) Scan(ctx context.Context, query ScanQuery) (iter.Iterator[
 	if err := t.checkState(); err != nil {
 		return nil, false, err
 	}
+	if query.StartExclusive {
+		_, capabilities := t.conn.ServerCapabilities()
+		if capabilities&protocol.CapabilityKVScanExclusive == 0 {
+			return nil, false, errors.New("broker did not advertise exclusive KV SCAN resume support")
+		}
+	}
 
 	// Encode request
 	writer, err := scanPayloadWriter(t.txID, t.route, query)
@@ -376,6 +382,10 @@ func parseScanResponse(remaining []byte) ([]KVPair, bool, error) {
 	itemCount, offset, err := connection.ReadU32BE(remaining, 0)
 	if err != nil {
 		return nil, false, fmt.Errorf("parse item_count: %w", err)
+	}
+	available := len(remaining) - offset
+	if available < 1 || uint64(itemCount) > uint64((available-1)/8) {
+		return nil, false, fmt.Errorf("scan item count %d exceeds the remaining response payload", itemCount)
 	}
 
 	pairs := make([]KVPair, 0, itemCount)
