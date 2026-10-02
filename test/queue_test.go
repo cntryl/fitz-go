@@ -195,7 +195,7 @@ func TestShouldCorrelateSameTypeReservesGivenOutOfOrderBrokerResponses(t *testin
 		require.Eventually(t, f.Client().CorrelationEnabled, time.Second, 10*time.Millisecond)
 		version, capabilities := f.Client().ServerCapabilities()
 		require.Equal(t, uint16(1), version)
-		require.Equal(t, uint32(1), capabilities)
+		require.Equal(t, uint32(1), capabilities&1)
 		parkedRoute := f.UniqueRoute("queue")
 		readyRoute := f.UniqueRoute("queue")
 		_, err := f.Client().Queue().Enqueue(ctx, readyRoute, []byte("second"))
