@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	coreclient "github.com/cntryl/fitz-go/v2/internal/core/client"
-	"github.com/cntryl/fitz-go/v2/internal/core/connection"
-	coretypes "github.com/cntryl/fitz-go/v2/internal/core/types"
+	coreclient "github.com/cntryl/fitz-go/internal/core/client"
+	"github.com/cntryl/fitz-go/internal/core/connection"
+	coretypes "github.com/cntryl/fitz-go/internal/core/types"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -87,7 +87,7 @@ func WithAuthSettleDelay(delay time.Duration) Option {
 	}
 }
 
-// WithServiceName reports a friendly service name to brokers that advertise session metadata.
+// WithServiceName reports a trimmed friendly service name to brokers that advertise session metadata.
 func WithServiceName(name string) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithServiceName(name))

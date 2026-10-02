@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/cntryl/fitz-go/v2/internal/core/encoding"
-	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
+	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire opcodes for RPC domain (per CLIENT_SPEC.md). Values are message type identifiers.

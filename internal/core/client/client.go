@@ -12,18 +12,18 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/cntryl/fitz-go/v2/internal/core/connection"
-	"github.com/cntryl/fitz-go/v2/internal/core/reconnect"
-	"github.com/cntryl/fitz-go/v2/internal/core/retry"
-	"github.com/cntryl/fitz-go/v2/internal/core/transport"
-	"github.com/cntryl/fitz-go/v2/internal/core/types"
-	"github.com/cntryl/fitz-go/v2/internal/domains/kv"
-	"github.com/cntryl/fitz-go/v2/internal/domains/lease"
-	"github.com/cntryl/fitz-go/v2/internal/domains/notice"
-	"github.com/cntryl/fitz-go/v2/internal/domains/queue"
-	"github.com/cntryl/fitz-go/v2/internal/domains/rpc"
-	"github.com/cntryl/fitz-go/v2/internal/domains/schedule"
-	"github.com/cntryl/fitz-go/v2/internal/domains/stream"
+	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/reconnect"
+	"github.com/cntryl/fitz-go/internal/core/retry"
+	"github.com/cntryl/fitz-go/internal/core/transport"
+	"github.com/cntryl/fitz-go/internal/core/types"
+	"github.com/cntryl/fitz-go/internal/domains/kv"
+	"github.com/cntryl/fitz-go/internal/domains/lease"
+	"github.com/cntryl/fitz-go/internal/domains/notice"
+	"github.com/cntryl/fitz-go/internal/domains/queue"
+	"github.com/cntryl/fitz-go/internal/domains/rpc"
+	"github.com/cntryl/fitz-go/internal/domains/schedule"
+	"github.com/cntryl/fitz-go/internal/domains/stream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
@@ -527,10 +527,11 @@ func (c *Config) validate() error {
 		return errors.New("url is required")
 	}
 	if c.serviceNameSet || c.ServiceName != "" {
-		if strings.TrimSpace(c.ServiceName) == "" || !utf8.ValidString(c.ServiceName) || len([]byte(c.ServiceName)) > 128 {
+		serviceName := strings.TrimSpace(c.ServiceName)
+		if serviceName == "" || !utf8.ValidString(serviceName) || len([]byte(serviceName)) > 128 {
 			return errors.New("service name must be non-empty and at most 128 UTF-8 bytes")
 		}
-		for _, character := range c.ServiceName {
+		for _, character := range serviceName {
 			if unicode.IsControl(character) {
 				return errors.New("service name must not contain control characters")
 			}

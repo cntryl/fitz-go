@@ -1,4 +1,4 @@
-module github.com/cntryl/fitz-go/v2
+module github.com/cntryl/fitz-go
 
 go 1.25.0
 

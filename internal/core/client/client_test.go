@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cntryl/fitz-go/v2/internal/core/connection"
-	"github.com/cntryl/fitz-go/v2/internal/core/iter"
-	"github.com/cntryl/fitz-go/v2/internal/core/transport"
-	"github.com/cntryl/fitz-go/v2/internal/domains/kv"
-	"github.com/cntryl/fitz-go/v2/internal/domains/notice"
-	"github.com/cntryl/fitz-go/v2/internal/domains/rpc"
-	"github.com/cntryl/fitz-go/v2/internal/protocol"
-	"github.com/cntryl/fitz-go/v2/internal/testkit"
+	"github.com/cntryl/fitz-go/internal/core/connection"
+	"github.com/cntryl/fitz-go/internal/core/iter"
+	"github.com/cntryl/fitz-go/internal/core/transport"
+	"github.com/cntryl/fitz-go/internal/domains/kv"
+	"github.com/cntryl/fitz-go/internal/domains/notice"
+	"github.com/cntryl/fitz-go/internal/domains/rpc"
+	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
@@ -31,6 +31,8 @@ import (
 func TestServiceNameValidatesUTF8ByteBoundary(t *testing.T) {
 	valid := Config{URL: "tcp://localhost:4091", ServiceName: strings.Repeat("é", 64)}
 	require.NoError(t, valid.validate())
+	padded := Config{URL: "tcp://localhost:4091", ServiceName: " " + strings.Repeat("é", 64) + " "}
+	require.NoError(t, padded.validate())
 
 	tooLong := Config{URL: "tcp://localhost:4091", ServiceName: strings.Repeat("é", 65)}
 	require.ErrorContains(t, tooLong.validate(), "128 UTF-8 bytes")

@@ -3,7 +3,7 @@ package fitz
 import (
 	"context"
 
-	internalschedule "github.com/cntryl/fitz-go/v2/internal/domains/schedule"
+	internalschedule "github.com/cntryl/fitz-go/internal/domains/schedule"
 )
 
 type ScheduleEntry struct {

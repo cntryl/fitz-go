@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cntryl/fitz-go/v2/internal/core/iter"
-	"github.com/cntryl/fitz-go/v2/internal/core/retry"
+	"github.com/cntryl/fitz-go/internal/core/iter"
+	"github.com/cntryl/fitz-go/internal/core/retry"
 )
 
 // Default periodic reconciliation cadence for an InventoryObserver, per

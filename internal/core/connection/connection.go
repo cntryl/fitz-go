@@ -7,15 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	coreerrors "github.com/cntryl/fitz-go/v2/internal/core/errors"
-	"github.com/cntryl/fitz-go/v2/internal/core/retry"
-	coretracing "github.com/cntryl/fitz-go/v2/internal/core/tracing"
-	"github.com/cntryl/fitz-go/v2/internal/core/transport"
-	"github.com/cntryl/fitz-go/v2/internal/protocol"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
+	"github.com/cntryl/fitz-go/internal/core/retry"
+	coretracing "github.com/cntryl/fitz-go/internal/core/tracing"
+	"github.com/cntryl/fitz-go/internal/core/transport"
+	"github.com/cntryl/fitz-go/internal/protocol"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
@@ -548,7 +549,7 @@ func (c *Connection) sendSessionMetadata() error {
 	if !c.serviceMetadataSent.CompareAndSwap(false, true) {
 		return nil
 	}
-	name := []byte(c.cfg.ServiceName)
+	name := []byte(strings.TrimSpace(c.cfg.ServiceName))
 	payload := make([]byte, 4+len(name))
 	binary.BigEndian.PutUint32(payload[:4], uint32(len(name)))
 	copy(payload[4:], name)

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	internaliter "github.com/cntryl/fitz-go/v2/internal/core/iter"
-	internallease "github.com/cntryl/fitz-go/v2/internal/domains/lease"
+	internaliter "github.com/cntryl/fitz-go/internal/core/iter"
+	internallease "github.com/cntryl/fitz-go/internal/domains/lease"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
