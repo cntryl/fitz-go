@@ -82,6 +82,8 @@ type Connection struct {
 	authConfirmed   chan struct{} // Closed when auth succeeds
 	authConfirmOnce sync.Once
 	authError       error // Set if auth fails
+	serverHello     chan struct{}
+	serverHelloOnce sync.Once
 
 	// Multiplexer for request/response correlation
 	mux *Multiplexer
@@ -254,6 +256,7 @@ func New(trans transport.Transport, cfg Config) *Connection {
 		asyncHandlerJobs: make(chan asyncHandlerJob, cfg.AsyncHandlerQueueCapacity),
 		token:            cfg.Token,
 		authConfirmed:    make(chan struct{}),
+		serverHello:      make(chan struct{}),
 		mux:              NewMultiplexer(),
 		ctx:              ctx,
 		cancel:           cancel,
@@ -536,11 +539,10 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 	}
 	c.recordActivity()
 
-	// For anonymous mode (empty JWT), confirm immediately
-	// Per CLIENT_SPEC.md: Server stays silent on valid JWT
-	if c.token == "" {
-		c.confirmAuthentication()
-	}
+	// Both anonymous and authenticated connections use the bounded silent
+	// CONNECT window. This lets SERVER_HELLO populate capability negotiation
+	// before callers register workers, while remaining compatible with legacy
+	// brokers that do not send a hello.
 
 	return nil
 }
@@ -677,6 +679,7 @@ func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
 			if len(frame.Payload) >= 6 {
 				capabilities := binary.BigEndian.Uint32(frame.Payload[2:6])
 				c.mux.SetCapabilities(binary.BigEndian.Uint16(frame.Payload[:2]), capabilities)
+				c.serverHelloOnce.Do(func() { close(c.serverHello) })
 				if c.cfg.ServiceName != "" && capabilities&protocol.CapabilitySessionMetadata != 0 {
 					if err := c.sendSessionMetadata(); err != nil {
 						return false, err

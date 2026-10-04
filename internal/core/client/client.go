@@ -738,6 +738,10 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 		_ = trans.Close()
 		return nil, fmt.Errorf("start connection: %w", err)
 	}
+	if err := conn.WaitForServerHello(ctx); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("negotiate connection: %w", err)
+	}
 
 	return conn, nil
 }

@@ -312,6 +312,33 @@ func (t *admissionBlockingTransport) requestWriteCount() int {
 	return t.requestWrites
 }
 
+func TestShouldObserveServerCapabilitiesBeforeAnonymousConnectSettles(t *testing.T) {
+	// Arrange
+	transport := newAdmissionBlockingTransport()
+	cfg := connection.DefaultConfig()
+	cfg.Token = ""
+	cfg.AuthSettleDelay = 50 * time.Millisecond
+	conn := connection.New(transport, cfg)
+	t.Cleanup(func() { _ = conn.Close() })
+	started := make(chan error, 1)
+
+	// Act
+	go func() { started <- conn.Start(context.Background()) }()
+	select {
+	case err := <-started:
+		require.NoError(t, err)
+		t.Fatal("anonymous start skipped capability negotiation window")
+	case <-time.After(10 * time.Millisecond):
+	}
+	payload := []byte{0, 1, 0, 0, 0, byte(protocol.CapabilityRPCCancellation)}
+	transport.pushResponse(protocol.MessageTypeServerHello, payload)
+
+	// Assert
+	require.NoError(t, <-started)
+	_, capabilities := conn.ServerCapabilities()
+	require.Equal(t, protocol.CapabilityRPCCancellation, capabilities)
+}
+
 func TestShouldBoundConcurrentOutboundRequestsGivenMaxOneWhenSecondRequestStarts(t *testing.T) {
 	transport := newAdmissionBlockingTransport()
 	cfg := connection.DefaultConfig()

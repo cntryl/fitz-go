@@ -1,7 +1,9 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestShouldOrderMatchingWorkersBySpecificityThenLexically(t *testing.T) {
@@ -173,6 +176,262 @@ func newStartedRPCConnection(t *testing.T) (*connection.Connection, *testkit.Moc
 		_ = conn.Close()
 	})
 	return conn, transport
+}
+
+func newStartedRPCConnectionWithCapabilities(t *testing.T, capabilities uint32) (*connection.Connection, *testkit.MockTransport) {
+	t.Helper()
+	return newStartedRPCConnectionWithConfig(t, capabilities, connection.Config{ReadTimeout: time.Second})
+}
+
+func newStartedRPCConnectionWithConfig(t *testing.T, capabilities uint32, config connection.Config) (*connection.Connection, *testkit.MockTransport) {
+	t.Helper()
+	transport := testkit.NewMockTransport()
+	payload := make([]byte, 6)
+	binary.BigEndian.PutUint16(payload[:2], 1)
+	binary.BigEndian.PutUint32(payload[2:], capabilities)
+	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeServerHello, payload)})
+	conn := connection.New(transport, config)
+	require.NoError(t, conn.Start(context.Background()))
+	require.Eventually(t, func() bool {
+		_, received := conn.ServerCapabilities()
+		return received == capabilities
+	}, time.Second, 10*time.Millisecond)
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn, transport
+}
+
+func decodeWrittenRPCFrames(t *testing.T, transport *testkit.MockTransport) []protocol.Frame {
+	t.Helper()
+	frames := make([]protocol.Frame, 0)
+	for _, written := range transport.GetWrittenFrames() {
+		decoded, err := protocol.DecodeFrames(written)
+		require.NoError(t, err)
+		frames = append(frames, decoded...)
+	}
+	return frames
+}
+
+func TestShouldEncodeNegotiatedRPCBudgetAndWorkerSupportExtensions(t *testing.T) {
+	// Arrange
+	var requestID [16]byte
+	requestID[0] = 9
+	budget := uint32(321)
+
+	// Act
+	requestPayload, err := encodeRPCRequest(requestID, "rpc://realm/a", "", []byte("body"))
+	require.NoError(t, err)
+	var negotiatedRequest bytes.Buffer
+	rpcRequestPayloadWriterWithBudget(requestID, "rpc://realm/a", "", []byte("body"), &budget)(&negotiatedRequest)
+	var legacyRegistration, negotiatedRegistration bytes.Buffer
+	rpcSubscribeWorkerPayloadWriter("rpc://realm/a", 4)(&legacyRegistration)
+	rpcSubscribeWorkerPayloadWriterWithCancellation("rpc://realm/a", 4, true)(&negotiatedRegistration)
+
+	// Assert
+	assert.Equal(t, requestPayload, negotiatedRequest.Bytes()[:len(requestPayload)])
+	assert.Equal(t, []byte{1, 1, 0, 0, 1, 65}, negotiatedRequest.Bytes()[len(requestPayload):])
+	assert.Equal(t, legacyRegistration.Bytes(), negotiatedRegistration.Bytes()[:legacyRegistration.Len()])
+	assert.Equal(t, []byte{1, 1}, negotiatedRegistration.Bytes()[legacyRegistration.Len():])
+	decodedBudget, err := decodeRPCRequestBudget(negotiatedRequest.Bytes()[len(requestPayload):])
+	require.NoError(t, err)
+	require.NotNil(t, decodedBudget)
+	assert.Equal(t, budget, *decodedBudget)
+}
+
+func TestShouldRequestAndResolveRemoteCancellationGivenCancelledCallerContext(t *testing.T) {
+	// Arrange
+	conn, transport := newStartedRPCConnectionWithCapabilities(t, protocol.CapabilityRPCCancellation)
+	client := NewClient(conn).(*client)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Act
+	iterator, err := client.Call(ctx, "rpc://realm/area/resource", []byte("body"))
+	require.NoError(t, err)
+	cancel()
+	require.Eventually(t, func() bool {
+		for _, frame := range decodeWrittenRPCFrames(t, transport) {
+			if frame.MessageType == protocol.MessageTypeRpcCancellation {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 10*time.Millisecond)
+	var result []byte
+	for _, frame := range decodeWrittenRPCFrames(t, transport) {
+		if frame.MessageType == protocol.MessageTypeRpcCancellation {
+			result = frame.Payload
+			break
+		}
+	}
+	client.handleRPCLifecycle(append(append([]byte{4}, result[1:17]...), 2))
+
+	// Assert
+	select {
+	case outcome := <-iterator.CancellationResult():
+		assert.Equal(t, CancellationForwarded, outcome)
+	case <-time.After(time.Second):
+		t.Fatal("cancellation outcome was not delivered")
+	}
+	assert.Equal(t, byte(1), result[0])
+	assert.Equal(t, byte(1), result[17])
+}
+
+func TestShouldCancelWorkerAndAcknowledgeCleanupGivenBrokerCancellation(t *testing.T) {
+	// Arrange
+	conn, transport := newStartedRPCConnectionWithCapabilities(t, protocol.CapabilityRPCCancellation)
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	route := "rpc://realm/area/resource"
+	client := &client{
+		conn: conn,
+		workers: map[string]RPCHandler{route: func(ctx context.Context, _ InboundRequest, _ ResponseWriter) error {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+			return nil
+		}},
+		pendingRPCs:       make(map[[16]byte]*responseStream),
+		activeInvocations: make(map[[16]byte]*activeRPCInvocation),
+	}
+	var correlationID [16]byte
+	correlationID[0] = 7
+
+	// Act
+	client.handleWorkerRequest(correlationID, rpcWorkerPayload(route, "", []byte("body")))
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker handler did not start")
+	}
+	client.handleRPCLifecycle(append(append([]byte{2}, correlationID[:]...), 1))
+	require.Eventually(t, func() bool {
+		select {
+		case <-canceled:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		for _, frame := range decodeWrittenRPCFrames(t, transport) {
+			if frame.MessageType == protocol.MessageTypeRpcCancellation && len(frame.Payload) == 17 && frame.Payload[0] == 3 {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 10*time.Millisecond)
+
+	// Assert
+	foundAck := false
+	for _, frame := range decodeWrittenRPCFrames(t, transport) {
+		if frame.MessageType == protocol.MessageTypeRpcCancellation && len(frame.Payload) == 17 && frame.Payload[0] == 3 {
+			assert.Equal(t, correlationID[:], frame.Payload[1:])
+			foundAck = true
+		}
+	}
+	assert.True(t, foundAck)
+}
+
+func TestShouldAcknowledgeFinishedCleanupBeforeDelayedCancellationArrives(t *testing.T) {
+	// Arrange
+	conn, transport := newStartedRPCConnectionWithCapabilities(t, protocol.CapabilityRPCCancellation)
+	cleanupStarted := make(chan struct{})
+	cleanup := make(chan struct{})
+	route := "rpc://realm/area/resource"
+	c := &client{conn: conn, workers: map[string]RPCHandler{route: func(context.Context, InboundRequest, ResponseWriter) error {
+		defer func() { close(cleanupStarted); <-cleanup }()
+		return nil
+	}}, activeInvocations: make(map[[16]byte]*activeRPCInvocation)}
+	var id [16]byte
+	id[0] = 8
+
+	// Act
+	c.handleWorkerRequest(id, rpcWorkerPayload(route, "", nil))
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("handler cleanup did not start")
+	}
+	for _, frame := range decodeWrittenRPCFrames(t, transport) {
+		require.NotEqual(t, protocol.MessageTypeRpcCancellation, frame.MessageType)
+	}
+	close(cleanup)
+
+	// Assert
+	require.Eventually(t, func() bool {
+		for _, frame := range decodeWrittenRPCFrames(t, transport) {
+			if frame.MessageType == protocol.MessageTypeRpcCancellation && bytes.Equal(frame.Payload, append([]byte{3}, id[:]...)) {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestShouldCountDispatchBufferingAgainstInboundDeadline(t *testing.T) {
+	// Arrange
+	transport := testkit.NewMockTransport()
+	conn := connection.New(transport, connection.Config{AsyncHandlerMaxConcurrency: 1, AsyncHandlerQueueCapacity: 1})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() { _ = conn.Close() })
+	started, release := make(chan struct{}), make(chan struct{})
+	require.True(t, conn.LaunchAsyncHandler(context.Background(), "test.buffer", time.Second, func(context.Context, trace.Span) {
+		close(started)
+		<-release
+	}))
+	<-started
+	received := make(chan error, 1)
+	route := "rpc://realm/area/resource"
+	c := &client{conn: conn, workers: map[string]RPCHandler{route: func(ctx context.Context, _ InboundRequest, _ ResponseWriter) error {
+		received <- ctx.Err()
+		return nil
+	}}, activeInvocations: make(map[[16]byte]*activeRPCInvocation)}
+	payload := append(rpcWorkerPayload(route, "", nil), 1, 1, 0, 0, 0, 1)
+
+	// Act
+	c.handleWorkerRequest([16]byte{}, payload)
+	<-time.After(25 * time.Millisecond)
+	close(release)
+
+	// Assert
+	select {
+	case err := <-received:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(time.Second):
+		t.Fatal("buffered worker request did not start")
+	}
+}
+
+func TestShouldAcknowledgeCanceledBufferedWorkerWithoutStartingHandler(t *testing.T) {
+	// Arrange
+	conn, transport := newStartedRPCConnectionWithConfig(t, protocol.CapabilityRPCCancellation, connection.Config{AsyncHandlerMaxConcurrency: 1, AsyncHandlerQueueCapacity: 1})
+	started, release := make(chan struct{}), make(chan struct{})
+	require.True(t, conn.LaunchAsyncHandler(context.Background(), "test.buffer", time.Second, func(context.Context, trace.Span) { close(started); <-release }))
+	<-started
+	called := make(chan struct{}, 1)
+	route := "rpc://realm/area/resource"
+	c := &client{conn: conn, workers: map[string]RPCHandler{route: func(context.Context, InboundRequest, ResponseWriter) error { called <- struct{}{}; return nil }}, activeInvocations: make(map[[16]byte]*activeRPCInvocation)}
+	var id [16]byte
+	id[0] = 9
+
+	// Act
+	c.handleWorkerRequest(id, rpcWorkerPayload(route, "", nil))
+	c.handleRPCLifecycle(append(append([]byte{2}, id[:]...), 1))
+	require.Eventually(t, func() bool {
+		for _, frame := range decodeWrittenRPCFrames(t, transport) {
+			if frame.MessageType == protocol.MessageTypeRpcCancellation {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	close(release)
+
+	// Assert
+	select {
+	case <-called:
+		t.Fatal("canceled buffered work was started")
+	case <-time.After(25 * time.Millisecond):
+	}
 }
 
 func rpcResponsePayload(sequence uint64, body []byte, streamEnd bool) []byte {

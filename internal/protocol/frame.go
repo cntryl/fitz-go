@@ -102,6 +102,7 @@ const (
 	CapabilityCorrelation      uint32 = 1 << 0
 	CapabilitySessionMetadata  uint32 = 1 << 1
 	CapabilityKVScanExclusive  uint32 = 1 << 2
+	CapabilityRPCCancellation  uint32 = 1 << 3
 )
 
 type Frame struct {

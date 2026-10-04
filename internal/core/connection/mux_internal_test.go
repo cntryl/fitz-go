@@ -11,6 +11,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestShouldClassifyNegotiatedRPCBudgetAsWorkerDelivery(t *testing.T) {
+	// Arrange
+	var mux Multiplexer
+	route := "rpc://realm/area/resource"
+	payload := rpcWorkerRequestPayloadForTest(route, "", []byte("body"))
+	payload = append(payload, 1, 1, 0, 0, 0, 100)
+
+	// Act
+	workerDelivery := mux.looksLikeRpcWorkerRequest(payload)
+
+	// Assert
+	require.True(t, workerDelivery)
+}
+
 func TestShouldDispatchCorrelatedRequestsOutOfOrderGivenSameMessageType(t *testing.T) {
 	mux := NewMultiplexer()
 	first := acquireRequestWaiter()

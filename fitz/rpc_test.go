@@ -11,15 +11,26 @@ import (
 )
 
 type fakeRPCClient struct {
-	callIter iter.Iterator[internalrpc.ResponseFrame]
+	callIter internalrpc.CallIterator
 	callErr  error
+}
+
+type fakeRPCCallIterator struct {
+	iter.Iterator[internalrpc.ResponseFrame]
+}
+
+func (fakeRPCCallIterator) CancellationResult() <-chan internalrpc.CancellationOutcome {
+	result := make(chan internalrpc.CancellationOutcome, 1)
+	result <- internalrpc.CancellationNotRequested
+	close(result)
+	return result
 }
 
 func (f *fakeRPCClient) RegisterWorker(context.Context, string, uint32, internalrpc.RPCHandler) (*internalrpc.Subscription, error) {
 	return nil, nil
 }
 
-func (f *fakeRPCClient) Call(context.Context, string, []byte) (iter.Iterator[internalrpc.ResponseFrame], error) {
+func (f *fakeRPCClient) Call(context.Context, string, []byte) (internalrpc.CallIterator, error) {
 	if f.callErr != nil {
 		return nil, f.callErr
 	}
@@ -28,7 +39,7 @@ func (f *fakeRPCClient) Call(context.Context, string, []byte) (iter.Iterator[int
 
 func TestShouldForwardRPCResponseFramesGivenIteratorWhenCallCalled(t *testing.T) {
 	fakeFrame := internalrpc.ResponseFrame{Body: []byte("hello"), Sequence: 7}
-	client := &rpcClient{inner: &fakeRPCClient{callIter: iter.NewSliceIterator([]internalrpc.ResponseFrame{fakeFrame})}}
+	client := &rpcClient{inner: &fakeRPCClient{callIter: fakeRPCCallIterator{iter.NewSliceIterator([]internalrpc.ResponseFrame{fakeFrame})}}}
 
 	it, err := client.Call(context.Background(), "rpc://acme/echo", []byte("ignored"))
 	require.NoError(t, err)

@@ -12,6 +12,9 @@ var (
 	ErrRPCBackpressure = internalrpc.ErrRPCBackpressure
 )
 
+// CapabilityRPCCancellation is set when the broker supports RPC cancellation and budgets.
+const CapabilityRPCCancellation uint32 = 1 << 3
+
 type RPCInboundRequest struct {
 	Route         string
 	ReplyRoute    string
@@ -22,6 +25,29 @@ type RPCInboundRequest struct {
 type RPCResponseFrame struct {
 	Body     []byte
 	Sequence uint64
+}
+
+// RPCCancellationOutcome reports the result of best-effort broker cancellation.
+type RPCCancellationOutcome = internalrpc.CancellationOutcome
+
+const (
+	RPCCancellationNotRequested      = internalrpc.CancellationNotRequested
+	RPCCancellationRequestNotSent    = internalrpc.CancellationRequestNotSent
+	RPCCancellationUnsupported       = internalrpc.CancellationUnsupported
+	RPCCancellationQueuedRemoved     = internalrpc.CancellationQueuedRemoved
+	RPCCancellationForwarded         = internalrpc.CancellationForwarded
+	RPCCancellationWorkerUnsupported = internalrpc.CancellationWorkerUnsupported
+	RPCCancellationAlreadyTerminal   = internalrpc.CancellationAlreadyTerminal
+	RPCCancellationUnknown           = internalrpc.CancellationUnknown
+	RPCCancellationForwardingFailed  = internalrpc.CancellationForwardingFailed
+	RPCCancellationUnconfirmed       = internalrpc.CancellationUnconfirmed
+	RPCCancellationConnectionClosed  = internalrpc.CancellationConnectionClosed
+)
+
+// RPCCallIterator streams frames and exposes the final cancellation outcome.
+type RPCCallIterator interface {
+	Iterator[RPCResponseFrame]
+	CancellationResult() <-chan RPCCancellationOutcome
 }
 
 // RPCWorkerRegistration represents an active worker registration returned by
@@ -49,7 +75,7 @@ type RPCHandler func(ctx context.Context, req RPCInboundRequest, writer RPCRespo
 
 type RPCClient interface {
 	RegisterWorker(ctx context.Context, route string, maxConcurrent uint32, handler RPCHandler) (*RPCWorkerRegistration, error)
-	Call(ctx context.Context, route string, body []byte) (Iterator[RPCResponseFrame], error)
+	Call(ctx context.Context, route string, body []byte) (RPCCallIterator, error)
 }
 
 type rpcClient struct {
@@ -61,7 +87,7 @@ type rpcResponseWriter struct {
 }
 
 type rpcResponseIterator struct {
-	inner   Iterator[internalrpc.ResponseFrame]
+	inner   internalrpc.CallIterator
 	current RPCResponseFrame
 }
 
@@ -87,7 +113,7 @@ func (c *rpcClient) RegisterWorker(ctx context.Context, route string, maxConcurr
 }
 
 // Call invokes an RPC route and returns an iterator over response frames.
-func (c *rpcClient) Call(ctx context.Context, route string, body []byte) (Iterator[RPCResponseFrame], error) {
+func (c *rpcClient) Call(ctx context.Context, route string, body []byte) (RPCCallIterator, error) {
 	iter, err := c.inner.Call(ctx, route, body)
 	if err != nil {
 		return nil, err
@@ -118,4 +144,9 @@ func (it *rpcResponseIterator) Err() error {
 // Close releases iterator resources.
 func (it *rpcResponseIterator) Close() error {
 	return it.inner.Close()
+}
+
+// CancellationResult resolves when the broker reports cancellation handling.
+func (it *rpcResponseIterator) CancellationResult() <-chan RPCCancellationOutcome {
+	return it.inner.CancellationResult()
 }

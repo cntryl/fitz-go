@@ -15,6 +15,8 @@ const (
 	RPCUnsubscribeWorker uint16 = 301
 	RPCRequest           uint16 = 302
 	RPCResponse          uint16 = 303
+	RPCCancellation      uint16 = 304
+	RPCLifecycle         uint16 = 305
 )
 
 // Domain-specific errors. Returned when Call fails or the server rejects a request.
@@ -105,9 +107,17 @@ func encodeRPCResponse(correlationID [16]byte, sequence uint64, body []byte, str
 // Payload writer helpers for zero-copy frame encoding
 
 func rpcSubscribeWorkerPayloadWriter(workerRoute string, maxConcurrent uint32) func(*bytes.Buffer) {
+	return rpcSubscribeWorkerPayloadWriterWithCancellation(workerRoute, maxConcurrent, false)
+}
+
+func rpcSubscribeWorkerPayloadWriterWithCancellation(workerRoute string, maxConcurrent uint32, supportsCancellation bool) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, workerRoute)
 		encoding.WriteU32(buf, maxConcurrent)
+		if supportsCancellation {
+			buf.WriteByte(1)
+			buf.WriteByte(1)
+		}
 	}
 }
 
@@ -117,11 +127,31 @@ func rpcUnsubscribeWorkerPayloadWriter(workerRoute string) func(*bytes.Buffer) {
 	}
 }
 
-func rpcRequestPayloadWriter(correlationID [16]byte, route string, replyRoute string, body []byte) func(*bytes.Buffer) {
+func rpcRequestPayloadWriterWithBudget(correlationID [16]byte, route string, replyRoute string, body []byte, remainingBudgetMS *uint32) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		buf.Write(correlationID[:])
 		encoding.WriteRoute(buf, route)
 		encoding.WriteBytes(buf, body)
+		if remainingBudgetMS != nil {
+			buf.WriteByte(1)
+			buf.WriteByte(1)
+			encoding.WriteU32(buf, *remainingBudgetMS)
+		}
+	}
+}
+
+func rpcCallerCancellationPayloadWriter(correlationID [16]byte, reason byte) func(*bytes.Buffer) {
+	return func(buf *bytes.Buffer) {
+		buf.WriteByte(1)
+		buf.Write(correlationID[:])
+		buf.WriteByte(reason)
+	}
+}
+
+func rpcWorkerCleanupAckPayloadWriter(correlationID [16]byte) func(*bytes.Buffer) {
+	return func(buf *bytes.Buffer) {
+		buf.WriteByte(3)
+		buf.Write(correlationID[:])
 	}
 }
 

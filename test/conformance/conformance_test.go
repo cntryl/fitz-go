@@ -313,7 +313,9 @@ func TestConformanceSuite(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			err := f.Connect(ctx)
+			// CONNECT has no success ACK. Observe rejection for a bounded window
+			// instead of using the latency-oriented 20 ms client default.
+			err := f.ConnectWithOptions(ctx, fitz.WithAuthSettleDelay(500*time.Millisecond))
 			ev = append(ev, fmt.Sprintf("connect error: %v", err))
 
 			if err != nil {
@@ -973,14 +975,13 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("broker addr: %w", addrErr)
 			}
 
-			tokenProvider := fitz.TokenProvider(func(context.Context) (string, error) {
-				return "", nil
-			})
-
-			client := fitz.NewClient(brokerAddr, tokenProvider)
-			if connErr := client.Connect(ctx); connErr != nil {
+			f := fixture.NewTestFixture(t, transportType())
+			f.SetAuthMode(authMode())
+			f.SetBrokerAddr(brokerAddr)
+			if connErr := f.Connect(ctx); connErr != nil {
 				return VerdictFail, ev, fmt.Errorf("connect: %w", connErr)
 			}
+			client := f.Client()
 
 			route := uniqueRoute("kv")
 			beginCh := make(chan error, 1)
