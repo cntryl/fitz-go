@@ -436,6 +436,12 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 			return
 		}
 		defer cancel()
+		if err := requestCtx.Err(); err != nil {
+			w.sendError(err)
+			c.finishWorkerInvocation(correlationID, active)
+			c.sendWorkerCleanupAck(correlationID)
+			return
+		}
 
 		handlerErr := handler(requestCtx, req, w)
 		if c.workerCancellationRequested(correlationID, active) {
@@ -713,7 +719,11 @@ func (w *responseWriter) sendError(err error) {
 	}
 	body := make([]byte, 9+len(message))
 	body[0] = 1
-	binary.BigEndian.PutUint32(body[1:5], 6010)
+	code := uint32(6010)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrRPCTimeout) {
+		code = 6001
+	}
+	binary.BigEndian.PutUint32(body[1:5], code)
 	binary.BigEndian.PutUint32(body[5:9], uint32(len(message)))
 	copy(body[9:], message)
 	_ = w.conn.SendFireAndForgetWithWriter(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, rpcResponsePayloadWriter(w.correlationID, seq, body, true))

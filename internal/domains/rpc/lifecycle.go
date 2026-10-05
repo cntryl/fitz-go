@@ -106,7 +106,7 @@ func (c *client) handleRPCLifecycle(payload []byte) {
 // ClosePendingRPCs fails all in-flight RPC call iterators with connection.ErrConnectionClosed.
 func (c *client) ClosePendingRPCs() {
 	c.mu.Lock()
-	if len(c.pendingRPCs) == 0 && len(c.calls) == 0 {
+	if len(c.pendingRPCs) == 0 && len(c.calls) == 0 && len(c.activeInvocations) == 0 {
 		c.mu.Unlock()
 		return
 	}

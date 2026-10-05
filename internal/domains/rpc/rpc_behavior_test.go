@@ -394,11 +394,69 @@ func TestShouldCountDispatchBufferingAgainstInboundDeadline(t *testing.T) {
 
 	// Assert
 	select {
-	case err := <-received:
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-	case <-time.After(time.Second):
-		t.Fatal("buffered worker request did not start")
+	case <-received:
+		t.Fatal("worker handler started after its inherited deadline")
+	case <-time.After(25 * time.Millisecond):
 	}
+}
+
+func TestShouldClearAndCancelWorkerOnlyInvocationsOnDisconnect(t *testing.T) {
+	// Arrange
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	id := [16]byte{9}
+	c := &client{activeInvocations: map[[16]byte]*activeRPCInvocation{id: {cancel: cancel}}}
+
+	// Act
+	c.ClosePendingRPCs()
+
+	// Assert
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.Empty(t, c.activeInvocations)
+}
+
+func TestShouldStopRunningAndBufferedWorkerOnlyRequestsOnDisconnect(t *testing.T) {
+	// Arrange
+	conn, _ := newStartedRPCConnectionWithConfig(t, protocol.CapabilityRPCCancellation,
+		connection.Config{AsyncHandlerMaxConcurrency: 1, AsyncHandlerQueueCapacity: 1})
+	started, finished, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	bufferedCalled := make(chan struct{}, 1)
+	route := "rpc://realm/area/resource"
+	c := &client{conn: conn, workers: map[string]RPCHandler{route: func(ctx context.Context, request InboundRequest, _ ResponseWriter) error {
+		if string(request.Body) == "buffered" {
+			bufferedCalled <- struct{}{}
+			return nil
+		}
+		close(started)
+		select {
+		case <-ctx.Done():
+		case <-release:
+		}
+		close(finished)
+		return nil
+	}}, activeInvocations: make(map[[16]byte]*activeRPCInvocation)}
+	c.handleWorkerRequest([16]byte{1}, rpcWorkerPayload(route, "", []byte("running")))
+	<-started
+	c.handleWorkerRequest([16]byte{2}, rpcWorkerPayload(route, "", []byte("buffered")))
+
+	// Act
+	c.ClosePendingRPCs()
+
+	// Assert
+	select {
+	case <-finished:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("worker-only disconnect did not cancel running handler")
+	}
+	select {
+	case <-bufferedCalled:
+		t.Fatal("disconnected buffered handler was started")
+	case <-time.After(25 * time.Millisecond):
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require.Empty(t, c.activeInvocations)
 }
 
 func TestShouldAcknowledgeCanceledBufferedWorkerWithoutStartingHandler(t *testing.T) {
