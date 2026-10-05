@@ -1,5 +1,11 @@
 # fitz-go
 
+`Connect` waits for a parsed `SERVER_HELLO` before publishing domain handles.
+The caller context and configured read timeout bound a missing advertisement.
+An explicit zero capability advertisement preserves legacy behavior. The
+authentication settlement window alone no longer establishes capability
+readiness.
+
 Reference Go client for Fitz.
 
 The supported public API is the canonical `github.com/cntryl/fitz-go/fitz`
@@ -103,6 +109,13 @@ not change request admission or callback concurrency. See
 The broker-backed test suite verifies those guarantees through a live disconnect proxy rather than by closing one client and creating another.
 
 RPC timeout pattern:
+
+Inside an RPC worker, pass the handler's `ctx` into `Call`. That explicitly
+links downstream cancellation and the inherited deadline to the parent call.
+The child context may shorten that deadline but cannot extend it. Wait for
+request-owned goroutines and deferred cleanup before the handler returns; the
+SDK sends its negotiated cleanup acknowledgment afterward. A forwarded
+cancellation does not prove rollback or make a dispatched call safe to retry.
 
 ```go
 callCtx, cancelCall := context.WithTimeout(ctx, 2*time.Second)

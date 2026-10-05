@@ -599,7 +599,12 @@ func (m *Multiplexer) looksLikeRpcWorkerRequest(payload []byte) bool {
 		return false
 	}
 	bodyLen := int(binary.BigEndian.Uint32(payload[bodyLenOffset : bodyLenOffset+4]))
-	return bodyLenOffset+4+bodyLen == len(payload)
+	bodyEnd := bodyLenOffset + 4 + bodyLen
+	if bodyEnd > len(payload) {
+		return false
+	}
+	extension := payload[bodyEnd:]
+	return len(extension) == 0 || (len(extension) == 6 && extension[0] == 1 && extension[1] == 1 && binary.BigEndian.Uint32(extension[2:]) <= 86_400_000)
 }
 
 // handleRpcResponse processes RPC RESPONSE messages (async delivery).

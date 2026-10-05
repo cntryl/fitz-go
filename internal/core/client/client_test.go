@@ -51,12 +51,23 @@ type cleanupRPCClient struct {
 	callIter iter.Iterator[rpc.ResponseFrame]
 }
 
+type cleanupRPCIterator struct {
+	iter.Iterator[rpc.ResponseFrame]
+}
+
+func (cleanupRPCIterator) CancellationResult() <-chan rpc.CancellationOutcome {
+	outcomes := make(chan rpc.CancellationOutcome, 1)
+	outcomes <- rpc.CancellationNotRequested
+	close(outcomes)
+	return outcomes
+}
+
 func (c *cleanupRPCClient) RegisterWorker(context.Context, string, uint32, rpc.RPCHandler) (*rpc.Subscription, error) {
 	return nil, nil
 }
 
-func (c *cleanupRPCClient) Call(context.Context, string, []byte) (iter.Iterator[rpc.ResponseFrame], error) {
-	return c.callIter, c.callErr
+func (c *cleanupRPCClient) Call(context.Context, string, []byte) (rpc.CallIterator, error) {
+	return cleanupRPCIterator{Iterator: c.callIter}, c.callErr
 }
 
 func (c *cleanupRPCClient) ClosePendingRPCs() {
@@ -944,16 +955,18 @@ func kvBeginResponseFrame(t *testing.T, txID uint64) []byte {
 }
 
 type scriptedTransport struct {
-	mu      sync.Mutex
-	written [][]byte
-	readCh  chan []byte
-	closed  chan struct{}
+	mu             sync.Mutex
+	written        [][]byte
+	readCh         chan []byte
+	closed         chan struct{}
+	helloOnConnect bool
 }
 
 func newScriptedTransport() *scriptedTransport {
 	return &scriptedTransport{
-		readCh: make(chan []byte, 8),
-		closed: make(chan struct{}),
+		readCh:         make(chan []byte, 8),
+		closed:         make(chan struct{}),
+		helloOnConnect: true,
 	}
 }
 
@@ -969,6 +982,10 @@ func (s *scriptedTransport) Write(ctx context.Context, frame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.written = append(s.written, append([]byte(nil), frame...))
+	messageType, _, err := protocol.DecodeFrame(frame)
+	if err == nil && messageType == protocol.MessageTypeConnect && s.helloOnConnect {
+		s.readCh <- protocol.EncodeFrame(protocol.MessageTypeServerHello, []byte{0, 1, 0, 0, 0, 0})
+	}
 	return nil
 }
 

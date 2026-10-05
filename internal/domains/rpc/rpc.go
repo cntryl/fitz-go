@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/iter"
@@ -44,6 +45,29 @@ type RPCHandler func(ctx context.Context, req InboundRequest, w ResponseWriter) 
 type ResponseFrame struct {
 	Body     []byte
 	Sequence uint64
+}
+
+// CancellationOutcome reports how the broker handled a best-effort cancellation.
+type CancellationOutcome string
+
+const (
+	CancellationNotRequested      CancellationOutcome = "not_requested"
+	CancellationRequestNotSent    CancellationOutcome = "request_not_sent"
+	CancellationUnsupported       CancellationOutcome = "unsupported"
+	CancellationQueuedRemoved     CancellationOutcome = "queued_removed"
+	CancellationForwarded         CancellationOutcome = "forwarded"
+	CancellationWorkerUnsupported CancellationOutcome = "worker_unsupported"
+	CancellationAlreadyTerminal   CancellationOutcome = "already_terminal"
+	CancellationUnknown           CancellationOutcome = "unknown_or_unauthorized"
+	CancellationForwardingFailed  CancellationOutcome = "forwarding_failed"
+	CancellationUnconfirmed       CancellationOutcome = "unconfirmed"
+	CancellationConnectionClosed  CancellationOutcome = "connection_closed"
+)
+
+// CallIterator streams RPC response frames and exposes the broker cancellation result.
+type CallIterator interface {
+	iter.Iterator[ResponseFrame]
+	CancellationResult() <-chan CancellationOutcome
 }
 
 type responseStream struct {
@@ -179,7 +203,12 @@ type Client interface {
 
 	// Call sends an RPC request and returns an iterator over response frames.
 	// Callers must call Close on the returned iterator when done to release resources.
-	Call(ctx context.Context, route string, body []byte) (iter.Iterator[ResponseFrame], error)
+	Call(ctx context.Context, route string, body []byte) (CallIterator, error)
+}
+
+type activeRPCInvocation struct {
+	cancel                context.CancelFunc
+	cancellationRequested bool
 }
 
 type client struct {
@@ -191,6 +220,10 @@ type client struct {
 	workerConcurrency map[string]uint32
 	nextWorkerVersion uint64
 	pendingRPCs       map[[16]byte]*responseStream
+	calls             map[[16]byte]*rpcIterator
+	cancelRequested   map[[16]byte]bool
+	cancelTimers      map[[16]byte]*time.Timer
+	activeInvocations map[[16]byte]*activeRPCInvocation
 	initialized       bool
 }
 
@@ -202,6 +235,10 @@ func NewClient(conn *connection.Connection) Client {
 		workerConcurrency: make(map[string]uint32),
 		workerVersions:    make(map[string]uint64),
 		pendingRPCs:       make(map[[16]byte]*responseStream),
+		calls:             make(map[[16]byte]*rpcIterator),
+		cancelRequested:   make(map[[16]byte]bool),
+		cancelTimers:      make(map[[16]byte]*time.Timer),
+		activeInvocations: make(map[[16]byte]*activeRPCInvocation),
 	}
 	return c
 }
@@ -218,6 +255,7 @@ func (c *client) initRPCHandler() {
 	c.initialized = true
 	c.conn.RegisterRPCResponseHandler(c.handleRPCResponse)
 	c.conn.RegisterRPCRequestHandler(c.handleRPCRequest)
+	c.conn.RegisterRawPushHandler(protocol.MessageTypeRpcLifecycle, c.handleRPCLifecycle)
 }
 
 // handleRPCRequest handles incoming RPC REQUEST frames (302) forwarded to this worker.
@@ -250,18 +288,14 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 		// exposing its body so malformed terminal errors cannot look successful.
 		response, err := decodeRPCResponsePayload(payload)
 		if err != nil {
-			c.mu.Lock()
-			delete(c.pendingRPCs, correlationID)
-			c.mu.Unlock()
+			c.finishCall(correlationID, CancellationNotRequested)
 			stream.fail(fmt.Errorf("malformed RPC response: %w", err))
 			return
 		}
 
 		if response.streamEnd && len(response.body) > 0 && response.body[0] == 1 {
 			if _, _, terminalErr := connection.ParseStandardResponse(response.body); terminalErr != nil {
-				c.mu.Lock()
-				delete(c.pendingRPCs, correlationID)
-				c.mu.Unlock()
+				c.finishCall(correlationID, CancellationNotRequested)
 				stream.fail(mapRPCError(terminalErr))
 				return
 			}
@@ -271,9 +305,7 @@ func (c *client) handleRPCResponse(correlationID [16]byte, payload []byte) {
 			_ = stream.enqueue(ResponseFrame{Body: response.body, Sequence: response.sequence})
 		}
 		if response.streamEnd {
-			c.mu.Lock()
-			delete(c.pendingRPCs, correlationID)
-			c.mu.Unlock()
+			c.finishCall(correlationID, CancellationNotRequested)
 			stream.close()
 		}
 		return
@@ -338,6 +370,11 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 	}
 	body := make([]byte, bodyLen)
 	copy(body, payload[offset:offset+int(bodyLen)])
+	offset += int(bodyLen)
+	remainingBudgetMS, err := decodeRPCRequestBudget(payload[offset:])
+	if err != nil {
+		return
+	}
 
 	c.mu.Lock()
 	handler, ok := c.workers[route]
@@ -366,22 +403,76 @@ func (c *client) handleWorkerRequest(correlationID [16]byte, payload []byte) {
 		seq:           0,
 	}
 	lifecycleCtx := c.conn.LifecycleContext()
+	active := &activeRPCInvocation{}
+	c.mu.Lock()
+	if c.activeInvocations == nil {
+		c.activeInvocations = make(map[[16]byte]*activeRPCInvocation)
+	}
+	c.activeInvocations[correlationID] = active
+	c.mu.Unlock()
+	receivedAt := time.Now()
 
 	if !c.conn.LaunchAsyncHandler(lifecycleCtx, "fitz.rpc.worker_handler", c.conn.AsyncHandlerTimeout(), func(handlerCtx context.Context, span trace.Span) {
-		if err := handler(handlerCtx, req, w); err != nil {
+		requestCtx, cancel := context.WithCancel(handlerCtx)
+		if remainingBudgetMS != nil {
+			remaining := time.Duration(*remainingBudgetMS)*time.Millisecond - time.Since(receivedAt)
+			remaining = max(remaining, 0)
+			deadlineCtx, deadlineCancel := context.WithTimeout(requestCtx, remaining)
+			requestCtx = deadlineCtx
+			baseCancel := cancel
+			cancel = func() {
+				deadlineCancel()
+				baseCancel()
+			}
+		}
+		c.mu.Lock()
+		active.cancel = cancel
+		cancelImmediately := active.cancellationRequested
+		c.mu.Unlock()
+		if cancelImmediately {
+			cancel()
+			c.finishWorkerInvocation(correlationID, active)
+			c.sendWorkerCleanupAck(correlationID)
+			return
+		}
+		defer cancel()
+		if err := requestCtx.Err(); err != nil {
+			w.sendError(err)
+			c.finishWorkerInvocation(correlationID, active)
+			c.sendWorkerCleanupAck(correlationID)
+			return
+		}
+
+		handlerErr := handler(requestCtx, req, w)
+		if c.workerCancellationRequested(correlationID, active) {
+			if c.finishWorkerInvocation(correlationID, active) {
+				c.sendWorkerCleanupAck(correlationID)
+			}
+			return
+		}
+		if handlerErr != nil {
+			err := handlerErr
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			if log := c.conn.Logger(); log != nil {
 				log.Warn("rpc worker handler failed", "route", route, "error", err)
 			}
 			w.sendError(err)
-			return
+		} else {
+			// Send stream_end
+			w.sendEnd()
 		}
-		// Send stream_end
-		w.sendEnd()
+		c.finishWorkerInvocation(correlationID, active)
+		// Cancellation may have been ordered before the terminal response while
+		// its notification is still in transit. Negotiated cleanup acknowledgments
+		// are safe even when the broker has already completed the call.
+		c.sendWorkerCleanupAck(correlationID)
 	}, trace.WithAttributes(
 		attribute.String("fitz.route", route),
 	)) {
+		c.finishWorkerInvocation(correlationID, active)
+		w.sendError(ErrRPCBackpressure)
+		c.sendWorkerCleanupAck(correlationID)
 		if log := c.conn.Logger(); log != nil {
 			log.Warn("rpc worker handler dropped", "route", route, "reason", "async handler queue full")
 		}
@@ -506,7 +597,7 @@ func (c *client) unsubscribeWorker(route string, version uint64) error {
 // Request: [correlation_id(16)][route_len][route][reply_route_len][reply_route][body_len][body]
 // Response: [status] (ack that request was dispatched)
 // Actual responses come via RPC RESPONSE (303) messages.
-func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iterator[ResponseFrame], error) {
+func (c *client) Call(ctx context.Context, route string, body []byte) (CallIterator, error) {
 	ctx, span := c.conn.Tracer().Start(ctx, "fitz.rpc.Call", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
 	if log := c.conn.Logger(); log != nil {
@@ -538,47 +629,54 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (iter.Iter
 
 	// Create response stream.
 	stream := newResponseStream()
+	iterator := &rpcIterator{
+		stream:        stream,
+		ctx:           ctx,
+		correlationID: correlationID,
+		client:        c,
+		cancellation:  make(chan CancellationOutcome, 1),
+	}
+	var remainingBudgetMS *uint32
+	_, capabilities := c.conn.ServerCapabilities()
+	if capabilities&protocol.CapabilityRPCCancellation != 0 {
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline).Milliseconds()
+			remaining = max(remaining, 0)
+			remaining = min(remaining, 86_400_000)
+			budget := uint32(remaining)
+			remainingBudgetMS = &budget
+		}
+	}
 
 	c.mu.Lock()
+	if c.calls == nil {
+		c.calls = make(map[[16]byte]*rpcIterator)
+		c.cancelRequested = make(map[[16]byte]bool)
+		c.cancelTimers = make(map[[16]byte]*time.Timer)
+	}
 	c.pendingRPCs[correlationID] = stream
+	c.calls[correlationID] = iterator
 	c.mu.Unlock()
 
 	// RPC requests are one-way submissions; responses arrive asynchronously as
 	// message type 303 frames correlated by the UUID above.
-	err = c.conn.SendFireAndForgetWithWriter(ctx, protocol.MessageTypeRpcRequest, rpcRequestPayloadWriter(correlationID, route, "", body))
+	err = c.conn.SendFireAndForgetWithWriter(ctx, protocol.MessageTypeRpcRequest, rpcRequestPayloadWriterWithBudget(correlationID, route, "", body, remainingBudgetMS))
 	if err != nil {
-		c.mu.Lock()
-		delete(c.pendingRPCs, correlationID)
-		c.mu.Unlock()
+		c.finishCall(correlationID, CancellationRequestNotSent)
 		stream.close()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("REQUEST failed: %w", err)
 	}
 
-	iterator := &rpcIterator{
-		stream:        stream,
-		ctx:           ctx,
-		correlationID: correlationID,
-		client:        c,
-	}
+	iterator.setStopContext(context.AfterFunc(ctx, func() {
+		reason := byte(1)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			reason = 2
+		}
+		c.cancelPendingRPC(correlationID, reason)
+	}))
 	return iterator, nil
-}
-
-// ClosePendingRPCs fails all in-flight RPC call iterators with connection.ErrConnectionClosed.
-func (c *client) ClosePendingRPCs() {
-	c.mu.Lock()
-	if len(c.pendingRPCs) == 0 {
-		c.mu.Unlock()
-		return
-	}
-	pending := c.pendingRPCs
-	c.pendingRPCs = make(map[[16]byte]*responseStream, len(pending))
-	c.mu.Unlock()
-
-	for _, stream := range pending {
-		stream.fail(connection.ErrConnectionClosed)
-	}
 }
 
 // responseWriter implements ResponseWriter for workers.
@@ -621,7 +719,11 @@ func (w *responseWriter) sendError(err error) {
 	}
 	body := make([]byte, 9+len(message))
 	body[0] = 1
-	binary.BigEndian.PutUint32(body[1:5], 6010)
+	code := uint32(6010)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrRPCTimeout) {
+		code = 6001
+	}
+	binary.BigEndian.PutUint32(body[1:5], code)
 	binary.BigEndian.PutUint32(body[5:9], uint32(len(message)))
 	copy(body[9:], message)
 	_ = w.conn.SendFireAndForgetWithWriter(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, rpcResponsePayloadWriter(w.correlationID, seq, body, true))
@@ -633,6 +735,9 @@ type rpcIterator struct {
 	ctx           context.Context
 	correlationID [16]byte
 	client        *client
+	cancellation  chan CancellationOutcome
+	completed     bool
+	stopContext   func() bool
 	current       ResponseFrame
 	err           error
 	done          bool
@@ -655,7 +760,11 @@ func (it *rpcIterator) Next() bool {
 		it.err = err
 		it.done = true
 		it.mu.Unlock()
-		it.client.removePendingRPC(it.correlationID)
+		reason := byte(1)
+		if errors.Is(err, context.DeadlineExceeded) {
+			reason = 2
+		}
+		it.client.cancelPendingRPC(it.correlationID, reason)
 		return false
 	}
 
@@ -665,17 +774,59 @@ func (it *rpcIterator) Next() bool {
 		it.err = err
 		it.done = true
 		it.mu.Unlock()
-		it.client.removePendingRPC(it.correlationID)
+		if it.ctx.Err() != nil {
+			reason := byte(1)
+			if errors.Is(it.ctx.Err(), context.DeadlineExceeded) {
+				reason = 2
+			}
+			it.client.cancelPendingRPC(it.correlationID, reason)
+		}
 		return false
 	}
 	if !ok {
 		it.mu.Lock()
+		if err := it.ctx.Err(); err != nil {
+			it.err = err
+		}
 		it.done = true
 		it.mu.Unlock()
 		return false
 	}
 	it.current = frame
 	return true
+}
+
+func (it *rpcIterator) CancellationResult() <-chan CancellationOutcome {
+	return it.cancellation
+}
+
+func (it *rpcIterator) complete(outcome CancellationOutcome) {
+	it.mu.Lock()
+	if it.completed {
+		it.mu.Unlock()
+		return
+	}
+	it.completed = true
+	stopContext := it.stopContext
+	it.mu.Unlock()
+	if stopContext != nil {
+		stopContext()
+	}
+	if it.cancellation != nil {
+		it.cancellation <- outcome
+		close(it.cancellation)
+	}
+}
+
+func (it *rpcIterator) setStopContext(stopContext func() bool) {
+	it.mu.Lock()
+	if it.completed {
+		it.mu.Unlock()
+		stopContext()
+		return
+	}
+	it.stopContext = stopContext
+	it.mu.Unlock()
 }
 
 func (it *rpcIterator) Value() ResponseFrame {
@@ -693,25 +844,8 @@ func (it *rpcIterator) Close() error {
 	it.done = true
 	it.mu.Unlock()
 	it.stream.close()
-	// Clean up pending RPC
-	it.client.removePendingRPC(it.correlationID)
+	it.client.cancelPendingRPC(it.correlationID, 1)
 	return nil
-}
-
-func (c *client) removePendingRPC(correlationID [16]byte) {
-	c.mu.Lock()
-	delete(c.pendingRPCs, correlationID)
-	c.mu.Unlock()
-}
-
-func (c *client) ReplaceConnection(conn *connection.Connection) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.conn = conn
-	if c.initialized {
-		c.conn.RegisterRPCResponseHandler(c.handleRPCResponse)
-		c.conn.RegisterRPCRequestHandler(c.handleRPCRequest)
-	}
 }
 
 func (c *client) RestoreSubscriptions(ctx context.Context) error {
@@ -741,7 +875,7 @@ func (c *client) RestoreSubscriptions(ctx context.Context) error {
 }
 
 func (c *client) restoreSubscribeWorker(ctx context.Context, route string, maxConcurrent uint32) error {
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route, maxConcurrent))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriterWithCancellation(route, maxConcurrent, c.supportsRPCCancellation()))
 	if err != nil {
 		return fmt.Errorf("SUBSCRIBE_WORKER request failed: %w", err)
 	}
@@ -764,7 +898,7 @@ func (c *client) rollbackRestoredWorker(route string) {
 }
 
 func (c *client) subscribeWorker(ctx context.Context, route string, maxConcurrent uint32, handler RPCHandler) (*Subscription, error) {
-	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriter(route, maxConcurrent))
+	resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeRpcSubscribeWorker, rpcSubscribeWorkerPayloadWriterWithCancellation(route, maxConcurrent, c.supportsRPCCancellation()))
 	if err != nil {
 		return nil, fmt.Errorf("SUBSCRIBE_WORKER request failed: %w", err)
 	}
