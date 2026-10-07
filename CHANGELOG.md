@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Classify wrapped `ErrQueueFull` errors through the public retryability helper.
+
 - Keep Queue handles usable after rejected ACKs and close them after successful completion.
 
 - Preserve coded Queue admission failures alongside legacy plain errors, including retryable capacity rejection and terminal unknown outcomes.

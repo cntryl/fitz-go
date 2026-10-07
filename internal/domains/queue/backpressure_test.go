@@ -81,3 +81,34 @@ func TestShouldInvalidateReservationGivenSuccessfulRetryWhenCompletionAcknowledg
 	defer trans.mu.Unlock()
 	require.Equal(t, trans.written[baseWrites], trans.written[baseWrites+1])
 }
+
+func TestShouldRejectUnknownStatusWithoutClassifyingCapacity(t *testing.T) {
+	// Arrange
+	payload := []byte{2, 0, 0, 15, 165, 0, 0, 0, 0}
+	// Act
+	_, _, err := parseQueueResponse(payload)
+	// Assert
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrQueueFull)
+}
+
+func TestShouldRejectMalformedAcknowledgementGivenTrailingBytesWhenCompleting(t *testing.T) {
+	// Arrange
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	trans := newScriptedRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(ctx))
+	t.Cleanup(func() { _ = conn.Close() })
+	baseWrites := restoreWriteCount(trans)
+	item := &QueueItem{ID: 7, Token: 11, Route: "queue://realm/app/jobs", conn: conn}
+	go func() {
+		waitForRestoreWrites(t, trans, baseWrites+1)
+		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueComplete, []byte{0, 120}))
+	}()
+	// Act
+	err := item.Complete(ctx)
+	// Assert
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrQueueFull)
+}

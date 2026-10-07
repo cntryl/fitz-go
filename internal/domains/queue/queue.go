@@ -121,7 +121,7 @@ func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("extend request failed: %w", err)
 	}
-	success, _, err := parsePlainQueueResponse(resp)
+	success, _, err := parseQueueAcknowledgementResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -161,7 +161,7 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("complete request failed: %w", err)
 	}
-	success, _, err := parsePlainQueueResponse(resp)
+	success, _, err := parseQueueAcknowledgementResponse(resp)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

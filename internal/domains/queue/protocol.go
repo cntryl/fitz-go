@@ -53,6 +53,10 @@ func parseQueueResponse(payload []byte) (bool, []byte, error) {
 		return true, payload[1:], nil
 	}
 
+	if status != 1 {
+		return false, nil, errors.New("unknown queue response status")
+	}
+
 	if len(payload) < 9 {
 		return false, nil, fmt.Errorf("malformed queue error response (%d bytes)", len(payload))
 	}
@@ -88,6 +92,14 @@ func parsePlainQueueResponse(payload []byte) (bool, []byte, error) {
 		return false, nil, fmt.Errorf("malformed plain queue error response (%d bytes)", len(payload))
 	}
 	return false, nil, mapPlainQueueError(message)
+}
+
+func parseQueueAcknowledgementResponse(payload []byte) (bool, []byte, error) {
+	success, remaining, err := parsePlainQueueResponse(payload)
+	if err == nil && success && len(remaining) != 0 {
+		return false, nil, errors.New("queue acknowledgement has trailing bytes")
+	}
+	return success, remaining, err
 }
 
 func mapPlainQueueError(message string) error {
