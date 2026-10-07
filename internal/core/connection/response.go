@@ -45,6 +45,14 @@ func ParsePlainResponse(payload []byte) (bool, []byte, error) {
 	case 0:
 		return true, payload[1:], nil
 	case 1:
+		plain := len(payload) >= 5 && uint64(binary.BigEndian.Uint32(payload[1:5])) == uint64(len(payload)-5)
+		coded := len(payload) >= 9 && uint64(binary.BigEndian.Uint32(payload[5:9])) == uint64(len(payload)-9)
+		if plain == coded {
+			return false, nil, errors.New("malformed or ambiguous error response")
+		}
+		if coded {
+			return ParseStandardResponse(payload)
+		}
 		message, offset, err := ReadString(payload, 1)
 		if err != nil {
 			return false, nil, fmt.Errorf("decode domain error: %w", err)

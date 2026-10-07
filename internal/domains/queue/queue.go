@@ -30,7 +30,8 @@ type QueueItem struct {
 	Body  []byte
 	Route string
 
-	conn *connection.Connection
+	conn  *connection.Connection
+	state atomic.Uint32
 }
 
 // AvailabilityNotification represents an availability notification from the queue.
@@ -111,6 +112,9 @@ func (q *QueueItem) Extend(ctx context.Context, leaseSecs uint64) error {
 	if err := q.conn.CheckLiveHandle(); err != nil {
 		return err
 	}
+	if q.state.Load() != 0 {
+		return connection.ErrStaleHandle
+	}
 	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueExtend, extendPayloadWriter(q.Route, q.ID, q.Token, leaseSecs))
 	if err != nil {
 		span.RecordError(err)
@@ -147,6 +151,10 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 	if err := q.conn.CheckLiveHandle(); err != nil {
 		return err
 	}
+	if !q.state.CompareAndSwap(0, 1) {
+		return connection.ErrStaleHandle
+	}
+	defer q.state.CompareAndSwap(1, 0)
 	resp, err := q.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueComplete, completePayloadWriter(q.Route, q.ID, token))
 	if err != nil {
 		span.RecordError(err)
@@ -165,6 +173,7 @@ func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 		span.SetStatus(codes.Error, recordErr.Error())
 		return recordErr
 	}
+	q.state.Store(2)
 	return nil
 }
 
