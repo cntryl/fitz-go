@@ -596,10 +596,10 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 		return next, nil
 	}
 
-	tokenCalls := 0
+	var tokenCalls atomic.Int32
 	c := NewClient("localhost:4091", func(context.Context) (string, error) {
-		tokenCalls++
-		return fmt.Sprintf("token-%d", tokenCalls), nil
+		call := tokenCalls.Add(1)
+		return fmt.Sprintf("token-%d", call), nil
 	})
 	c.config.AuthSettleDelay = 20 * time.Millisecond
 	c.config.ReconnectEnabled = true
@@ -626,7 +626,7 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 	require.Eventually(t, func() bool {
 		return c.currentConnection() != nil && c.currentConnection() != initialConn
 	}, time.Second, 20*time.Millisecond)
-	assert.Equal(t, 2, tokenCalls)
+	assert.Equal(t, int32(2), tokenCalls.Load())
 
 	require.Eventually(t, func() bool {
 		return len(secondTransport.WrittenFrames()) >= 2

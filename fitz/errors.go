@@ -130,7 +130,7 @@ var ErrAsyncHandlerOverflow = coreerrors.ErrAsyncHandlerOverflow
 func IsRetryable(err error) bool {
 	var de *coreerrors.DomainError
 	if !errors.As(err, &de) {
-		return false
+		return errors.Is(err, ErrQueueFull)
 	}
 	switch uint32(de.Code) {
 	case ErrCodeKvIsolationConflict,

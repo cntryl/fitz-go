@@ -1,6 +1,7 @@
 package fitz
 
 import (
+	"fmt"
 	"testing"
 
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
@@ -12,4 +13,13 @@ func TestShouldClassifyScheduleBackendErrorAsRetryable(t *testing.T) {
 
 	assert.Equal(t, uint32(7010), ErrCodeScheduleBackendError)
 	assert.True(t, IsRetryable(err))
+}
+
+func TestShouldClassifyWrappedQueueFullSentinelAsRetryable(t *testing.T) {
+	// Arrange
+	err := fmt.Errorf("complete failed: %w", ErrQueueFull)
+	// Act
+	retryable := IsRetryable(err)
+	// Assert
+	assert.True(t, retryable)
 }

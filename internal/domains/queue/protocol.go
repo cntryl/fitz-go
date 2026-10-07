@@ -53,6 +53,10 @@ func parseQueueResponse(payload []byte) (bool, []byte, error) {
 		return true, payload[1:], nil
 	}
 
+	if status != 1 {
+		return false, nil, errors.New("unknown queue response status")
+	}
+
 	if len(payload) < 9 {
 		return false, nil, fmt.Errorf("malformed queue error response (%d bytes)", len(payload))
 	}
@@ -72,11 +76,30 @@ func parsePlainQueueResponse(payload []byte) (bool, []byte, error) {
 	if payload[0] == 0 {
 		return true, payload[1:], nil
 	}
+	if payload[0] != 1 {
+		return false, nil, errors.New("unknown queue response status")
+	}
+	plain := len(payload) >= 5 && uint64(binary.BigEndian.Uint32(payload[1:5])) == uint64(len(payload)-5)
+	coded := len(payload) >= 9 && uint64(binary.BigEndian.Uint32(payload[5:9])) == uint64(len(payload)-9)
+	if plain == coded {
+		return false, nil, errors.New("malformed or ambiguous queue error response")
+	}
+	if coded {
+		return parseQueueResponse(payload)
+	}
 	message, end, err := connection.ReadString(payload, 1)
 	if err != nil || end != len(payload) {
 		return false, nil, fmt.Errorf("malformed plain queue error response (%d bytes)", len(payload))
 	}
 	return false, nil, mapPlainQueueError(message)
+}
+
+func parseQueueAcknowledgementResponse(payload []byte) (bool, []byte, error) {
+	success, remaining, err := parsePlainQueueResponse(payload)
+	if err == nil && success && len(remaining) != 0 {
+		return false, nil, errors.New("queue acknowledgement has trailing bytes")
+	}
+	return success, remaining, err
 }
 
 func mapPlainQueueError(message string) error {

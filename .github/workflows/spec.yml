@@ -20,8 +20,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Automatic acceptance uses the qualified candidate advertising RPC cancellation.
+# main remains an explicit diagnostic option; this does not publish or promote a broker.
 env:
-  FITZ_BROKER_IMAGE: ghcr.io/cntryl/fitz:${{ inputs.broker_tag || 'main' }}
+  FITZ_BROKER_IMAGE: ghcr.io/cntryl/fitz:${{ inputs.broker_tag || 'develop@sha256:639832120496ae98309f7f8f947fbf431ea28ef3371cf0f00a70411b0e73e110' }}
 
 jobs:
   spec:

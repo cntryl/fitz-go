@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Classify wrapped `ErrQueueFull` errors through the public retryability helper.
+
+- Keep Queue handles usable after rejected ACKs and close them after successful completion.
+
+- Preserve coded Queue admission failures alongside legacy plain errors, including retryable capacity rejection and terminal unknown outcomes.
+- Preserve coded Schedule admission failures on legacy plain-response operations.
+
 ### Changed
 
 - Breaking: Stream READ and SUBSCRIBE accept the complete canonical resource, area, realm, and global selector matrix. Global continuation reuses the returned fingerprint and watermark pair, and Stream LAST is concrete-route only.
