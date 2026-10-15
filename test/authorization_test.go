@@ -42,7 +42,7 @@ func TestShouldRejectUnauthorizedOperationsGivenLimitedJWTWhenCallingEachDomain(
 				routeScheme: "kv",
 				expected:    unauthorizedKV,
 				invoke: func(ctx context.Context, client *fitz.Client, route string) error {
-					tx, err := client.KV().Begin(ctx, route, fitz.KVDurabilitySync)
+					tx, err := client.KV().Begin(ctx, route)
 					if err != nil {
 						return err
 					}

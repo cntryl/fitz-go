@@ -20,11 +20,11 @@ func TestShouldReturnClearErrorGivenCommitAfterRollbackWhenTxMisused(t *testing.
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		tx, err := f.Client().KV().Begin(ctx, f.UniqueRoute("kv"), fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, f.UniqueRoute("kv"))
 		require.NoError(t, err)
 
 		require.NoError(t, tx.Rollback(ctx))
-		err = tx.Commit(ctx)
+		err = tx.Commit(ctx, fitz.KVDurabilitySync)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "rolled back")
 	})
@@ -37,10 +37,10 @@ func TestShouldReturnClearErrorGivenMutationAfterCommitWhenTxMisused(t *testing.
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		tx, err := f.Client().KV().Begin(ctx, f.UniqueRoute("kv"), fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, f.UniqueRoute("kv"))
 		require.NoError(t, err)
 
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 		err = tx.Put(ctx, []byte("k"), []byte("v"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "committed")

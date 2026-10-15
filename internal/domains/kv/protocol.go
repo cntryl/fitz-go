@@ -41,19 +41,17 @@ const (
 )
 
 // encodeBegin encodes a KV BEGIN request payload per CLIENT_SPEC.md.
-func encodeBegin(route string, mode uint8, durability uint8) ([]byte, error) {
+func encodeBegin(route string, mode uint8) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		buf.WriteByte(mode)
-		buf.WriteByte(durability)
 	}), nil
 }
 
-func beginPayloadWriter(route string, mode uint8, durability uint8) func(*bytes.Buffer) {
+func beginPayloadWriter(route string, mode uint8) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, route)
 		buf.WriteByte(mode)
-		buf.WriteByte(durability)
 	}
 }
 
@@ -304,19 +302,21 @@ func scanPayloadWriter(txID uint64, route string, query ScanQuery) (func(*bytes.
 }
 
 // encodeCommit encodes a KV COMMIT request payload per CLIENT_SPEC.md.
-// Spec: [tx_id (u64 BE)][route_len (u32 BE)][route]
+// Spec: [tx_id (u64 BE)][route_len (u32 BE)][route][u8 persistence]
 // Operations are self-contained per CLIENT_SPEC.md design.
-func encodeCommit(txID uint64, route string) ([]byte, error) {
+func encodeCommit(txID uint64, route string, durability uint8) ([]byte, error) {
 	return encoding.EncodeWithBuffer(func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, txID)
 		encoding.WriteRoute(buf, route)
+		buf.WriteByte(durability)
 	}), nil
 }
 
-func commitPayloadWriter(txID uint64, route string) func(*bytes.Buffer) {
+func commitPayloadWriter(txID uint64, route string, durability uint8) func(*bytes.Buffer) {
 	return func(buf *bytes.Buffer) {
 		encoding.WriteU64(buf, txID)
 		encoding.WriteRoute(buf, route)
+		buf.WriteByte(durability)
 	}
 }
 

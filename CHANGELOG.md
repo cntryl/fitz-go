@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+- Breaking: move KV persistence from Begin to a required typed Commit argument; BEGIN no longer encodes persistence and COMMIT appends the explicit choice. Stream retains its required explicit commit choice.
+
 ### Fixed
 
 - Classify wrapped `ErrQueueFull` errors through the public retryability helper.

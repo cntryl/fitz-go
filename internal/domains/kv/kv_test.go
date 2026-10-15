@@ -13,16 +13,15 @@ func TestShouldEncodeBeginGivenValidRouteWhenBeginPayloadWritten(t *testing.T) {
 	// Arrange
 	route := "kv://acme/app/users"
 	mode := TxModeReadOnly
-	durability := DurabilityBuffered
 
 	// Act
-	payload, err := encodeBegin(route, mode, durability)
+	payload, err := encodeBegin(route, mode)
 
 	// Assert
 	require.NoError(t, err)
 	require.NotEmpty(t, payload)
 
-	// Verify structure: [route_len][route][mode][durability]
+	// Verify structure: [route_len][route][mode]
 	offset := 0
 	routeLen, newOffset, err := connection.ReadU32BE(payload, offset)
 	require.NoError(t, err)
@@ -34,7 +33,7 @@ func TestShouldEncodeBeginGivenValidRouteWhenBeginPayloadWritten(t *testing.T) {
 
 	offset += int(routeLen)
 	require.Equal(t, TxModeReadOnly, payload[offset])
-	require.Equal(t, DurabilityBuffered, payload[offset+1])
+	require.Len(t, payload, offset+1)
 }
 
 // TestShouldEncodeBeginGivenReadWriteMode tests BEGIN encoding with ReadWrite mode.
@@ -42,21 +41,20 @@ func TestShouldEncodeBeginGivenReadWriteModeWhenBeginPayloadWritten(t *testing.T
 	// Arrange
 	route := "kv://acme/app/users"
 	mode := TxModeReadWrite
-	durability := DurabilitySync
 
 	// Act
-	payload, err := encodeBegin(route, mode, durability)
+	payload, err := encodeBegin(route, mode)
 
 	// Assert
 	require.NoError(t, err)
 
-	// Skip to mode/durability bytes
+	// Skip to mode byte
 	routeLen, _, err := connection.ReadU32BE(payload, 0)
 	require.NoError(t, err)
 	offset := 4 + int(routeLen)
 
 	require.Equal(t, TxModeReadWrite, payload[offset])
-	require.Equal(t, DurabilitySync, payload[offset+1])
+	require.Len(t, payload, offset+1)
 }
 
 // TestShouldEncodeGetGivenValidKeyAndTxID tests GET request encoding.
@@ -274,7 +272,7 @@ func TestShouldEncodeCommitGivenValidTxIDWhenCommitPayloadWritten(t *testing.T) 
 	route := "kv://acme/app/users"
 
 	// Act
-	payload, err := encodeCommit(txID, route)
+	payload, err := encodeCommit(txID, route, DurabilitySync)
 
 	// Assert
 	require.NoError(t, err)
@@ -461,12 +459,11 @@ func TestShouldRejectInvalidHasMoreGivenNonBooleanFlagWhenParseScanResponseCalle
 func BenchmarkEncodeBegin(b *testing.B) {
 	route := "kv://acme/app/users"
 	mode := TxModeReadWrite
-	durability := DurabilitySync
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = encodeBegin(route, mode, durability)
+		_, _ = encodeBegin(route, mode)
 	}
 }
 
@@ -546,7 +543,7 @@ func BenchmarkEncodeCommit(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_, _ = encodeCommit(txID, route)
+		_, _ = encodeCommit(txID, route, DurabilitySync)
 	}
 }
 

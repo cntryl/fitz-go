@@ -15,7 +15,6 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/iter"
 	"github.com/cntryl/fitz-go/internal/core/transport"
-	"github.com/cntryl/fitz-go/internal/domains/kv"
 	"github.com/cntryl/fitz-go/internal/domains/notice"
 	"github.com/cntryl/fitz-go/internal/domains/rpc"
 	"github.com/cntryl/fitz-go/internal/protocol"
@@ -755,7 +754,7 @@ func TestShouldRebindKVClientGivenReconnectWhenExistingDomainHandleUsed(t *testi
 		return c.currentConnection() != nil && c.currentConnection() != initialConn
 	}, time.Second, 20*time.Millisecond)
 
-	tx, err := kvClient.Begin(ctx, "kv://realm/area/resource", kv.DurabilityBuffered)
+	tx, err := kvClient.Begin(ctx, "kv://realm/area/resource")
 
 	// Assert
 	require.NoError(t, err)

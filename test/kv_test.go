@@ -35,10 +35,10 @@ func TestShouldDeliverConcreteRouteGivenWildcardKVSubscriptionWhenTransactionCom
 		defer subscription.Unsubscribe()
 
 		// Act
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("key"), []byte("value")))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 
 		// Assert
 		select {
@@ -60,12 +60,12 @@ func TestShouldOpenAndCommitTransactionGivenValidRouteWhenBeginCalled(t *testing
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("user:123"), []byte("Alice")))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 
-		verifyTx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+		verifyTx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
 		result, err := verifyTx.Get(ctx, []byte("user:123"))
 		require.NoError(t, err)
@@ -83,12 +83,12 @@ func TestShouldReadValueGivenExistingKeyWhenGetCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("color"), []byte("blue")))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 
-		readTx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+		readTx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
 		result, err := readTx.Get(ctx, []byte("color"))
 		require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestShouldReturnNotFoundGivenNonExistentKeyWhenGetCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+		tx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
 		result, err := tx.Get(ctx, []byte("missing"))
 		require.NoError(t, err)
@@ -124,7 +124,7 @@ func TestShouldWriteValueGivenValidKeyWhenPutCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("k1"), []byte("v1")))
 
@@ -132,7 +132,7 @@ func TestShouldWriteValueGivenValidKeyWhenPutCalled(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result.Found)
 		assert.Equal(t, "v1", string(result.Value))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 	})
 }
 
@@ -145,7 +145,7 @@ func TestShouldInsertNewKeyGivenNonExistentKeyWhenInsertCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Insert(ctx, []byte("new-key"), []byte("new-value")))
 
@@ -153,7 +153,7 @@ func TestShouldInsertNewKeyGivenNonExistentKeyWhenInsertCalled(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result.Found)
 		assert.Equal(t, "new-value", string(result.Value))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 	})
 }
 
@@ -166,12 +166,12 @@ func TestShouldFailGivenExistingKeyWhenInsertCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Insert(ctx, []byte("dup"), []byte("first")))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 
-		tx2, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx2, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		err = tx2.Insert(ctx, []byte("dup"), []byte("second"))
 		assert.ErrorIs(t, err, fitz.ErrKVKeyExists)
@@ -188,17 +188,17 @@ func TestShouldDeleteKeyGivenExistingKeyWhenDeleteCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("to-delete"), []byte("doomed")))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 
-		tx2, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx2, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx2.Delete(ctx, []byte("to-delete")))
-		require.NoError(t, tx2.Commit(ctx))
+		require.NoError(t, tx2.Commit(ctx, fitz.KVDurabilitySync))
 
-		readTx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+		readTx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
 		result, err := readTx.Get(ctx, []byte("to-delete"))
 		require.NoError(t, err)
@@ -215,14 +215,14 @@ func TestShouldScanKeysInOrderGivenRangeWhenScanCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("b"), []byte("2")))
 		require.NoError(t, tx.Put(ctx, []byte("a"), []byte("1")))
 		require.NoError(t, tx.Put(ctx, []byte("c"), []byte("3")))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 
-		readTx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+		readTx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
 		iter, _, err := readTx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("a"), EndKey: []byte("d"), Limit: 10})
 		require.NoError(t, err)
@@ -246,20 +246,20 @@ func TestShouldDeleteRangeGivenRangeWhenDeleteRangeCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("a"), []byte("1")))
 		require.NoError(t, tx.Put(ctx, []byte("b"), []byte("2")))
 		require.NoError(t, tx.Put(ctx, []byte("c"), []byte("3")))
 		require.NoError(t, tx.Put(ctx, []byte("d"), []byte("4")))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 
-		tx2, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx2, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx2.DeleteRange(ctx, []byte("b"), []byte("d")))
-		require.NoError(t, tx2.Commit(ctx))
+		require.NoError(t, tx2.Commit(ctx, fitz.KVDurabilitySync))
 
-		readTx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+		readTx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
 		iter, _, err := readTx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("a"), EndKey: []byte("z"), Limit: 10})
 		require.NoError(t, err)
@@ -283,14 +283,14 @@ func TestShouldRespectLimitGivenScanLimitWhenScanCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("a"), []byte("1")))
 		require.NoError(t, tx.Put(ctx, []byte("b"), []byte("2")))
 		require.NoError(t, tx.Put(ctx, []byte("c"), []byte("3")))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 
-		readTx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+		readTx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
 		iter, _, err := readTx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("a"), EndKey: []byte("z"), Limit: 2})
 		require.NoError(t, err)
@@ -314,7 +314,7 @@ func TestShouldReturnEmptyPageGivenInvertedRangeWhenScanCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		iter, hasMore, err := tx.Scan(ctx, fitz.KVScanQuery{StartKey: []byte("z"), EndKey: []byte("a"), Limit: 10})
 		require.NoError(t, err)
@@ -335,12 +335,12 @@ func TestShouldRollbackChangesGivenActiveTransactionWhenRollbackCalled(t *testin
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("ephemeral"), []byte("gone")))
 		require.NoError(t, tx.Rollback(ctx))
 
-		readTx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+		readTx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
 		result, err := readTx.Get(ctx, []byte("ephemeral"))
 		require.NoError(t, err)
@@ -359,11 +359,11 @@ func TestShouldIsolateTransactionsGivenConcurrentAccessWhenMultipleTransactions(
 		f2.ConnectOrFail(ctx)
 		route := f1.UniqueRoute("kv")
 
-		tx1, err := f1.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx1, err := f1.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		defer func() { _ = tx1.Rollback(ctx) }()
 
-		tx2, err := f2.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx2, err := f2.Client().KV().Begin(ctx, route)
 		if err != nil {
 			assert.Nil(t, tx2)
 			assert.Contains(t, err.Error(), "conflict")
@@ -385,7 +385,7 @@ func TestShouldRejectWriteGivenReadOnlyModeWhenPutCalled(t *testing.T) {
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+		tx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 		require.NoError(t, err)
 		assert.ErrorIs(t, tx.Put(ctx, []byte("k"), []byte("v")), fitz.ErrKVReadOnly)
 	})
@@ -398,7 +398,7 @@ func TestShouldRejectBeginGivenInvalidRouteWhenBeginCalled(t *testing.T) {
 		defer cancel()
 
 		f.ConnectOrFail(ctx)
-		_, err := f.Client().KV().Begin(ctx, "invalid-route-not-kv-format", fitz.KVDurabilitySync)
+		_, err := f.Client().KV().Begin(ctx, "invalid-route-not-kv-format")
 		require.Error(t, err)
 	})
 }
@@ -412,12 +412,12 @@ func TestShouldRejectSecondCommitGivenAlreadyCommittedTransactionWhenCommitCalle
 		f.ConnectOrFail(ctx)
 		route := f.UniqueRoute("kv")
 
-		tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+		tx, err := f.Client().KV().Begin(ctx, route)
 		require.NoError(t, err)
 		require.NoError(t, tx.Put(ctx, []byte("k"), []byte("v")))
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit(ctx, fitz.KVDurabilitySync))
 
-		err = tx.Commit(ctx)
+		err = tx.Commit(ctx, fitz.KVDurabilitySync)
 		if err != nil {
 			assert.Error(t, err)
 		}

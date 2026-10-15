@@ -285,14 +285,14 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("kv")
-			tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+			tx, err := f.Client().KV().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("kv begin: %w", err)
 			}
 			if err := tx.Put(ctx, []byte("cs001"), []byte("ok")); err != nil {
 				return VerdictFail, ev, fmt.Errorf("kv put: %w", err)
 			}
-			if err := tx.Commit(ctx); err != nil {
+			if err := tx.Commit(ctx, fitz.KVDurabilitySync); err != nil {
 				return VerdictFail, ev, fmt.Errorf("kv commit: %w", err)
 			}
 			ev = append(ev, "first domain request (kv) succeeded")
@@ -325,7 +325,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Didn't fail on connect — check domain access
 			ev = append(ev, "connect did not error (TCP silent-close model)")
-			_, kvErr := f.Client().KV().Begin(ctx, uniqueRoute("kv"), fitz.KVDurabilitySync)
+			_, kvErr := f.Client().KV().Begin(ctx, uniqueRoute("kv"))
 			if kvErr != nil {
 				ev = append(ev, fmt.Sprintf("domain request failed post-auth-close: %v", kvErr))
 				return VerdictPartial, ev, nil
@@ -347,19 +347,19 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("kv")
-			tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+			tx, err := f.Client().KV().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("begin: %w", err)
 			}
 			if err := tx.Put(ctx, []byte("user:1"), []byte("Alice")); err != nil {
 				return VerdictFail, ev, fmt.Errorf("put: %w", err)
 			}
-			if err := tx.Commit(ctx); err != nil {
+			if err := tx.Commit(ctx, fitz.KVDurabilitySync); err != nil {
 				return VerdictFail, ev, fmt.Errorf("commit: %w", err)
 			}
 			ev = append(ev, "kv begin/put/commit succeeded")
 
-			rtx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+			rtx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("read begin: %w", err)
 			}
@@ -409,12 +409,12 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Client must remain usable
 			route := uniqueRoute("kv")
-			tx, txErr := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+			tx, txErr := f.Client().KV().Begin(ctx, route)
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable after error: %w", txErr)
 			}
 			_ = tx.Put(ctx, []byte("k"), []byte("v"))
-			_ = tx.Commit(ctx)
+			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
 			ev = append(ev, "client remains usable after unknown-route error")
 			return VerdictPass, ev, nil
 		})
@@ -432,19 +432,19 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("kv")
-			tx1, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+			tx1, err := f.Client().KV().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("begin: %w", err)
 			}
 			if err := tx1.Insert(ctx, []byte("dup"), []byte("first")); err != nil {
 				return VerdictFail, ev, fmt.Errorf("first insert: %w", err)
 			}
-			if err := tx1.Commit(ctx); err != nil {
+			if err := tx1.Commit(ctx, fitz.KVDurabilitySync); err != nil {
 				return VerdictFail, ev, fmt.Errorf("commit: %w", err)
 			}
 			ev = append(ev, "first insert succeeded")
 
-			tx2, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+			tx2, err := f.Client().KV().Begin(ctx, route)
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("second begin: %w", err)
 			}
@@ -456,7 +456,7 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, fmt.Sprintf("duplicate insert returned error: %v", insertErr))
 
-			rtx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+			rtx, err := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable: %w", err)
 			}
@@ -503,11 +503,11 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Also verify kv conflict produces typed error
 			kvRoute := uniqueRoute("kv")
-			tx, _ := f.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
+			tx, _ := f.Client().KV().Begin(ctx, kvRoute)
 			_ = tx.Insert(ctx, []byte("x"), []byte("1"))
-			_ = tx.Commit(ctx)
+			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
 
-			tx2, _ := f.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
+			tx2, _ := f.Client().KV().Begin(ctx, kvRoute)
 			kvErr := tx2.Insert(ctx, []byte("x"), []byte("2"))
 			_ = tx2.Rollback(ctx)
 			ev = append(ev, fmt.Sprintf("kv conflict error type: %T, value: %v", kvErr, kvErr))
@@ -550,12 +550,12 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Connection must remain healthy
 			kvRoute := uniqueRoute("kv")
-			tx, err2 := f.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
+			tx, err2 := f.Client().KV().Begin(ctx, kvRoute)
 			if err2 != nil {
 				return VerdictFail, ev, fmt.Errorf("connection not healthy after timeout: %w", err2)
 			}
 			_ = tx.Put(ctx, []byte("k"), []byte("v"))
-			_ = tx.Commit(ctx)
+			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
 			ev = append(ev, "connection still healthy after timeout")
 			return VerdictPass, ev, nil
 		})
@@ -612,12 +612,12 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Subsequent request must succeed
 			kvRoute := uniqueRoute("kv")
-			tx, txErr := fCaller.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
+			tx, txErr := fCaller.Client().KV().Begin(ctx, kvRoute)
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("subsequent request failed: %w", txErr)
 			}
 			_ = tx.Put(ctx, []byte("after-cancel"), []byte("ok"))
-			_ = tx.Commit(ctx)
+			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
 			ev = append(ev, "subsequent request succeeded after cancellation")
 			return VerdictPass, ev, nil
 		})
@@ -888,12 +888,12 @@ func TestConformanceSuite(t *testing.T) {
 
 			// Client must remain usable
 			kvRoute := uniqueRoute("kv")
-			tx, txErr := f.Client().KV().Begin(ctx, kvRoute, fitz.KVDurabilitySync)
+			tx, txErr := f.Client().KV().Begin(ctx, kvRoute)
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable: %w", txErr)
 			}
 			_ = tx.Put(ctx, []byte("k"), []byte("v"))
-			_ = tx.Commit(ctx)
+			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
 			ev = append(ev, "client still usable after stream error")
 			return VerdictPass, ev, nil
 		})
@@ -920,7 +920,7 @@ func TestConformanceSuite(t *testing.T) {
 
 			for i, route := range routes {
 				go func() {
-					tx, err := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync)
+					tx, err := f.Client().KV().Begin(ctx, route)
 					if err != nil {
 						resultsCh <- readResult{i, "", err}
 						return
@@ -928,8 +928,8 @@ func TestConformanceSuite(t *testing.T) {
 					key := fmt.Sprintf("key-%d", i)
 					val := fmt.Sprintf("value-%d", i)
 					_ = tx.Put(ctx, []byte(key), []byte(val))
-					_ = tx.Commit(ctx)
-					rtx, err2 := f.Client().KV().Begin(ctx, route, fitz.KVDurabilitySync, fitz.WithKVMode(fitz.KVModeReadOnly))
+					_ = tx.Commit(ctx, fitz.KVDurabilitySync)
+					rtx, err2 := f.Client().KV().Begin(ctx, route, fitz.WithKVMode(fitz.KVModeReadOnly))
 					if err2 != nil {
 						resultsCh <- readResult{i, "", err2}
 						return
@@ -986,7 +986,7 @@ func TestConformanceSuite(t *testing.T) {
 			route := uniqueRoute("kv")
 			beginCh := make(chan error, 1)
 			go func() {
-				_, err := client.KV().Begin(ctx, route, fitz.KVDurabilitySync)
+				_, err := client.KV().Begin(ctx, route)
 				beginCh <- err
 			}()
 

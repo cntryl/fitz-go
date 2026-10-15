@@ -25,8 +25,8 @@ import (
 // non-transactional use.
 type Client interface {
 	// Begin opens a transaction scoped to the provided route.
-	// Durability is explicit; optional functional options can configure mode.
-	Begin(ctx context.Context, route string, durability uint8, opts ...BeginOption) (Tx, error)
+	// Persistence is selected explicitly on Commit; options configure access mode.
+	Begin(ctx context.Context, route string, opts ...BeginOption) (Tx, error)
 	Subscribe(ctx context.Context, pattern string, handler ChangeHandler) (*Subscription, error)
 }
 
@@ -81,7 +81,7 @@ func (c *client) currentConnection() *connection.Connection {
 
 // Begin opens a transaction scoped to the provided route.
 // Per CLIENT_SPEC.md: Server assigns tx_id and returns it in response.
-func (c *client) Begin(ctx context.Context, route string, durability uint8, opts ...BeginOption) (Tx, error) {
+func (c *client) Begin(ctx context.Context, route string, opts ...BeginOption) (Tx, error) {
 	conn := c.currentConnection()
 	ctx, span := conn.Tracer().Start(ctx, "fitz.kv.Begin", trace.WithAttributes(attribute.String("fitz.route", route)))
 	defer span.End()
@@ -106,7 +106,7 @@ func (c *client) Begin(ctx context.Context, route string, durability uint8, opts
 
 	// Encode BEGIN request per CLIENT_SPEC.md
 	// Send request and wait for response
-	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, cfg.mode, durability))
+	resp, err := conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvBegin, beginPayloadWriter(route, cfg.mode))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

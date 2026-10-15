@@ -39,7 +39,7 @@ func main() {
 	}
 	defer client.Close()
 
-	tx, err := client.KV().Begin(ctx, "kv://realm/area/users", fitz.KVDurabilitySync)
+	tx, err := client.KV().Begin(ctx, "kv://realm/area/users")
 	if err != nil {
 		panic(err)
 	}
@@ -57,7 +57,7 @@ func main() {
 		println(string(value.Value))
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx, fitz.KVDurabilitySync); err != nil {
 		panic(err)
 	}
 }
@@ -415,3 +415,7 @@ A timeout, disconnect, cancellation after sending, or error `4007` can leave the
 outcome unknown. Do not blindly replay enqueue, reserve, or completion in those
 cases. Reconnection invalidates old reservation handles. A retryable error is a
 classification, not a guarantee of automatic retries or exactly-once processing.
+
+### Commit-time persistence (breaking change)
+
+KV BEGIN selects scope and access mode only. Call `tx.Commit(ctx, fitz.KVDurabilitySync)` or `fitz.KVDurabilityBuffered` explicitly. Stream COMMIT continues to require `fitz.StreamCommitSync` or `fitz.StreamCommitBuffered`. Sync waits for the broker storage boundary (local synced WAL or cloud acknowledgement); Buffered uses buffered local WAL or CloudAsync. Queue remains best effort. Old KV BEGIN/COMMIT frames are unsupported.
