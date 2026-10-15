@@ -39,7 +39,7 @@ type Tx interface {
 	Insert(ctx context.Context, key, value []byte) error
 	Delete(ctx context.Context, key []byte) error
 	DeleteRange(ctx context.Context, startKey, endKey []byte) error
-	Commit(ctx context.Context) error
+	Commit(ctx context.Context, durability uint8) error
 	Rollback(ctx context.Context) error
 }
 
@@ -449,8 +449,11 @@ func parseScanResponse(remaining []byte) ([]KVPair, bool, error) {
 	return pairs, hasMore, nil
 }
 
-// Commit finalizes the transaction durably.
-func (t *transaction) Commit(ctx context.Context) error {
+// Commit finalizes the transaction using the explicit persistence choice.
+func (t *transaction) Commit(ctx context.Context, durability uint8) error {
+	if durability > DurabilitySync {
+		return fmt.Errorf("invalid commit persistence: %d", durability)
+	}
 	ctx, span := t.conn.Tracer().Start(ctx, "fitz.kv.Commit", trace.WithAttributes(
 		attribute.String("fitz.route", t.route),
 		attribute.Int64("fitz.tx_id", int64(t.txID)),
@@ -467,7 +470,7 @@ func (t *transaction) Commit(ctx context.Context) error {
 
 	// Encode request
 	// Send request
-	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvCommit, commitPayloadWriter(t.txID, t.route))
+	resp, err := t.conn.SendRequestWithWriter(ctx, protocol.MessageTypeKvCommit, commitPayloadWriter(t.txID, t.route, durability))
 	if err != nil {
 		return fmt.Errorf("commit request failed: %w", err)
 	}

@@ -63,12 +63,12 @@ type KVTx interface {
 	Insert(ctx context.Context, key, value []byte) error
 	Delete(ctx context.Context, key []byte) error
 	DeleteRange(ctx context.Context, startKey, endKey []byte) error
-	Commit(ctx context.Context) error
+	Commit(ctx context.Context, durability KVDurabilityMode) error
 	Rollback(ctx context.Context) error
 }
 
 type KVClient interface {
-	Begin(ctx context.Context, route string, durability KVDurabilityMode, opts ...KVBeginOption) (KVTx, error)
+	Begin(ctx context.Context, route string, opts ...KVBeginOption) (KVTx, error)
 	Subscribe(ctx context.Context, pattern string, handler KVChangeHandler) (*KVSubscription, error)
 }
 
@@ -109,7 +109,7 @@ type kvPairIterator struct {
 	current KVPair
 }
 
-func (c *kvClient) Begin(ctx context.Context, route string, durability KVDurabilityMode, opts ...KVBeginOption) (KVTx, error) {
+func (c *kvClient) Begin(ctx context.Context, route string, opts ...KVBeginOption) (KVTx, error) {
 	cfg := kvBeginConfig{
 		mode: KVModeReadWrite,
 	}
@@ -122,7 +122,6 @@ func (c *kvClient) Begin(ctx context.Context, route string, durability KVDurabil
 	tx, err := c.inner.Begin(
 		ctx,
 		route,
-		uint8(durability),
 		internalkv.WithMode(uint8(cfg.mode)),
 	)
 	if err != nil {
@@ -194,8 +193,8 @@ func (t *kvTx) DeleteRange(ctx context.Context, startKey, endKey []byte) error {
 }
 
 // Commit persists all writes in the active transaction.
-func (t *kvTx) Commit(ctx context.Context) error {
-	return t.inner.Commit(ctx)
+func (t *kvTx) Commit(ctx context.Context, durability KVDurabilityMode) error {
+	return t.inner.Commit(ctx, uint8(durability))
 }
 
 // Rollback discards all uncommitted changes in the active transaction.

@@ -74,7 +74,7 @@ func TestShouldCloseTransactionGivenRejectedCommitWhenCommitCalled(t *testing.T)
 		transport.readCh <- protocol.EncodeFrame(protocol.MessageTypeKvCommit, kvDomainErrorPayload(2001, "commit rejected"))
 	}()
 
-	err := tx.Commit(context.Background())
+	err := tx.Commit(context.Background(), DurabilitySync)
 
 	require.Error(t, err)
 	assert.True(t, tx.committed.Load())
