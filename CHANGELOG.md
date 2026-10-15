@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+- Requires the server commit-time persistence contract from cntryl/fitz#471; the old KV wire format is incompatible. Validated against `fitz:develop`.
+
 - Breaking: move KV persistence from Begin to a required typed Commit argument; BEGIN no longer encodes persistence and COMMIT appends the explicit choice. Stream retains its required explicit commit choice.
 
 ### Fixed
