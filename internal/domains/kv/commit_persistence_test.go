@@ -2,8 +2,9 @@ package kv
 
 import (
 	"encoding/binary"
-	"github.com/stretchr/testify/require"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestShouldOmitPersistenceGivenBeginWhenEncoding(t *testing.T) {
@@ -14,7 +15,7 @@ func TestShouldOmitPersistenceGivenBeginWhenEncoding(t *testing.T) {
 	// Assert
 	require.NoError(t, err)
 	require.Len(t, payload, 4+len(route)+1)
-	require.Equal(t, byte(TxModeReadWrite), payload[len(payload)-1])
+	require.Equal(t, TxModeReadWrite, payload[len(payload)-1])
 }
 
 func TestShouldEncodePersistenceGivenCommitWhenEncoding(t *testing.T) {
