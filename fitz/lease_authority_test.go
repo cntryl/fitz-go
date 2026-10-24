@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -45,6 +46,10 @@ func (s *scriptedManagedLeaseTransport) Write(ctx context.Context, frame []byte)
 	s.mu.Lock()
 	s.written = append(s.written, append([]byte(nil), frame...))
 	s.mu.Unlock()
+	messageType, _, err := protocol.DecodeFrame(frame)
+	if err == nil && messageType == protocol.MessageTypeConnect {
+		s.readCh <- protocol.EncodeFrame(protocol.MessageTypeHello, wire2HelloPayload())
+	}
 	return nil
 }
 
@@ -69,6 +74,19 @@ func (s *scriptedManagedLeaseTransport) RemoteAddr() string {
 }
 
 func (s *scriptedManagedLeaseTransport) enqueue(ctx context.Context, frame []byte) error {
+	frame = append([]byte(nil), frame...)
+	response, err := protocol.DecodeMessage(frame)
+	if err == nil && response.CorrelationID == 0 {
+		s.mu.Lock()
+		for _, v := range slices.Backward(s.written) {
+			request, e := protocol.DecodeMessage(v)
+			if e == nil && request.MessageType == response.MessageType && request.CorrelationID != 0 {
+				binary.BigEndian.PutUint64(frame[3:11], request.CorrelationID)
+				break
+			}
+		}
+		s.mu.Unlock()
+	}
 	select {
 	case <-ctx.Done():
 		return context.Cause(ctx)
@@ -190,7 +208,10 @@ func managedLeaseAcquireErrorResponse(t *testing.T, code uint32, message string)
 	t.Helper()
 	var payload bytes.Buffer
 	payload.WriteByte(1)
-	connection.WriteU32BE(&payload, code)
+	payload.WriteByte(byte(code >> 8))
+	payload.WriteByte(byte(code))
+	payload.WriteByte(0)
+	payload.WriteByte(0)
 	connection.WriteString(&payload, message)
 	return managedLeaseFrame(t, protocol.MessageTypeLeaseAcquire, payload.Bytes())
 }
@@ -310,7 +331,7 @@ func TestShouldKeepAdmissionAuthorityStableGivenSuccessfulRenewals(t *testing.T)
 
 func TestShouldNotInvokeCallbackGivenAcquireFailure(t *testing.T) {
 	client, transport, baseWrites := newManagedLeaseTestClient(t)
-	errorResponse := managedLeaseAcquireErrorResponse(t, 5001, "lease held by another owner")
+	errorResponse := managedLeaseAcquireErrorResponse(t, 5050, "lease held by another owner")
 	ctx, cancel := context.WithTimeout(context.Background(), managedLeaseTestTimeout)
 	defer cancel()
 	responder := startManagedLeaseResponder(ctx, transport,
@@ -392,4 +413,13 @@ func TestShouldOmitLeaseAuthorityGivenOrdinaryContext(t *testing.T) {
 
 	assert.False(t, found)
 	assert.Equal(t, LeaseAuthority{}, authority)
+}
+
+func wire2HelloPayload() []byte {
+	payload := make([]byte, 22)
+	binary.BigEndian.PutUint16(payload, 2)
+	binary.BigEndian.PutUint32(payload[6:], 1<<20)
+	binary.BigEndian.PutUint32(payload[10:], 64)
+	binary.BigEndian.PutUint64(payload[14:], 1)
+	return payload
 }

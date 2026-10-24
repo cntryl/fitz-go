@@ -11,18 +11,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestShouldClassifyNegotiatedRPCBudgetAsWorkerDelivery(t *testing.T) {
+func TestShouldClassifyWorkerRequestGivenWire2BudgetFlag(t *testing.T) {
 	// Arrange
 	var mux Multiplexer
-	route := "rpc://realm/area/resource"
-	payload := rpcWorkerRequestPayloadForTest(route, "", []byte("body"))
-	payload = append(payload, 1, 1, 0, 0, 0, 100)
-
+	base := rpcWorkerRequestPayloadForTest("rpc://realm/area/resource", "", []byte("body"))
+	base = base[:len(base)-1]
+	cases := []struct {
+		extension []byte
+		want      bool
+	}{{[]byte{0}, true}, {[]byte{1, 0, 0, 0, 0}, true}, {[]byte{1, 0, 0, 0, 100}, true}, {nil, false}, {[]byte{0, 0}, false}, {[]byte{2}, false}, {[]byte{1, 255, 255, 255, 255}, false}}
 	// Act
-	workerDelivery := mux.looksLikeRpcWorkerRequest(payload)
-
-	// Assert
-	require.True(t, workerDelivery)
+	for _, tc := range cases {
+		payload := append(append([]byte(nil), base...), tc.extension...)
+		actual := mux.looksLikeRpcWorkerRequest(payload)
+		// Assert
+		require.Equal(t, tc.want, actual)
+	}
 }
 
 func TestShouldDispatchCorrelatedRequestsOutOfOrderGivenSameMessageType(t *testing.T) {
@@ -289,6 +293,7 @@ func rpcWorkerRequestPayloadForTest(route string, _ string, body []byte) []byte 
 
 	writeTLVString(route)
 	writeTLVBytes(body)
+	payload = append(payload, 0)
 	return payload
 }
 

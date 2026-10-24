@@ -47,6 +47,7 @@ func (t *writeReorderingTransport) Write(ctx context.Context, frame []byte) erro
 		return err
 	}
 	if msgType == protocol.MessageTypeConnect {
+		t.frames <- protocol.EncodeFrame(2, testkit.HelloPayload())
 		return nil
 	}
 
@@ -54,7 +55,7 @@ func (t *writeReorderingTransport) Write(ctx context.Context, frame []byte) erro
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	resp := protocol.EncodeFrame(msgType, []byte("resp:"+string(payload)))
+	resp := testkit.CorrelateResponse(protocol.EncodeFrame(msgType, []byte("resp:"+string(payload))), [][]byte{frame})
 	select {
 	case t.frames <- resp:
 		return nil
@@ -218,6 +219,8 @@ func TestShouldBoundConcurrentSlotsGivenMaxOneWhenAcquireAsyncHandlerSlotCalled(
 }
 
 type admissionBlockingTransport struct {
+	written        [][]byte
+	helloOnConnect bool
 	mu             sync.Mutex
 	requestWrites  int
 	responseCh     chan []byte
@@ -228,6 +231,7 @@ type admissionBlockingTransport struct {
 func newAdmissionBlockingTransport() *admissionBlockingTransport {
 	return &admissionBlockingTransport{
 		responseCh:     make(chan []byte, 8),
+		helloOnConnect: true,
 		closed:         make(chan struct{}),
 		requestWriteCh: make(chan struct{}, 8),
 	}
@@ -248,6 +252,10 @@ func (t *admissionBlockingTransport) Write(ctx context.Context, frame []byte) er
 	}
 
 	t.mu.Lock()
+	t.written = append(t.written, append([]byte(nil), frame...))
+	if msgType == 1 && t.helloOnConnect {
+		t.responseCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+	}
 	if msgType != protocol.MessageTypeConnect {
 		t.requestWrites++
 		select {
@@ -302,7 +310,9 @@ func (transport *admissionBlockingTransport) waitForRequestWrite(t *testing.T, e
 }
 
 func (t *admissionBlockingTransport) pushResponse(msgType uint16, payload []byte) {
-	frame := protocol.EncodeFrame(msgType, payload)
+	t.mu.Lock()
+	frame := testkit.CorrelateResponse(protocol.EncodeFrame(msgType, payload), t.written)
+	t.mu.Unlock()
 	t.responseCh <- append([]byte(nil), frame...)
 }
 
@@ -315,6 +325,7 @@ func (t *admissionBlockingTransport) requestWriteCount() int {
 func TestShouldObserveServerCapabilitiesBeforeAnonymousConnectSettles(t *testing.T) {
 	// Arrange
 	transport := newAdmissionBlockingTransport()
+	transport.helloOnConnect = false
 	cfg := connection.DefaultConfig()
 	cfg.Token = ""
 	cfg.AuthSettleDelay = 50 * time.Millisecond
@@ -330,7 +341,7 @@ func TestShouldObserveServerCapabilitiesBeforeAnonymousConnectSettles(t *testing
 		t.Fatal("anonymous start skipped capability negotiation window")
 	case <-time.After(10 * time.Millisecond):
 	}
-	payload := []byte{0, 1, 0, 0, 0, byte(protocol.CapabilityRPCCancellation)}
+	payload := testkit.HelloPayload()
 	transport.pushResponse(protocol.MessageTypeServerHello, payload)
 
 	// Assert
@@ -436,7 +447,7 @@ func TestShouldParseStandardResponseGivenErrorStatusWhenParseStandardResponseCal
 	defer connection.PutBuffer(buf)
 
 	connection.WriteU8(buf, 1) // Error status
-	connection.WriteU32BE(buf, uint32(coreerrors.KvIsolationConflict))
+	testkit.WriteErrorCode(buf, uint32(coreerrors.KvIsolationConflict))
 	connection.WriteString(buf, "test error message")
 	payload := buf.Bytes()
 
@@ -678,10 +689,10 @@ func TestShouldClassifyRetryableGivenIsolationConflictWhenRetryPolicyEvaluated(t
 	assert.True(t, connection.IsTransientRetryable(err))
 }
 
-func TestShouldClassifyRetryableGivenScheduleBackendErrorWhenRetryPolicyEvaluated(t *testing.T) {
-	err := coreerrors.NewDomainError(coreerrors.ScheduleBackendError, "backend busy")
+func TestShouldClassifyTerminalGivenScheduleBackendErrorWhenRetryPolicyEvaluated(t *testing.T) {
+	err := coreerrors.NewDomainErrorWithDisposition(uint16(coreerrors.ScheduleBackendError), 6, 1, "backend busy")
 
-	assert.True(t, connection.IsTransientRetryable(err))
+	assert.False(t, connection.IsTransientRetryable(err))
 }
 
 func TestShouldClassifyFatalGivenInvalidModeWhenRetryPolicyEvaluated(t *testing.T) {

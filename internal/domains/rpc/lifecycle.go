@@ -11,6 +11,9 @@ import (
 )
 
 func decodeRPCRequestBudget(extension []byte) (*uint32, error) {
+	if len(extension) == 1 && extension[0] == 0 {
+		return nil, nil
+	}
 	if len(extension) != 5 || extension[0] != 1 {
 		return nil, errors.New("invalid RPC request budget extension")
 	}

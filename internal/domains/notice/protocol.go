@@ -150,8 +150,8 @@ func decodePayload(body []byte) ([]byte, bool) {
 }
 
 func decodeStatus(body []byte) (uint8, uint32, string, bool) {
-	success, _, err := connection.ParseStandardResponse(body)
-	if err == nil && success {
+	success, remaining, err := connection.ParseStandardResponse(body)
+	if err == nil && success && len(remaining) == 0 {
 		return 0, 0, "", true
 	}
 	var domainErr *coreerrors.DomainError

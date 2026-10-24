@@ -31,7 +31,7 @@ func TestShouldWaitForServerHelloBeyondAuthenticationSettlement(t *testing.T) {
 		t.Fatal("Connect completed before capability negotiation")
 	case <-time.After(25 * time.Millisecond):
 	}
-	scripted.PushReadFrame(protocol.EncodeFrame(protocol.MessageTypeServerHello, []byte{0, 1, 0, 0, 0, byte(protocol.CapabilityRPCCancellation)}))
+	scripted.PushReadFrame(protocol.EncodeFrame(protocol.MessageTypeServerHello, wire2HelloPayload()))
 
 	// Assert
 	require.NoError(t, <-connected)

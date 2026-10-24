@@ -437,6 +437,9 @@ func (c *Connection) Start(ctx context.Context) error {
 
 	select {
 	case <-c.serverHello:
+		if c.closed.Load() || c.ctx.Err() != nil {
+			return ErrConnectionClosed
+		}
 		c.confirmAuthentication()
 		if c.logger != nil {
 			c.logger.InfoContext(ctx, "wire-2 connection negotiated")
@@ -444,8 +447,8 @@ func (c *Connection) Start(ctx context.Context) error {
 		c.startHeartbeat()
 		return nil
 
-	case <-c.done:
-		// Connection closed during auth (likely invalid JWT)
+	case <-c.ctx.Done():
+		// Session canceled during authentication, including explicit Close.
 		if c.authError != nil {
 			span.RecordError(c.authError)
 			span.SetStatus(codes.Error, c.authError.Error())

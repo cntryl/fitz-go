@@ -10,6 +10,10 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Accept base Wire 2 RPC requests without a deadline in worker routing and budget decoding.
+- Cancel pending HELLO negotiation promptly when Close starts, even while transport shutdown is blocked.
+- Qualify fixed headers, structured errors, correlation and reconnect behavior in native broker fixtures.
+
 - Classify wrapped `ErrQueueFull` errors through the public retryability helper.
 
 - Keep Queue handles usable after rejected ACKs and close them after successful completion.

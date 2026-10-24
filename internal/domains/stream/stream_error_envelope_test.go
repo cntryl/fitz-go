@@ -15,15 +15,17 @@ func TestShouldPreserveStructuredStreamCodeAndCause(t *testing.T) {
 		message  string
 		conflict bool
 	}{
-		{2001, "unrelated wording", true},
-		{2002, "concurrency conflict", false},
-		{2012, "backend unavailable", false},
+		{2050, "unrelated wording", true},
+		{2051, "concurrency conflict", false},
+		{2006, "backend unavailable", false},
 	} {
 		t.Run(tc.message, func(t *testing.T) {
 			// Arrange
 			payload := make([]byte, 9+len(tc.message))
-			payload[0] = 2
-			binary.BigEndian.PutUint32(payload[1:5], tc.code)
+			payload[0] = 1
+			binary.BigEndian.PutUint16(payload[1:3], uint16(tc.code))
+			payload[3] = 0
+			payload[4] = 0
 			binary.BigEndian.PutUint32(payload[5:9], uint32(len(tc.message)))
 			copy(payload[9:], tc.message)
 

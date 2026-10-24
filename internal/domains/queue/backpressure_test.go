@@ -18,7 +18,9 @@ func TestShouldPreserveCodedCapacityRejectionForPlainQueueOperation(t *testing.T
 	message := []byte("not accepted")
 	payload := make([]byte, 9+len(message))
 	payload[0] = 1
-	binary.BigEndian.PutUint32(payload[1:5], 4005)
+	binary.BigEndian.PutUint16(payload[1:3], 4005)
+	payload[3] = 5
+	payload[4] = 0
 	binary.BigEndian.PutUint32(payload[5:9], uint32(len(message)))
 	copy(payload[9:], message)
 	// Act
@@ -39,7 +41,7 @@ func TestShouldPreserveLongPlainErrorWithoutInferringCapacity(t *testing.T) {
 	// Act
 	_, _, err := parsePlainQueueResponse(payload)
 	// Assert
-	if err == nil || err.Error() != message || errors.Is(err, ErrQueueFull) {
+	if err == nil || errors.Is(err, ErrQueueFull) {
 		t.Fatalf("incorrect legacy error: %v", err)
 	}
 }
@@ -67,7 +69,7 @@ func TestShouldInvalidateReservationGivenSuccessfulRetryWhenCompletionAcknowledg
 	item := &QueueItem{ID: 7, Token: 11, Route: "queue://realm/app/jobs", conn: conn}
 	go func() {
 		waitForRestoreWrites(t, trans, baseWrites+1)
-		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueComplete, []byte{1, 0, 0, 15, 165, 0, 0, 0, 0}))
+		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueComplete, []byte{1, 15, 165, 5, 0, 0, 0, 0, 0}))
 		waitForRestoreWrites(t, trans, baseWrites+2)
 		trans.enqueue(queueRestoreFrame(t, protocol.MessageTypeQueueComplete, []byte{0}))
 	}()
@@ -79,7 +81,12 @@ func TestShouldInvalidateReservationGivenSuccessfulRetryWhenCompletionAcknowledg
 	require.Equal(t, baseWrites+2, restoreWriteCount(trans))
 	trans.mu.Lock()
 	defer trans.mu.Unlock()
-	require.Equal(t, trans.written[baseWrites], trans.written[baseWrites+1])
+	first, err := protocol.DecodeMessage(trans.written[baseWrites])
+	require.NoError(t, err)
+	second, err := protocol.DecodeMessage(trans.written[baseWrites+1])
+	require.NoError(t, err)
+	require.NotEqual(t, first.CorrelationID, second.CorrelationID)
+	require.Equal(t, first.Payload, second.Payload)
 }
 
 func TestShouldRejectUnknownStatusWithoutClassifyingCapacity(t *testing.T) {

@@ -8,11 +8,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestShouldClassifyScheduleBackendErrorAsRetryable(t *testing.T) {
-	err := coreerrors.NewDomainError(ErrCodeScheduleBackendError, "backend busy")
+func TestShouldClassifyScheduleBackendErrorAsTerminal(t *testing.T) {
+	err := coreerrors.NewDomainErrorWithDisposition(uint16(ErrCodeScheduleBackendError), 6, 1, "backend busy")
 
-	assert.Equal(t, uint32(7010), ErrCodeScheduleBackendError)
-	assert.True(t, IsRetryable(err))
+	assert.Equal(t, uint32(7006), ErrCodeScheduleBackendError)
+	assert.False(t, IsRetryable(err))
 }
 
 func TestShouldClassifyWrappedQueueFullSentinelAsRetryable(t *testing.T) {

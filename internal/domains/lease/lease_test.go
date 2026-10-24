@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cntryl/fitz-go/internal/testkit"
+
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/cntryl/fitz-go/internal/protocol"
@@ -41,6 +43,10 @@ func (s *scriptedLeaseRestoreTransport) Write(ctx context.Context, frame []byte)
 	s.mu.Lock()
 	s.written = append(s.written, append([]byte(nil), frame...))
 	s.mu.Unlock()
+	kind, _, err := protocol.DecodeFrame(frame)
+	if err == nil && kind == protocol.MessageTypeConnect {
+		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+	}
 	return nil
 }
 
@@ -67,7 +73,10 @@ func (s *scriptedLeaseRestoreTransport) RemoteAddr() string {
 }
 
 func (s *scriptedLeaseRestoreTransport) enqueue(frame []byte) {
-	s.readCh <- append([]byte(nil), frame...)
+	s.mu.Lock()
+	frame = testkit.CorrelateResponse(frame, s.written)
+	s.mu.Unlock()
+	s.readCh <- frame
 }
 
 func scriptedLeaseFrame(t *testing.T, msgType uint16, payload []byte) []byte {

@@ -63,7 +63,7 @@ func TestShouldEncodeExclusiveFlagOnlyWhenRequestedGivenScanQuery(t *testing.T) 
 	query := ScanQuery{StartKey: []byte("key"), StartExclusive: true}
 	payload, err := encodeScan(1, "kv://realm/area/resource", query)
 	assert.NoError(t, err)
-	assert.Equal(t, byte(1), payload[len(payload)-1])
+	assert.Equal(t, byte(2), payload[len(payload)-1])
 
 	writer, err := scanPayloadWriter(1, "kv://realm/area/resource", query)
 	assert.NoError(t, err)
@@ -74,5 +74,6 @@ func TestShouldEncodeExclusiveFlagOnlyWhenRequestedGivenScanQuery(t *testing.T) 
 	query.StartExclusive = false
 	legacyPayload, err := encodeScan(1, "kv://realm/area/resource", query)
 	assert.NoError(t, err)
-	assert.NotEqual(t, len(payload), len(legacyPayload))
+	assert.Equal(t, len(payload), len(legacyPayload))
+	assert.Equal(t, byte(0), legacyPayload[len(legacyPayload)-1])
 }

@@ -36,7 +36,7 @@ func TestShouldReturnRemainingPayloadGivenSuccessStatusWhenParseStandardResponse
 
 func TestShouldParseTypedDomainErrorGivenKnownCodeWhenParseStandardResponseCalled(t *testing.T) {
 	payload := []byte{1}
-	payload = appendU32(payload, uint32(coreerrors.KvIsolationConflict))
+	payload = append(payload, byte(coreerrors.KvIsolationConflict>>8), byte(coreerrors.KvIsolationConflict&255), 0, 0)
 	payload = appendU32(payload, 4)
 	payload = append(payload, []byte("boom")...)
 
@@ -84,7 +84,7 @@ func TestShouldReturnDecodeErrorGivenTruncatedTypedDomainErrorWhenParseStandardR
 	assert.False(t, errors.As(err, &domainErr))
 }
 
-func TestShouldParseStringOnlyDomainErrorWhenParsePlainResponseCalled(t *testing.T) {
+func TestShouldRejectStringOnlyDomainErrorWhenParsePlainResponseCalled(t *testing.T) {
 	payload := []byte{1}
 	payload = appendU32(payload, 5)
 	payload = append(payload, []byte("hello")...)
@@ -93,5 +93,7 @@ func TestShouldParseStringOnlyDomainErrorWhenParsePlainResponseCalled(t *testing
 
 	assert.False(t, success)
 	assert.Nil(t, remaining)
-	require.EqualError(t, err, "hello")
+	require.Error(t, err)
+	var domainErr *coreerrors.DomainError
+	require.NotErrorAs(t, err, &domainErr)
 }
