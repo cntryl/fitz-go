@@ -475,38 +475,6 @@ func (c *Connection) Start(ctx context.Context) error {
 	}
 }
 
-func (c *Connection) authSettleError(ctx context.Context) error {
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-	}
-	select {
-	case <-c.done:
-		if err := c.getConnError(); err != nil {
-			return err
-		}
-		return ErrConnectionClosed
-	default:
-	}
-	if c.closed.Load() || c.State() == StateClosed {
-		if err := c.getConnError(); err != nil {
-			return err
-		}
-		return ErrConnectionClosed
-	}
-	if c.ctx.Err() != nil {
-		if err := c.getConnError(); err != nil {
-			return err
-		}
-		return ErrConnectionClosed
-	}
-	if err := c.getConnError(); err != nil {
-		return err
-	}
-	return nil
-}
-
 // sendConnect sends the wire-2 version and client identity fields.
 func (c *Connection) sendConnect(ctx context.Context) error {
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_connect", trace.WithAttributes(attribute.Int("fitz.msg_type", int(protocol.MessageTypeConnect))))
@@ -673,9 +641,7 @@ func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
 			return false, errors.New("HELLO contains invalid negotiated limits")
 		}
 		localLimit := uint32(protocol.MaxMessageSize)
-		if maxMessageBytes < localLimit {
-			localLimit = maxMessageBytes
-		}
+		localLimit = min(localLimit, maxMessageBytes)
 		if c.cfg.MaxMessageBytes > 0 && uint32(c.cfg.MaxMessageBytes) < localLimit {
 			localLimit = uint32(c.cfg.MaxMessageBytes)
 		}
@@ -688,7 +654,7 @@ func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
 			c.oneWaySem = make(chan struct{}, limit)
 		}
 		c.mux.SetCapabilities(version, capabilities)
-		if sizer, ok := c.transport.(interface{ SetMaxFrameSize(int) }); ok {
+		if sizer, ok := c.transport.(interface{ SetMaxFrameSize(size int) }); ok {
 			sizer.SetMaxFrameSize(int(localLimit))
 		}
 		c.serverHelloOnce.Do(func() { close(c.serverHello) })

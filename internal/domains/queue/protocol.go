@@ -76,21 +76,6 @@ func parseQueueAcknowledgementResponse(payload []byte) (bool, []byte, error) {
 	return success, remaining, err
 }
 
-func mapPlainQueueError(message string) error {
-	switch message {
-	case "InvalidToken":
-		return ErrInvalidToken
-	case "InflightExpired":
-		return ErrLeaseExpiredQ
-	case "NotFound":
-		return ErrMessageNotFound
-	case "QueueNotFound":
-		return ErrQueueNotFound
-	default:
-		return errors.New(message)
-	}
-}
-
 func mapQueueErrorCode(code uint32, msg string) error {
 	switch code {
 	case queueDomainErrInvalidToken:
