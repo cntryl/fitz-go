@@ -114,10 +114,11 @@ func rpcSubscribeWorkerPayloadWriterWithCancellation(workerRoute string, maxConc
 	return func(buf *bytes.Buffer) {
 		encoding.WriteRoute(buf, workerRoute)
 		encoding.WriteU32(buf, maxConcurrent)
+		var flags byte
 		if supportsCancellation {
-			buf.WriteByte(1)
-			buf.WriteByte(1)
+			flags = 1
 		}
+		buf.WriteByte(flags)
 	}
 }
 
@@ -134,8 +135,9 @@ func rpcRequestPayloadWriterWithBudget(correlationID [16]byte, route string, rep
 		encoding.WriteBytes(buf, body)
 		if remainingBudgetMS != nil {
 			buf.WriteByte(1)
-			buf.WriteByte(1)
 			encoding.WriteU32(buf, *remainingBudgetMS)
+		} else {
+			buf.WriteByte(0)
 		}
 	}
 }

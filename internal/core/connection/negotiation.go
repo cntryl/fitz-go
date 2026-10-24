@@ -5,9 +5,8 @@ import (
 	"time"
 )
 
-// WaitForServerHello completes capability negotiation before a Client publishes
-// its domain handles. A parsed zero capability HELLO is a supported legacy peer.
-// The caller deadline and configured read timeout bound a missing advertisement.
+// WaitForServerHello confirms that wire-2 limits were parsed before domain use.
+// The caller deadline and configured read timeout bound a missing HELLO.
 func (c *Connection) WaitForServerHello(ctx context.Context) error {
 	timeout := c.cfg.ReadTimeout
 	if timeout <= 0 {

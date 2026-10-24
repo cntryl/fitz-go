@@ -8,6 +8,7 @@ import (
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/encoding"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
 
 // Wire opcodes for Queue domain (per CLIENT_SPEC.md). Values are message type identifiers.
@@ -32,13 +33,13 @@ var (
 	ErrQueueFull       = errors.New("queue full")
 )
 
-// Queue error codes in the shared domain error envelope:
-// [u8 status=1][u32 code][u32 msg_len][msg].
+// Queue error codes in the shared response envelope:
+// [u8 status=1][u16 code][u8 class][u8 effect][string message].
 const (
-	queueDomainErrInvalidToken  = 4001
-	queueDomainErrLeaseExpired  = 4002
-	queueDomainErrNotFound      = 4003
-	queueDomainErrQueueNotFound = 4004
+	queueDomainErrInvalidToken  = 4050
+	queueDomainErrLeaseExpired  = 4051
+	queueDomainErrNotFound      = 4052
+	queueDomainErrQueueNotFound = 4053
 	queueDomainErrQueueFull     = 4005
 )
 
@@ -48,50 +49,23 @@ func parseQueueResponse(payload []byte) (bool, []byte, error) {
 		return false, nil, errors.New("response too short")
 	}
 
-	status := payload[0]
-	if status == 0 {
-		return true, payload[1:], nil
+	success, remaining, err := connection.ParseStandardResponse(payload)
+	if err != nil {
+		return false, nil, mapQueueDomainError(err)
 	}
-
-	if status != 1 {
-		return false, nil, errors.New("unknown queue response status")
-	}
-
-	if len(payload) < 9 {
-		return false, nil, fmt.Errorf("malformed queue error response (%d bytes)", len(payload))
-	}
-
-	code := binary.BigEndian.Uint32(payload[1:5])
-	msgLen := binary.BigEndian.Uint32(payload[5:9])
-	if uint64(msgLen) != uint64(len(payload)-9) {
-		return false, nil, fmt.Errorf("malformed queue error response (%d bytes)", len(payload))
-	}
-	return false, nil, mapQueueErrorCode(code, string(payload[9:]))
+	return success, remaining, nil
 }
 
 func parsePlainQueueResponse(payload []byte) (bool, []byte, error) {
-	if len(payload) < 1 {
-		return false, nil, errors.New("response too short")
+	return parseQueueResponse(payload)
+}
+
+func mapQueueDomainError(err error) error {
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		return mapQueueErrorCode(uint32(domainErr.Code), domainErr.Message)
 	}
-	if payload[0] == 0 {
-		return true, payload[1:], nil
-	}
-	if payload[0] != 1 {
-		return false, nil, errors.New("unknown queue response status")
-	}
-	plain := len(payload) >= 5 && uint64(binary.BigEndian.Uint32(payload[1:5])) == uint64(len(payload)-5)
-	coded := len(payload) >= 9 && uint64(binary.BigEndian.Uint32(payload[5:9])) == uint64(len(payload)-9)
-	if plain == coded {
-		return false, nil, errors.New("malformed or ambiguous queue error response")
-	}
-	if coded {
-		return parseQueueResponse(payload)
-	}
-	message, end, err := connection.ReadString(payload, 1)
-	if err != nil || end != len(payload) {
-		return false, nil, fmt.Errorf("malformed plain queue error response (%d bytes)", len(payload))
-	}
-	return false, nil, mapPlainQueueError(message)
+	return err
 }
 
 func parseQueueAcknowledgementResponse(payload []byte) (bool, []byte, error) {

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
+	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 	"github.com/cntryl/fitz-go/internal/core/iter"
 	"github.com/cntryl/fitz-go/internal/core/reconnect"
 	"github.com/cntryl/fitz-go/internal/core/types"
@@ -637,15 +638,12 @@ func (c *client) Call(ctx context.Context, route string, body []byte) (CallItera
 		cancellation:  make(chan CancellationOutcome, 1),
 	}
 	var remainingBudgetMS *uint32
-	_, capabilities := c.conn.ServerCapabilities()
-	if capabilities&protocol.CapabilityRPCCancellation != 0 {
-		if deadline, ok := ctx.Deadline(); ok {
-			remaining := time.Until(deadline).Milliseconds()
-			remaining = max(remaining, 0)
-			remaining = min(remaining, 86_400_000)
-			budget := uint32(remaining)
-			remainingBudgetMS = &budget
-		}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline).Milliseconds()
+		remaining = max(remaining, 0)
+		remaining = min(remaining, 86_400_000)
+		budget := uint32(remaining)
+		remainingBudgetMS = &budget
 	}
 
 	c.mu.Lock()
@@ -719,11 +717,16 @@ func (w *responseWriter) sendError(err error) {
 	}
 	body := make([]byte, 9+len(message))
 	body[0] = 1
-	code := uint32(6010)
+	code := uint32(coreerrors.RpcBackendError)
+	class := byte(6)
+	effect := byte(1)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrRPCTimeout) {
-		code = 6001
+		code = uint32(coreerrors.RpcTimeout)
+		class = 7
 	}
-	binary.BigEndian.PutUint32(body[1:5], code)
+	binary.BigEndian.PutUint16(body[1:3], uint16(code))
+	body[3] = class
+	body[4] = effect
 	binary.BigEndian.PutUint32(body[5:9], uint32(len(message)))
 	copy(body[9:], message)
 	_ = w.conn.SendFireAndForgetWithWriter(w.conn.LifecycleContext(), protocol.MessageTypeRpcResponse, rpcResponsePayloadWriter(w.correlationID, seq, body, true))

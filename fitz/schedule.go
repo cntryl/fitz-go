@@ -75,7 +75,7 @@ func (c *scheduleClient) Create(ctx context.Context, route string, cronExpr stri
 	return c.inner.Create(ctx, route, cronExpr, internalschedule.ScheduleDeliveryMode(deliveryMode), payload)
 }
 
-// CreateBatch submits schedule definitions using broker extension 706.
+// CreateBatch submits schedule definitions with Schedule CREATE_BATCH (706).
 func (c *scheduleClient) CreateBatch(ctx context.Context, entries []ScheduleEntry) error {
 	internalEntries := make([]internalschedule.ScheduleEntry, len(entries))
 	for i, entry := range entries {
@@ -101,7 +101,7 @@ func (c *scheduleClient) List(ctx context.Context, offset *uint64, limit *uint64
 	return ScheduleListPage{Entries: copyScheduleEntries(page.Entries), TotalCount: page.TotalCount}, nil
 }
 
-// ListV2 reads a broker cursor page without changing canonical offset-based List.
+// ListV2 reads one cursor page using Wire-2 Schedule LIST (702).
 func (c *scheduleClient) ListV2(ctx context.Context, cursor *string, limit *uint64) (ScheduleCursorPage, error) {
 	page, err := c.inner.ListV2(ctx, cursor, limit)
 	if err != nil {

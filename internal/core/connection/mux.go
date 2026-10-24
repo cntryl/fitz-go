@@ -270,7 +270,7 @@ func (m *Multiplexer) SetCapabilities(protocolVersion uint16, capabilities uint3
 }
 
 func (m *Multiplexer) CorrelationEnabled() bool {
-	return m.capabilities.Load()&protocol.CapabilityCorrelation != 0
+	return m.protocolVersion.Load() >= 2
 }
 
 func (m *Multiplexer) Capabilities() (uint16, uint32) {
@@ -604,7 +604,7 @@ func (m *Multiplexer) looksLikeRpcWorkerRequest(payload []byte) bool {
 		return false
 	}
 	extension := payload[bodyEnd:]
-	return len(extension) == 0 || (len(extension) == 6 && extension[0] == 1 && extension[1] == 1 && binary.BigEndian.Uint32(extension[2:]) <= 86_400_000)
+	return len(extension) == 5 && extension[0] == 1 && binary.BigEndian.Uint32(extension[1:]) <= 86_400_000
 }
 
 // handleRpcResponse processes RPC RESPONSE messages (async delivery).

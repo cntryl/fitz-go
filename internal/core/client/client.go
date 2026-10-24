@@ -107,6 +107,7 @@ type Config struct {
 	// Connection
 	URL                        string
 	ServiceName                string
+	OnGoAway                   func(code uint16, grace time.Duration, reason string)
 	serviceNameSet             bool
 	AuthSettleDelay            time.Duration
 	ReadTimeout                time.Duration
@@ -180,12 +181,17 @@ func WithURL(url string) Option {
 	return func(c *Config) { c.URL = url }
 }
 
-// WithServiceName reports a friendly service name to brokers that advertise session metadata.
+// WithServiceName reports the client service name in CONNECT.
 func WithServiceName(name string) Option {
 	return func(c *Config) {
 		c.ServiceName = name
 		c.serviceNameSet = true
 	}
+}
+
+// WithGoAwayHandler receives the broker's drain code, grace period, and reason.
+func WithGoAwayHandler(handler func(code uint16, grace time.Duration, reason string)) Option {
+	return func(c *Config) { c.OnGoAway = handler }
 }
 
 // WithAuthSettleDelay sets the silent CONNECT settle window.
@@ -711,6 +717,9 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 	connCfg := connection.Config{
 		Token:                      token,
 		ServiceName:                c.config.ServiceName,
+		ClientBuild:                "fitz-go/0.3.0",
+		OnGoAway:                   c.config.OnGoAway,
+		MaxMessageBytes:            c.config.MaxFrameSize,
 		AuthSettleDelay:            c.config.AuthSettleDelay,
 		ReadTimeout:                c.config.ReadTimeout,
 		WriteTimeout:               c.config.WriteTimeout,

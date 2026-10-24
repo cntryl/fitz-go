@@ -30,86 +30,135 @@ func (e *AsyncHandlerOverflowError) Unwrap() error {
 // Error code ranges by domain (from Fitz server)
 const (
 	// KV Domain (1000-1099)
-	KvTransactionNotFound = 1001
-	KvInvalidMode         = 1002
-	KvKeyNotFound         = 1003
-	KvIsolationConflict   = 1004
-	KvWriteInReadonly     = 1005
-	KvKeyExists           = 1006
-	KvInvalidRoute        = 1007
-	KvRealmMismatch       = 1008
-	KvBackendError        = 1009
-	KvTransactionAborted  = 1010
-	KvUnauthorized        = 1011
-	KvInvalidSubscription = 1012
-	KvSubscriptionLimit   = 1013
-	KvBusy                = 1014
+	KvUnauthorized        = 1001
+	KvInvalidRoute        = 1002
+	KvInvalidSubscription = 1003
+	KvSubscriptionLimit   = 1004
+	KvBusy                = 1005
+	KvBackendError        = 1006
+	KvTimeout             = 1007
+	KvBadRequest          = 1008
+	KvNotFound            = 1009
+	KvUnsupported         = 1010
+	KvTransactionNotFound = 1050
+	KvInvalidMode         = 1051
+	KvKeyNotFound         = 1052
+	KvIsolationConflict   = 1053
+	KvWriteInReadonly     = 1054
+	KvKeyExists           = 1055
+	KvRealmMismatch       = 1056
+	KvTransactionAborted  = 1057
 
 	// Stream Domain (2000-2099)
-	StreamConcurrencyConflict  = 2001
-	StreamSessionAlreadyActive = 2002
-	StreamSessionNotFound      = 2003
-	StreamInvalidReadBound     = 2004
-	StreamResourceNotFound     = 2005
-	StreamInvalidSubscription  = 2010
-	StreamSubscriptionLimit    = 2011
-	StreamBusy                 = 2014
+	StreamUnauthorized         = 2001
+	StreamInvalidRoute         = 2002
+	StreamInvalidSubscription  = 2003
+	StreamSubscriptionLimit    = 2004
+	StreamBusy                 = 2005
+	StreamBackendError         = 2006
+	StreamTimeout              = 2007
+	StreamBadRequest           = 2008
+	StreamNotFound             = 2009
+	StreamUnsupported          = 2010
+	StreamConcurrencyConflict  = 2050
+	StreamSessionAlreadyActive = 2051
+	StreamSessionNotFound      = 2052
+	StreamInvalidReadBound     = 2053
+	StreamResourceNotFound     = 2054
+	StreamFilterUnsupported    = 2055
+	StreamFilterInvalidPayload = 2056
+	StreamReadResponseTooLarge = 2057
 	// Deprecated: the former names describe different broker errors. Use the corrected constants.
 	StreamOffsetTooFarAhead   = StreamSessionAlreadyActive
 	StreamReadBeyondWatermark = StreamInvalidReadBound
 
 	// Notice Domain (3000-3099)
-	NoticeInvalidRoute      = 3001
-	NoticeInvalidPattern    = 3002
-	NoticeSubscriptionLimit = 3003
-	NoticeTransportClosed   = 3004
-	NoticeBusy              = 3006
+	NoticeUnauthorized      = 3001
+	NoticeInvalidRoute      = 3002
+	NoticeInvalidPattern    = 3003
+	NoticeSubscriptionLimit = 3004
+	NoticeBusy              = 3005
+	NoticeBackendError      = 3006
+	NoticeTimeout           = 3007
+	NoticeBadRequest        = 3008
+	NoticeNotFound          = 3009
+	NoticeUnsupported       = 3010
+	NoticeTransportClosed   = 3050
 
 	// Queue Domain (4000-4099)
-	QueueInvalidToken        = 4001
-	QueueLeaseExpired        = 4002
-	QueueMessageNotFound     = 4003
-	QueueNotFound            = 4004
-	QueueFull                = 4005 // Backpressure signal
-	QueueInvalidSubscription = 4010
-	QueueSubscriptionLimit   = 4011
+	QueueUnauthorized        = 4001
+	QueueInvalidRoute        = 4002
+	QueueInvalidSubscription = 4003
+	QueueSubscriptionLimit   = 4004
+	QueueFull                = 4005 // BUSY / backpressure signal
+	QueueBackendError        = 4006
+	QueueTimeout             = 4007
+	QueueBadRequest          = 4008
+	QueueGenericNotFound     = 4009
+	QueueUnsupported         = 4010
+	QueueInvalidToken        = 4050
+	QueueLeaseExpired        = 4051
+	QueueMessageNotFound     = 4052
+	QueueNotFound            = 4053
 
 	// Lease Domain (5000-5099)
-	LeaseHeld                     = 5001
-	LeaseInvalidFence             = 5002
-	LeaseExpired                  = 5003
-	LeaseNotFound                 = 5004
+	LeaseUnauthorized             = 5001
+	LeaseInvalidRoute             = 5002
+	LeaseInvalidSubscriptionRoute = 5003
+	LeaseSubscriptionLimit        = 5004
+	LeaseQueueFull                = 5005
+	LeaseBackendError             = 5006
+	LeaseTimeout                  = 5007
 	LeaseBadRequest               = 5008
-	LeaseInvalidSubscriptionRoute = 5010
-	LeaseInvalidListCursor        = 5011
-	LeaseInvalidListPattern       = 5012
-	LeaseQueueFull                = 5007
+	LeaseGenericNotFound          = 5009
+	LeaseUnsupported              = 5010
+	LeaseHeld                     = 5050
+	LeaseInvalidFence             = 5051
+	LeaseExpired                  = 5052
+	LeaseNotFound                 = 5053
+	LeaseInvalidToken             = 5054
+	LeaseAcquireWaitExpired       = 5055
+	LeaseWaitersLimit             = 5056
+	LeaseInvalidListCursor        = 5057
+	LeaseInvalidListPattern       = LeaseInvalidSubscriptionRoute
 
 	// RPC Domain (6000-6099). 6004 = no workers for route or timeout before any reply (per CLIENT_ACCEPTANCE_CRITERIA).
-	RpcTimeout             = 6001
-	RpcWorkerNotFound      = 6002
-	RpcBackpressure        = 6003 // Backpressure signal
-	RpcRouteNotRegistered  = 6004
-	RpcCorrelationNotFound = 6005
-	RpcBackendError        = 6010 // Dispatch timed out or the domain outcome is unknown
-	RpcInvalidSubscription = 6012
-	RpcSubscriptionLimit   = 6013
+	RpcUnauthorized         = 6001
+	RpcInvalidRoute         = 6002
+	RpcInvalidSubscription  = 6003
+	RpcSubscriptionLimit    = 6004
+	RpcBackpressure         = 6005 // BUSY / backpressure signal
+	RpcBackendError         = 6006
+	RpcTimeout              = 6007
+	RpcBadRequest           = 6008
+	RpcNotFound             = 6009
+	RpcUnsupported          = 6010
+	RpcWorkerNotFound       = 6050
+	RpcRouteNotRegistered   = 6051
+	RpcCorrelationNotFound  = 6052
+	RpcInvalidSequence      = 6053
+	RpcDuplicateCorrelation = 6054
+	RpcWrongWorker          = 6055
 
 	// Schedule Domain (7000-7099)
-	ScheduleNotFound            = 7001
-	ScheduleInvalidCron         = 7002
-	ScheduleLimit               = 7003
-	ScheduleParseError          = 7004
-	ScheduleInvalidTarget       = 7005
-	ScheduleInvalidSubscription = 7006
-	ScheduleSubscriptionLimit   = 7007
-	ScheduleInvalidDeliveryMode = 7008
-	ScheduleBackendError        = 7010
+	ScheduleUnauthorized        = 7001
+	ScheduleInvalidRoute        = 7002
+	ScheduleInvalidSubscription = 7003
+	ScheduleSubscriptionLimit   = 7004
+	ScheduleBusy                = 7005
+	ScheduleBackendError        = 7006
+	ScheduleTimeout             = 7007
+	ScheduleParseError          = 7008
+	ScheduleNotFound            = 7050
+	ScheduleInvalidCron         = 7051
+	ScheduleLimit               = 7052
+	ScheduleInvalidTarget       = 7053
+	ScheduleInvalidDeliveryMode = 7054
 )
 
 // IsBackpressure returns true if the error code indicates backpressure
 func IsBackpressure(code uint32) bool {
-	return code == KvBusy || code == StreamBusy || code == NoticeBusy || code == QueueFull || code == LeaseQueueFull || code == RpcBackpressure
+	return code == KvBusy || code == StreamBusy || code == NoticeBusy || code == QueueFull || code == LeaseQueueFull || code == RpcBackpressure || code == ScheduleBusy
 }
 
 // ErrorCode represents a Fitz protocol error
@@ -210,8 +259,6 @@ func (e ErrorCode) String() string {
 		return "lease_invalid_subscription_route"
 	case LeaseInvalidListCursor:
 		return "lease_invalid_list_cursor"
-	case LeaseInvalidListPattern:
-		return "lease_invalid_list_pattern"
 
 	// RPC errors
 	case RpcTimeout:
@@ -259,6 +306,8 @@ func (e ErrorCode) String() string {
 // Error represents a domain error with numeric code
 type DomainError struct {
 	Code    ErrorCode
+	Class   uint8
+	Effect  uint8
 	Message string
 }
 
@@ -272,4 +321,9 @@ func NewDomainError(code uint32, message string) *DomainError {
 		Code:    ErrorCode(code),
 		Message: message,
 	}
+}
+
+// NewDomainErrorWithDisposition preserves the common wire envelope metadata.
+func NewDomainErrorWithDisposition(code uint16, class, effect uint8, message string) *DomainError {
+	return &DomainError{Code: ErrorCode(code), Class: class, Effect: effect, Message: message}
 }

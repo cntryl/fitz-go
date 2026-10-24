@@ -55,8 +55,8 @@ Treat this report as the quality baseline for this repository.
 | REQ-API-002 | T0 | **PASS** | All operations per domain are present. KV: Begin/Get/Put/Insert/Delete/DeleteRange/Scan/Subscribe/Unsubscribe/Commit/Rollback. Queue: Enqueue/Reserve/Extend/Complete. Notice: Publish/Subscribe/Unsubscribe. RPC: RegisterWorker/Call. Lease: Acquire/Extend/Release/Query/Subscribe/Unsubscribe. Stream: Begin/Append/Commit/Rollback/Read/Peek/Metadata/Subscribe/Unsubscribe. Schedule: Create/Cancel/List/ListBySelector/Subscribe/Unsubscribe. |
 | REQ-API-003 | T0 | **PASS** | `QueueClient.Subscribe(ctx, pattern, handler) (*QueueSubscription, error)` + `QueueSubscription.Unsubscribe()`. |
 | REQ-API-004 | T0 | **PASS** | `LeaseClient.Subscribe(ctx, route, handler) (*LeaseSubscription, error)` accepts an exact three-segment Lease route; `LeaseSubscription.Unsubscribe()` removes it. |
-| REQ-API-005 | T0 | **PASS** | `ScheduleClient.List(ctx, offset, limit) (ScheduleListPage, error)` uses canonical message 702 and returns entries plus `TotalCount`. |
-| REQ-API-006 | T0 | **PASS** | `ScheduleClient.ListBySelector(ctx, selector) ([]ScheduleEntry, error)` consumes offset-based pages. |
+| REQ-API-005 | T0 | **PASS** | `ScheduleClient.List(ctx, offset, limit) (ScheduleListPage, error)` requests the first cursor page on message 702; `ListV2` exposes continuation metadata. |
+| REQ-API-006 | T0 | **PASS** | `ScheduleClient.ListBySelector(ctx, selector) ([]ScheduleEntry, error)` consumes cursor pages. |
 | REQ-API-007 | T0 | **PASS** | `ConnectionState` type with 6 named constants + `client.State() ConnectionState`. |
 | REQ-API-008 | T1 | **PASS** | `Iterator[T any]` generic interface (`Next`, `Value`, `Err`, `Close`) used for KV Scan, Stream Read, and RPC Call responses. |
 | REQ-API-009 | T1 | **PASS** | `*QueueItem` carries `Extend(ctx, leaseSecs) error`, `Complete(ctx) error`, `CompleteWithToken(ctx, token) error`. |

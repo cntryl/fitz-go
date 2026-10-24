@@ -58,6 +58,8 @@ func (s *Subscription) Completion() <-chan error {
 type Client interface {
 	// Publish sends a notification to a route (fire-and-forget).
 	Publish(ctx context.Context, route string, body []byte) error
+	// PublishWithAck requests a broker acknowledgement for backpressure visibility.
+	PublishWithAck(ctx context.Context, route string, body []byte) error
 
 	// Subscribe registers a handler for notifications matching the pattern.
 	// Returns a Subscription that can be used to unsubscribe.
@@ -157,6 +159,25 @@ func (c *client) Publish(ctx context.Context, route string, body []byte) error {
 		return fmt.Errorf("publish failed: %w", err)
 	}
 
+	return nil
+}
+
+// PublishWithAck asks the broker to acknowledge the publish using ACK_REQUESTED.
+func (c *client) PublishWithAck(ctx context.Context, route string, body []byte) error {
+	if err := types.ValidateFixedRoute(route, "notice", 3); err != nil {
+		return fmt.Errorf("invalid route: %w", err)
+	}
+	response, err := c.currentConn().SendRequestWithWriterAndFlags(ctx, protocol.MessageTypeNoticePublish, protocol.FlagAckRequested, publishPayloadWriter(route, body))
+	if err != nil {
+		return fmt.Errorf("publish failed: %w", err)
+	}
+	success, remaining, err := connection.ParseStandardResponse(response)
+	if err != nil {
+		return mapNoticeError(err)
+	}
+	if !success || len(remaining) != 0 {
+		return errors.New("publish acknowledgement response is malformed")
+	}
 	return nil
 }
 

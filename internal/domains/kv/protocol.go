@@ -238,15 +238,7 @@ func encodeScan(txID uint64, route string, query ScanQuery) ([]byte, error) {
 			buf.WriteByte(0)
 		}
 
-		// [u8] reverse
-		if query.Reverse {
-			buf.WriteByte(1)
-		} else {
-			buf.WriteByte(0)
-		}
-		if query.StartExclusive {
-			buf.WriteByte(1)
-		}
+		buf.WriteByte(scanOptions(query))
 	}), nil
 }
 
@@ -289,16 +281,19 @@ func scanPayloadWriter(txID uint64, route string, query ScanQuery) (func(*bytes.
 			buf.WriteByte(0)
 		}
 
-		// [u8] reverse
-		if query.Reverse {
-			buf.WriteByte(1)
-		} else {
-			buf.WriteByte(0)
-		}
-		if query.StartExclusive {
-			buf.WriteByte(1)
-		}
+		buf.WriteByte(scanOptions(query))
 	}, nil
+}
+
+func scanOptions(query ScanQuery) byte {
+	var options byte
+	if query.Reverse {
+		options |= 1
+	}
+	if query.StartExclusive {
+		options |= 1 << 1
+	}
+	return options
 }
 
 // encodeCommit encodes a KV COMMIT request payload per CLIENT_SPEC.md.

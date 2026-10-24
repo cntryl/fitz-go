@@ -84,17 +84,20 @@ type Connection struct {
 	authError       error // Set if auth fails
 	serverHello     chan struct{}
 	serverHelloOnce sync.Once
+	maxMessageBytes atomic.Uint32
+	maxInFlight     atomic.Uint32
+	sessionID       atomic.Uint64
+	onGoAway        func(code uint16, grace time.Duration, reason string)
 
 	// Multiplexer for request/response correlation
 	mux *Multiplexer
 
 	// Dispatch loop control
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	serviceMetadataSent atomic.Bool
-	done                chan struct{} // Closed when dispatch loop exits
-	started             atomic.Bool   // Set once Start has launched the dispatch loop
-	closed              atomic.Bool   // Set once Close has begun shutdown
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{} // Closed when dispatch loop exits
+	started atomic.Bool   // Set once Start has launched the dispatch loop
+	closed  atomic.Bool   // Set once Close has begun shutdown
 
 	// Connection error (set when connection closes)
 	connError atomic.Value // stores error
@@ -126,6 +129,9 @@ type Connection struct {
 type Config struct {
 	Token                      string
 	ServiceName                string
+	ClientBuild                string
+	OnGoAway                   func(code uint16, grace time.Duration, reason string)
+	MaxMessageBytes            int
 	AuthSettleDelay            time.Duration // Optional CONNECT rejection-observation window.
 	ReadTimeout                time.Duration // Default 30s (per-read timeout)
 	WriteTimeout               time.Duration // Default 10s
@@ -174,6 +180,7 @@ func DefaultConfig() Config {
 		HeartbeatConfigured:       true,
 		HeartbeatInterval:         10 * time.Second,
 		HeartbeatTimeout:          30 * time.Second,
+		ClientBuild:               "fitz-go/0.3.0",
 	}
 }
 
@@ -238,6 +245,9 @@ func New(trans transport.Transport, cfg Config) *Connection {
 	if cfg.HeartbeatTimeout <= 0 {
 		cfg.HeartbeatTimeout = 30 * time.Second
 	}
+	if cfg.ClientBuild == "" {
+		cfg.ClientBuild = "fitz-go/0.3.0"
+	}
 
 	tracer := cfg.Tracer
 	if tracer == nil {
@@ -262,12 +272,14 @@ func New(trans transport.Transport, cfg Config) *Connection {
 		cancel:           cancel,
 		done:             make(chan struct{}),
 		cfg:              cfg,
+		onGoAway:         cfg.OnGoAway,
 		logger:           cfg.Logger,
 		tracer:           tracer,
 		meter:            meter,
 		metricsEnabled:   cfg.Meter != nil,
 		tracingEnabled:   cfg.Tracer != nil,
 	}
+	conn.maxMessageBytes.Store(uint32(protocol.MaxMessageSize))
 	conn.mux.setLogger(cfg.Logger)
 	conn.recordActivity()
 	conn.initAsyncHandlerMetrics()
@@ -395,8 +407,6 @@ func (c *Connection) Start(ctx context.Context) error {
 	if !c.started.CompareAndSwap(false, true) {
 		return ErrConnectionAlreadyStarted
 	}
-	c.serviceMetadataSent.Store(false)
-
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.start")
 	defer span.End()
 
@@ -418,14 +428,18 @@ func (c *Connection) Start(ctx context.Context) error {
 		return fmt.Errorf("send CONNECT: %w", err)
 	}
 
-	// Wait for authentication confirmation
-	authSettleDelay := c.cfg.AuthSettleDelay
+	// HELLO is the only successful wire-2 handshake response. A silent socket
+	// is not an authenticated or negotiated session.
+	negotiationTimeout := c.cfg.ReadTimeout
+	if negotiationTimeout <= 0 {
+		negotiationTimeout = 30 * time.Second
+	}
 
 	select {
-	case <-c.authConfirmed:
-		// Auth succeeded (first response received or immediate for anonymous)
+	case <-c.serverHello:
+		c.confirmAuthentication()
 		if c.logger != nil {
-			c.logger.InfoContext(ctx, "connection authenticated")
+			c.logger.InfoContext(ctx, "wire-2 connection negotiated")
 		}
 		c.startHeartbeat()
 		return nil
@@ -453,23 +467,11 @@ func (c *Connection) Start(ctx context.Context) error {
 		}
 		return ctx.Err()
 
-	case <-time.After(authSettleDelay):
-		// Valid JWT CONNECT is silently accepted by the broker; if the transport
-		// remains open through the auth window, treat the connection as
-		// authenticated. The dispatch loop's ReadTimeout (30s by default) is the
-		// fallback guard that wakes reads so transport closure/auth failure is
-		// still observed if the server stays silent longer than this window.
-		if err := c.authSettleError(ctx); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			return err
-		}
-		c.confirmAuthentication()
-		if c.logger != nil {
-			c.logger.InfoContext(ctx, "connection authenticated after silent CONNECT window")
-		}
-		c.startHeartbeat()
-		return nil
+	case <-time.After(negotiationTimeout):
+		span.RecordError(ErrAuthenticationTimeout)
+		span.SetStatus(codes.Error, ErrAuthenticationTimeout.Error())
+		_ = c.Close()
+		return ErrAuthenticationTimeout
 	}
 }
 
@@ -505,15 +507,28 @@ func (c *Connection) authSettleError(ctx context.Context) error {
 	return nil
 }
 
-// sendConnect sends the CONNECT message (MessageType=1).
-// Per CLIENT_SPEC.md: [MessageType=1][Length][JWT bytes UTF-8]
-// Empty JWT for anonymous mode.
+// sendConnect sends the wire-2 version and client identity fields.
 func (c *Connection) sendConnect(ctx context.Context) error {
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_connect", trace.WithAttributes(attribute.Int("fitz.msg_type", int(protocol.MessageTypeConnect))))
 	defer span.End()
 
-	payload := []byte(c.token)
-	frame := protocol.EncodeFrameOwned(protocol.MessageTypeConnect, payload)
+	var payload bytes.Buffer
+	var versions [8]byte
+	binary.BigEndian.PutUint16(versions[:2], 2)
+	binary.BigEndian.PutUint16(versions[2:4], 2)
+	// The current client has no optional wire capabilities; features that were
+	// formerly gated by capability bits are part of the wire-2 base layouts.
+	payload.Write(versions[:])
+	writeConnectString := func(value string) {
+		var length [4]byte
+		binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+		payload.Write(length[:])
+		payload.WriteString(value)
+	}
+	writeConnectString(c.token)
+	writeConnectString(strings.TrimSpace(c.cfg.ServiceName))
+	writeConnectString(c.cfg.ClientBuild)
+	frame := protocol.EncodeFrameOwned(protocol.MessageTypeConnect, payload.Bytes())
 	if frame == nil {
 		err := errors.New("encode CONNECT frame")
 		span.RecordError(err)
@@ -540,36 +555,9 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 	c.recordActivity()
 
 	// Both anonymous and authenticated connections use the bounded silent
-	// CONNECT window. This lets SERVER_HELLO populate capability negotiation
-	// before callers register workers, while remaining compatible with legacy
-	// brokers that do not send a hello.
+	// CONNECT window. HELLO supplies the Wire-2 limits before callers register
+	// workers; a missing HELLO is not an authenticated negotiated session.
 
-	return nil
-}
-
-func (c *Connection) sendSessionMetadata() error {
-	if !c.serviceMetadataSent.CompareAndSwap(false, true) {
-		return nil
-	}
-	name := []byte(strings.TrimSpace(c.cfg.ServiceName))
-	payload := make([]byte, 4+len(name))
-	binary.BigEndian.PutUint32(payload[:4], uint32(len(name)))
-	copy(payload[4:], name)
-	frame := protocol.EncodeFrame(protocol.MessageTypeSessionMetadata, payload)
-	ctx := c.ctx
-	if c.cfg.WriteTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.cfg.WriteTimeout)
-		defer cancel()
-	}
-	c.writeMu.Lock()
-	err := c.transport.Write(ctx, frame)
-	c.writeMu.Unlock()
-	if err != nil {
-		c.serviceMetadataSent.Store(false)
-		return fmt.Errorf("send session metadata: %w", err)
-	}
-	c.recordActivity()
 	return nil
 }
 
@@ -661,53 +649,92 @@ func (c *Connection) dispatchLoop() {
 }
 
 func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
-	frames, err := protocol.DecodeFrames(data)
+	frame, err := protocol.DecodeMessage(data)
 	if err != nil {
 		return false, err
 	}
-	var correlationID uint64
-	hasResponse := false
-	for _, frame := range frames {
-		if c.logger != nil {
-			c.logger.Debug("frame received", "msg_type", frame.MessageType)
-		}
-		switch frame.MessageType {
-		case protocol.MessageTypeServerHello:
-			if correlationID != 0 {
-				return false, errors.New("CORRELATED record cannot label SERVER_HELLO")
-			}
-			if len(frame.Payload) >= 6 {
-				capabilities := binary.BigEndian.Uint32(frame.Payload[2:6])
-				c.mux.SetCapabilities(binary.BigEndian.Uint16(frame.Payload[:2]), capabilities)
-				c.serverHelloOnce.Do(func() { close(c.serverHello) })
-				if c.cfg.ServiceName != "" && capabilities&protocol.CapabilitySessionMetadata != 0 {
-					if err := c.sendSessionMetadata(); err != nil {
-						return false, err
-					}
-				}
-			}
-		case protocol.MessageTypeCorrelated:
-			if len(frame.Payload) != 8 || correlationID != 0 {
-				return false, errors.New("malformed CORRELATED record")
-			}
-			correlationID = binary.BigEndian.Uint64(frame.Payload)
-			if correlationID == 0 {
-				return false, errors.New("zero CORRELATED identifier")
-			}
-		default:
-			hasResponse = true
-			if correlationID != 0 {
-				c.mux.DispatchCorrelated(correlationID, frame.MessageType, frame.Payload)
-				correlationID = 0
-			} else {
-				c.mux.Dispatch(frame.MessageType, frame.Payload)
-			}
-		}
+	if c.logger != nil {
+		c.logger.Debug("frame received", "msg_type", frame.MessageType, "correlation", frame.CorrelationID)
 	}
-	if correlationID != 0 {
-		return false, errors.New("CORRELATED record did not label a response")
+	switch frame.MessageType {
+	case protocol.MessageTypeHello:
+		if frame.CorrelationID != 0 || len(frame.Payload) < 22 {
+			return false, errors.New("malformed HELLO")
+		}
+		version := binary.BigEndian.Uint16(frame.Payload[:2])
+		if version != 2 {
+			return false, fmt.Errorf("unsupported negotiated wire version %d", version)
+		}
+		capabilities := binary.BigEndian.Uint32(frame.Payload[2:6])
+		maxMessageBytes := binary.BigEndian.Uint32(frame.Payload[6:10])
+		maxInFlight := binary.BigEndian.Uint32(frame.Payload[10:14])
+		sessionID := binary.BigEndian.Uint64(frame.Payload[14:22])
+		if maxMessageBytes < uint32(protocol.HeaderLen) || maxInFlight == 0 {
+			return false, errors.New("HELLO contains invalid negotiated limits")
+		}
+		localLimit := uint32(protocol.MaxMessageSize)
+		if maxMessageBytes < localLimit {
+			localLimit = maxMessageBytes
+		}
+		if c.cfg.MaxMessageBytes > 0 && uint32(c.cfg.MaxMessageBytes) < localLimit {
+			localLimit = uint32(c.cfg.MaxMessageBytes)
+		}
+		c.maxMessageBytes.Store(localLimit)
+		c.maxInFlight.Store(maxInFlight)
+		c.sessionID.Store(sessionID)
+		if uint64(maxInFlight) < uint64(cap(c.requestSem)) {
+			limit := int(maxInFlight)
+			c.requestSem = make(chan struct{}, limit)
+			c.oneWaySem = make(chan struct{}, limit)
+		}
+		c.mux.SetCapabilities(version, capabilities)
+		if sizer, ok := c.transport.(interface{ SetMaxFrameSize(int) }); ok {
+			sizer.SetMaxFrameSize(int(localLimit))
+		}
+		c.serverHelloOnce.Do(func() { close(c.serverHello) })
+		return true, nil
+	case protocol.MessageTypeConnectRejected:
+		if frame.CorrelationID != 0 {
+			return false, errors.New("CONNECT_REJECTED has a correlation")
+		}
+		code, offset, readErr := ReadU16BE(frame.Payload, 0)
+		if readErr != nil {
+			return false, fmt.Errorf("decode CONNECT_REJECTED: %w", readErr)
+		}
+		message, end, readErr := ReadString(frame.Payload, offset)
+		if readErr != nil || end != len(frame.Payload) {
+			return false, errors.New("malformed CONNECT_REJECTED")
+		}
+		rejection := fmt.Errorf("connection rejected with code %d: %s", code, message)
+		c.authError = rejection
+		return false, rejection
+	case protocol.MessageTypeGoAway:
+		if frame.CorrelationID != 0 {
+			return false, errors.New("GOAWAY has a correlation")
+		}
+		code, offset, readErr := ReadU16BE(frame.Payload, 0)
+		if readErr != nil {
+			return false, fmt.Errorf("decode GOAWAY: %w", readErr)
+		}
+		graceMS, offset, readErr := ReadU32BE(frame.Payload, offset)
+		if readErr != nil {
+			return false, fmt.Errorf("decode GOAWAY: %w", readErr)
+		}
+		reason, end, readErr := ReadString(frame.Payload, offset)
+		if readErr != nil || end != len(frame.Payload) {
+			return false, errors.New("malformed GOAWAY")
+		}
+		if c.onGoAway != nil {
+			c.onGoAway(code, time.Duration(graceMS)*time.Millisecond, reason)
+		}
+		return false, nil
 	}
-	return hasResponse, nil
+	if frame.CorrelationID != 0 {
+		c.mux.DispatchCorrelated(frame.CorrelationID, frame.MessageType, frame.Payload)
+	} else {
+		c.mux.Dispatch(frame.MessageType, frame.Payload)
+	}
+	return true, nil
 }
 
 // handleReadError processes transport read errors.
@@ -732,6 +759,11 @@ func (c *Connection) handleReadError(err error) {
 // SendRequest sends a synchronous request and waits for response.
 // Used by domain client implementations.
 func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []byte) (_ []byte, retErr error) {
+	return c.SendRequestWithFlags(ctx, msgType, 0, payload)
+}
+
+// SendRequestWithFlags sends a request with negotiated wire header flags.
+func (c *Connection) SendRequestWithFlags(ctx context.Context, msgType uint16, flags uint8, payload []byte) (_ []byte, retErr error) {
 	var span trace.Span = traceNoop.Span{}
 	if c.tracingEnabled {
 		ctx, span = c.tracer.Start(ctx, "fitz.connection.send_request", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
@@ -771,20 +803,8 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 	}
 	defer c.ReleaseRequestSlot()
 
-	correlationID := uint64(0)
-	if c.mux.CorrelationEnabled() && msgType != protocol.MessageTypeRpcRequest && msgType != protocol.MessageTypeRpcResponse {
-		correlationID = c.mux.NextCorrelationID()
-	} else {
-		lane := c.mux.LegacyLane(msgType)
-		lane.Lock()
-		defer lane.Unlock()
-	}
-	var frame *protocol.FrameBuffer
-	if correlationID == 0 {
-		frame = protocol.EncodeFrameOwned(msgType, payload)
-	} else {
-		frame = protocol.EncodeCorrelatedFrameOwned(correlationID, msgType, payload)
-	}
+	correlationID := c.mux.NextCorrelationID()
+	frame := protocol.EncodeFrameOwnedWithHeader(msgType, flags, correlationID, payload)
 	if frame == nil {
 		err := errors.New("encode frame")
 		span.RecordError(err)
@@ -792,6 +812,9 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		return nil, err
 	}
 	defer frame.Release()
+	if uint32(frame.Len()) > c.maxMessageBytes.Load() {
+		return nil, fmt.Errorf("message exceeds negotiated max_message_bytes (%d)", c.maxMessageBytes.Load())
+	}
 
 	waiter := acquireRequestWaiter()
 	releaseWaiter := false
@@ -812,19 +835,12 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 	}
 
 	c.writeMu.Lock()
-	if correlationID == 0 {
-		c.mux.RegisterRequestWaiter(msgType, waiter, nil)
-	} else if !c.mux.RegisterCorrelatedRequest(correlationID, waiter) {
+	if !c.mux.RegisterCorrelatedRequest(correlationID, waiter) {
 		c.writeMu.Unlock()
 		return nil, errors.New("register correlated request")
 	}
 	defer func() {
-		var removed bool
-		if correlationID == 0 {
-			removed = c.mux.UnregisterRequestWaiter(msgType, waiter)
-		} else {
-			removed = c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
-		}
+		removed := c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
 		if removed {
 			releaseWaiter = true
 		}
@@ -853,12 +869,7 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 		}
 		return waiter.response, nil
 	case <-ctx.Done():
-		var removed bool
-		if correlationID == 0 {
-			removed = c.mux.AbandonRequestWaiter(msgType, waiter)
-		} else {
-			removed = c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
-		}
+		removed := c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
 		if removed {
 			releaseWaiter = true
 		}
@@ -886,6 +897,11 @@ func (c *Connection) SendRequest(ctx context.Context, msgType uint16, payload []
 
 // SendRequestWithWriter sends a request using a payload writer to avoid allocations.
 func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, writePayload func(*bytes.Buffer)) (_ []byte, retErr error) {
+	return c.SendRequestWithWriterAndFlags(ctx, msgType, 0, writePayload)
+}
+
+// SendRequestWithWriterAndFlags sends a request with flags and direct payload encoding.
+func (c *Connection) SendRequestWithWriterAndFlags(ctx context.Context, msgType uint16, flags uint8, writePayload func(*bytes.Buffer)) (_ []byte, retErr error) {
 	var span trace.Span = traceNoop.Span{}
 	if c.tracingEnabled {
 		ctx, span = c.tracer.Start(ctx, "fitz.connection.send_request_with_writer", trace.WithAttributes(attribute.Int("fitz.msg_type", int(msgType))))
@@ -925,33 +941,17 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 	}
 	defer c.ReleaseRequestSlot()
 
-	baseFrame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
+	correlationID := c.mux.NextCorrelationID()
+	frame, err := protocol.EncodeFrameWithHeaderAndPayloadWriter(msgType, flags, correlationID, writePayload)
 	if err != nil {
 		wrapped := fmt.Errorf("encode frame: %w", err)
 		span.RecordError(wrapped)
 		span.SetStatus(codes.Error, wrapped.Error())
 		return nil, wrapped
 	}
-	defer baseFrame.Release()
-	correlationID := uint64(0)
-	if c.mux.CorrelationEnabled() && msgType != protocol.MessageTypeRpcRequest && msgType != protocol.MessageTypeRpcResponse {
-		correlationID = c.mux.NextCorrelationID()
-	} else {
-		lane := c.mux.LegacyLane(msgType)
-		lane.Lock()
-		defer lane.Unlock()
-	}
-	frame := baseFrame
-	if correlationID != 0 {
-		decodedType, decodedPayload, decodeErr := protocol.DecodeFrame(baseFrame.Bytes())
-		if decodeErr != nil {
-			return nil, decodeErr
-		}
-		frame = protocol.EncodeCorrelatedFrameOwned(correlationID, decodedType, decodedPayload)
-		if frame == nil {
-			return nil, errors.New("encode correlated frame")
-		}
-		defer frame.Release()
+	defer frame.Release()
+	if uint32(frame.Len()) > c.maxMessageBytes.Load() {
+		return nil, fmt.Errorf("message exceeds negotiated max_message_bytes (%d)", c.maxMessageBytes.Load())
 	}
 
 	waiter := acquireRequestWaiter()
@@ -973,19 +973,12 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 	}
 
 	c.writeMu.Lock()
-	if correlationID == 0 {
-		c.mux.RegisterRequestWaiter(msgType, waiter, nil)
-	} else if !c.mux.RegisterCorrelatedRequest(correlationID, waiter) {
+	if !c.mux.RegisterCorrelatedRequest(correlationID, waiter) {
 		c.writeMu.Unlock()
 		return nil, errors.New("register correlated request")
 	}
 	defer func() {
-		var removed bool
-		if correlationID == 0 {
-			removed = c.mux.UnregisterRequestWaiter(msgType, waiter)
-		} else {
-			removed = c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
-		}
+		removed := c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
 		if removed {
 			releaseWaiter = true
 		}
@@ -1014,12 +1007,7 @@ func (c *Connection) SendRequestWithWriter(ctx context.Context, msgType uint16, 
 		}
 		return waiter.response, nil
 	case <-ctx.Done():
-		var removed bool
-		if correlationID == 0 {
-			removed = c.mux.AbandonRequestWaiter(msgType, waiter)
-		} else {
-			removed = c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
-		}
+		removed := c.mux.UnregisterCorrelatedRequest(correlationID, waiter)
 		if removed {
 			releaseWaiter = true
 		}
@@ -1066,7 +1054,11 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 	}
 	defer c.ReleaseWriteSlot()
 
-	frame := protocol.EncodeFrameOwned(msgType, payload)
+	correlationID := uint64(0)
+	if msgType >= protocol.MessageTypeRpcSubscribeWorker && msgType <= protocol.MessageTypeRpcLifecycle {
+		correlationID = c.mux.NextCorrelationID()
+	}
+	frame := protocol.EncodeFrameOwnedWithHeader(msgType, 0, correlationID, payload)
 	if frame == nil {
 		err := errors.New("encode frame")
 		span.RecordError(err)
@@ -1074,6 +1066,9 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 		return err
 	}
 	defer frame.Release()
+	if uint32(frame.Len()) > c.maxMessageBytes.Load() {
+		return fmt.Errorf("message exceeds negotiated max_message_bytes (%d)", c.maxMessageBytes.Load())
+	}
 
 	writeCtx := ctx
 	if c.cfg.WriteTimeout > 0 {
@@ -1116,7 +1111,11 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 	}
 	defer c.ReleaseWriteSlot()
 
-	frame, err := protocol.EncodeFrameWithPayloadWriter(msgType, writePayload)
+	correlationID := uint64(0)
+	if msgType >= protocol.MessageTypeRpcSubscribeWorker && msgType <= protocol.MessageTypeRpcLifecycle {
+		correlationID = c.mux.NextCorrelationID()
+	}
+	frame, err := protocol.EncodeFrameWithHeaderAndPayloadWriter(msgType, 0, correlationID, writePayload)
 	if err != nil {
 		wrapped := fmt.Errorf("encode frame: %w", err)
 		span.RecordError(wrapped)
@@ -1124,6 +1123,9 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 		return wrapped
 	}
 	defer frame.Release()
+	if uint32(frame.Len()) > c.maxMessageBytes.Load() {
+		return fmt.Errorf("message exceeds negotiated max_message_bytes (%d)", c.maxMessageBytes.Load())
+	}
 
 	writeCtx := ctx
 	if c.cfg.WriteTimeout > 0 {
@@ -1777,19 +1779,24 @@ func IsTransientRetryable(err error) bool {
 	}
 	var domainErr *coreerrors.DomainError
 	if errors.As(err, &domainErr) {
+		if domainErr.Effect != 0 {
+			return false
+		}
+		if domainErr.Class == 5 {
+			return true
+		}
 		switch uint32(domainErr.Code) {
 		case coreerrors.KvIsolationConflict,
 			coreerrors.KvBusy,
 			coreerrors.StreamBusy,
 			coreerrors.NoticeBusy,
 			coreerrors.QueueFull,
-			coreerrors.LeaseHeld,
 			coreerrors.LeaseQueueFull,
-			coreerrors.RpcTimeout,
-			coreerrors.RpcWorkerNotFound,
-			coreerrors.RpcBackpressure,
+			coreerrors.LeaseWaitersLimit,
 			coreerrors.RpcRouteNotRegistered,
-			coreerrors.ScheduleBackendError:
+			coreerrors.ScheduleBusy:
+			return true
+		case coreerrors.LeaseHeld:
 			return true
 		}
 	}

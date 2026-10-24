@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/encoding"
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 )
@@ -149,25 +150,15 @@ func decodePayload(body []byte) ([]byte, bool) {
 }
 
 func decodeStatus(body []byte) (uint8, uint32, string, bool) {
-	if len(body) < 1 {
-		return 0, 0, "", false
-	}
-	status := body[0]
-	if status == 0 {
-		if len(body) != 1 {
-			return 0, 0, "", false
-		}
+	success, _, err := connection.ParseStandardResponse(body)
+	if err == nil && success {
 		return 0, 0, "", true
 	}
-	if status != 1 || len(body) < 9 {
-		return 0, 0, "", false
+	var domainErr *coreerrors.DomainError
+	if errors.As(err, &domainErr) {
+		return 1, uint32(domainErr.Code), domainErr.Message, true
 	}
-	code := readU32(body[1:5])
-	msgLen := readU32(body[5:9])
-	if uint64(9)+uint64(msgLen) != uint64(len(body)) {
-		return 0, 0, "", false
-	}
-	return status, code, string(body[9 : 9+msgLen]), true
+	return 0, 0, "", false
 }
 
 func IsNoticeResponseType(t uint16) bool {
@@ -175,12 +166,12 @@ func IsNoticeResponseType(t uint16) bool {
 }
 
 func DecodeNoticeResponseKey(op uint16, body []byte) (string, error) {
-	status, code, errMsg, ok := decodeStatus(body)
-	if !ok {
-		return "", nil
+	success, _, err := connection.ParseStandardResponse(body)
+	if err != nil {
+		return "", err
 	}
-	if status != 0 {
-		return "", coreerrors.NewDomainError(code, errMsg)
+	if !success {
+		return "", errors.New("notice response has an unknown status")
 	}
 	return NoticeWaitKey(op), nil
 }

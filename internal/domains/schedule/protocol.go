@@ -19,7 +19,7 @@ const (
 	ScheduleUnsubscribe  uint16 = 704
 	ScheduleNotify       uint16 = 705 // Server -> Client only
 	ScheduleCreateBatch  uint16 = 706
-	ScheduleListV2       uint16 = 707
+	ScheduleListV2       uint16 = ScheduleListPageType // Deprecated alias for cursor LIST.
 )
 
 // Domain-specific errors. Returned when the server rejects a schedule operation.
