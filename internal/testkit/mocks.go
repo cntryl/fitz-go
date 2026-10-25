@@ -135,7 +135,7 @@ func (m *MockTransport) Read(ctx context.Context) ([]byte, error) {
 					}
 				}
 			}
-			if m.autoHello && e == nil && response.CorrelationID != 0 && !(response.MessageType == 400 && bytes.HasPrefix(response.Payload, []byte{0, 2})) {
+			if m.autoHello && e == nil && response.CorrelationID != 0 && (response.MessageType != 400 || !bytes.HasPrefix(response.Payload, []byte{0, 2})) {
 				frame[2] |= protocol.FlagResponseFinal
 			}
 			if canRead {
