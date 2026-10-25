@@ -1,6 +1,7 @@
 package testkit
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -133,6 +134,9 @@ func (m *MockTransport) Read(ctx context.Context) ([]byte, error) {
 						break
 					}
 				}
+			}
+			if m.autoHello && e == nil && response.CorrelationID != 0 && !(response.MessageType == 400 && bytes.HasPrefix(response.Payload, []byte{0, 2})) {
+				frame[2] |= protocol.FlagResponseFinal
 			}
 			if canRead {
 				m.readIndex++

@@ -369,8 +369,9 @@ func (m *Multiplexer) UnregisterCorrelatedRequest(id uint64, waiter *requestWait
 	if !exists || req.waiter != waiter {
 		return false
 	}
-	delete(m.correlated, id)
-	m.requestsInFlight.Add(-1)
+	req.waiter = nil
+	req.discard = true
+	m.correlated[id] = req
 	return true
 }
 
@@ -483,20 +484,24 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	req.waiter.deliver(payload)
 }
 
-func (m *Multiplexer) DispatchCorrelated(id uint64, msgType uint16, payload []byte) {
+func (m *Multiplexer) DispatchCorrelated(id uint64, msgType uint16, payload []byte, final bool) bool {
 	m.mu.Lock()
 	req, exists := m.correlated[id]
-	if exists {
+	if exists && final {
 		delete(m.correlated, id)
 	}
 	m.mu.Unlock()
 	if !exists {
-		m.Dispatch(msgType, payload)
-		return
+		return false
 	}
-	m.requestsInFlight.Add(-1)
-	m.responsesTotal.Add(1)
-	req.waiter.deliver(payload)
+	if final {
+		m.requestsInFlight.Add(-1)
+		m.responsesTotal.Add(1)
+		if !req.discard && req.waiter != nil {
+			req.waiter.deliver(payload)
+		}
+	}
+	return true
 }
 
 // handleKVNotify processes KV NOTIFY messages (111):

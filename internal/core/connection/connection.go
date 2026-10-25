@@ -699,7 +699,10 @@ func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
 		return false, nil
 	}
 	if frame.CorrelationID != 0 {
-		c.mux.DispatchCorrelated(frame.CorrelationID, frame.MessageType, frame.Payload)
+		final := frame.Flags&protocol.FlagResponseFinal != 0
+		if !c.mux.DispatchCorrelated(frame.CorrelationID, frame.MessageType, frame.Payload, final) {
+			return false, fmt.Errorf("unexpected response correlation %d", frame.CorrelationID)
+		}
 	} else {
 		c.mux.Dispatch(frame.MessageType, frame.Payload)
 	}
@@ -1010,6 +1013,20 @@ func (c *Connection) SendRequestWithWriterAndFlags(ctx context.Context, msgType 
 
 // SendFireAndForget sends a frame without expecting a response.
 // Used for operations like Notice PUBLISH or RPC response where the server does not reply.
+func fireAndForgetNeedsCorrelation(messageType uint16, payload []byte) bool {
+	if messageType < protocol.MessageTypeRpcSubscribeWorker || messageType > protocol.MessageTypeRpcLifecycle {
+		return false
+	}
+	switch messageType {
+	case protocol.MessageTypeRpcLifecycle:
+		return false
+	case protocol.MessageTypeRpcCancellation:
+		return len(payload) > 0 && payload[0] == 1
+	default:
+		return true
+	}
+}
+
 func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payload []byte) error {
 	var span trace.Span = traceNoop.Span{}
 	if c.tracingEnabled {
@@ -1030,7 +1047,7 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 	defer c.ReleaseWriteSlot()
 
 	correlationID := uint64(0)
-	if msgType >= protocol.MessageTypeRpcSubscribeWorker && msgType <= protocol.MessageTypeRpcLifecycle {
+	if fireAndForgetNeedsCorrelation(msgType, payload) {
 		correlationID = c.mux.NextCorrelationID()
 		if correlationID == 0 {
 			return errors.New("correlation IDs exhausted; reconnect before sending another request")
@@ -1089,19 +1106,19 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 	}
 	defer c.ReleaseWriteSlot()
 
+	payloadBuffer := bytes.NewBuffer(make([]byte, 0, 128))
+	writePayload(payloadBuffer)
+	payload := payloadBuffer.Bytes()
 	correlationID := uint64(0)
-	if msgType >= protocol.MessageTypeRpcSubscribeWorker && msgType <= protocol.MessageTypeRpcLifecycle {
+	if fireAndForgetNeedsCorrelation(msgType, payload) {
 		correlationID = c.mux.NextCorrelationID()
 		if correlationID == 0 {
 			return errors.New("correlation IDs exhausted; reconnect before sending another request")
 		}
 	}
-	frame, err := protocol.EncodeFrameWithHeaderAndPayloadWriter(msgType, 0, correlationID, writePayload)
-	if err != nil {
-		wrapped := fmt.Errorf("encode frame: %w", err)
-		span.RecordError(wrapped)
-		span.SetStatus(codes.Error, wrapped.Error())
-		return wrapped
+	frame := protocol.EncodeFrameOwnedWithHeader(msgType, 0, correlationID, payload)
+	if frame == nil {
+		return errors.New("encode frame")
 	}
 	defer frame.Release()
 	if uint32(frame.Len()) > c.maxMessageBytes.Load() {
@@ -1116,7 +1133,7 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 	}
 
 	c.writeMu.Lock()
-	err = c.transport.Write(writeCtx, frame.Bytes())
+	err := c.transport.Write(writeCtx, frame.Bytes())
 	c.writeMu.Unlock()
 	if err != nil {
 		wrapped := fmt.Errorf("write fire-and-forget: %w", err)

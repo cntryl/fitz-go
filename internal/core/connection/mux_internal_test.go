@@ -41,13 +41,67 @@ func TestShouldDispatchCorrelatedRequestsOutOfOrderGivenSameMessageType(t *testi
 	require.True(t, mux.RegisterCorrelatedRequest(1, first))
 	require.True(t, mux.RegisterCorrelatedRequest(2, second))
 
-	mux.DispatchCorrelated(2, protocol.MessageTypeQueueReserve, []byte("second"))
-	mux.DispatchCorrelated(1, protocol.MessageTypeQueueReserve, []byte("first"))
+	require.True(t, mux.DispatchCorrelated(2, protocol.MessageTypeQueueReserve, []byte("second"), true))
+	require.True(t, mux.DispatchCorrelated(1, protocol.MessageTypeQueueReserve, []byte("first"), true))
 
 	<-first.ready
 	<-second.ready
 	require.Equal(t, []byte("first"), first.response)
 	require.Equal(t, []byte("second"), second.response)
+}
+
+func TestShouldRetainCorrelatedRequestUntilFinalFrame(t *testing.T) {
+	mux := NewMultiplexer()
+	waiter := acquireRequestWaiter()
+	t.Cleanup(func() {
+		releaseRequestWaiter(waiter)
+		_ = mux.Close()
+	})
+	require.True(t, mux.RegisterCorrelatedRequest(7, waiter))
+
+	// Act
+	require.True(t, mux.DispatchCorrelated(7, protocol.MessageTypeLeaseAcquire, []byte("queued"), false))
+	select {
+	case <-waiter.ready:
+		t.Fatal("intermediate frame completed the request")
+	default:
+	}
+	require.True(t, mux.DispatchCorrelated(7, protocol.MessageTypeLeaseAcquire, []byte("grant"), true))
+
+	// Assert
+	<-waiter.ready
+	require.Equal(t, []byte("grant"), waiter.response)
+}
+
+func TestShouldRejectUnmatchedCorrelationWithoutTypeFallback(t *testing.T) {
+	mux := NewMultiplexer()
+	defer func() { _ = mux.Close() }()
+	called := false
+	mux.SetRawPushHandler(protocol.MessageTypeLeaseAcquire, func([]byte) { called = true })
+
+	// Act
+	routed := mux.DispatchCorrelated(99, protocol.MessageTypeLeaseAcquire, []byte("late"), true)
+
+	// Assert
+	require.False(t, routed)
+	require.False(t, called)
+}
+
+func TestShouldConsumeAllPhasesAfterCorrelatedRequestCancellation(t *testing.T) {
+	mux := NewMultiplexer()
+	waiter := acquireRequestWaiter()
+	require.True(t, mux.RegisterCorrelatedRequest(18, waiter))
+	require.True(t, mux.UnregisterCorrelatedRequest(18, waiter))
+	releaseRequestWaiter(waiter)
+	defer func() { _ = mux.Close() }()
+
+	// Act
+	require.True(t, mux.DispatchCorrelated(18, protocol.MessageTypeLeaseAcquire, []byte("queued"), false))
+	require.True(t, mux.DispatchCorrelated(18, protocol.MessageTypeLeaseAcquire, []byte("late grant"), true))
+
+	// Assert
+	require.False(t, mux.DispatchCorrelated(18, protocol.MessageTypeLeaseAcquire, []byte("duplicate"), true))
+	require.EqualValues(t, 0, mux.requestsInFlight.Load())
 }
 
 func TestShouldRouteRpcWorkerRequestGivenPendingRpcRequestWhenDispatchCalled(t *testing.T) {

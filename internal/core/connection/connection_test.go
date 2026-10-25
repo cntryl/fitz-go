@@ -55,7 +55,13 @@ func (t *writeReorderingTransport) Write(ctx context.Context, frame []byte) erro
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	resp := testkit.CorrelateResponse(protocol.EncodeFrame(msgType, []byte("resp:"+string(payload))), [][]byte{frame})
+	request, err := protocol.DecodeMessage(frame)
+	if err != nil {
+		return err
+	}
+	response := protocol.EncodeFrameOwnedWithHeader(msgType, protocol.FlagResponseFinal, request.CorrelationID, []byte("resp:"+string(payload)))
+	resp := append([]byte(nil), response.Bytes()...)
+	response.Release()
 	select {
 	case t.frames <- resp:
 		return nil
