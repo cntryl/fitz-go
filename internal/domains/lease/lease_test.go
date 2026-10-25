@@ -182,6 +182,27 @@ func TestShouldResolveQueuedAcquireGivenDeferredBrokerFrame(t *testing.T) {
 	assert.Equal(t, "worker-1", acquired.ownerID)
 }
 
+func TestShouldReturnAlreadyQueuedGivenDuplicateAcquireOutcome(t *testing.T) {
+	trans := newScriptedLeaseRestoreTransport()
+	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})
+	require.NoError(t, conn.Start(context.Background()))
+	t.Cleanup(func() { _ = conn.Close() })
+	baseWrites := scriptedLeaseWriteCount(trans)
+	go func() {
+		waitForLeaseWrites(t, trans, baseWrites+1)
+		trans.enqueue(scriptedLeaseFrame(t, protocol.MessageTypeLeaseAcquire, []byte{0, 3, 0, 0, 0, 0, 0, 0, 0, 0}))
+	}()
+
+	_, err := NewClient(conn).Acquire(
+		context.Background(),
+		"lease://realm/area/resource",
+		30,
+		AcquireOptions{OwnerID: "worker-1", WaitSeconds: 5},
+	)
+
+	assert.ErrorIs(t, err, ErrLeaseAlreadyQueued)
+}
+
 func TestShouldSerializeAcquireLifecycleGivenDeferredBrokerFrame(t *testing.T) {
 	trans := newScriptedLeaseRestoreTransport()
 	conn := connection.New(trans, connection.Config{Token: "", ReadTimeout: time.Second})

@@ -13,7 +13,8 @@ const (
 	MaxMessageSize           = 1 << 20
 	MaxPayloadSize           = MaxMessageSize - HeaderLen
 	FlagAckRequested   uint8 = 1 << 0
-	validFlags               = FlagAckRequested
+	FlagResponseFinal  uint8 = 1 << 1
+	validFlags               = FlagAckRequested | FlagResponseFinal
 	pooledBufferMaxCap       = MaxMessageSize
 )
 

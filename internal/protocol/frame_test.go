@@ -36,13 +36,14 @@ func TestShouldRoundTripFrameGivenCorrelationAndFlags(t *testing.T) {
 	// Arrange
 	payload := []byte{0, 255, 1, 2}
 	// Act
-	encoded := EncodeFrameOwnedWithHeader(65535, FlagAckRequested, 0x0102030405060708, payload)
+	flags := FlagAckRequested | FlagResponseFinal
+	encoded := EncodeFrameOwnedWithHeader(65535, flags, 0x0102030405060708, payload)
 	defer encoded.Release()
 	decoded, err := DecodeMessage(encoded.Bytes())
 	// Assert
 	require.NoError(t, err)
 	assert.Equal(t, uint16(65535), decoded.MessageType)
-	assert.Equal(t, FlagAckRequested, decoded.Flags)
+	assert.Equal(t, flags, decoded.Flags)
 	assert.Equal(t, uint64(0x0102030405060708), decoded.CorrelationID)
 	assert.Equal(t, payload, decoded.Payload)
 	assert.Equal(t, uint32(4), binary.BigEndian.Uint32(encoded.Bytes()[11:15]))
@@ -61,7 +62,7 @@ func TestShouldRejectInvalidFrameGivenTruncatedHeaderPayloadOrTrailingData(t *te
 func TestShouldRejectReservedFlagsGivenEncodedFrame(t *testing.T) {
 	// Arrange
 	frame := EncodeFrame(100, nil)
-	frame[2] = 2
+	frame[2] = 4
 	// Act
 	_, err := DecodeMessage(frame)
 	// Assert

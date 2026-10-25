@@ -265,6 +265,7 @@ func NewMultiplexer() *Multiplexer {
 func (m *Multiplexer) SetCapabilities(protocolVersion uint16, capabilities uint32) {
 	m.protocolVersion.Store(uint32(protocolVersion))
 	m.capabilities.Store(capabilities)
+	m.nextCorrelationID.Store(0)
 }
 
 func (m *Multiplexer) CorrelationEnabled() bool {
@@ -277,9 +278,12 @@ func (m *Multiplexer) Capabilities() (uint16, uint32) {
 
 func (m *Multiplexer) NextCorrelationID() uint64 {
 	for {
-		id := m.nextCorrelationID.Add(1)
-		if id != 0 {
-			return id
+		current := m.nextCorrelationID.Load()
+		if current == ^uint64(0) {
+			return 0
+		}
+		if m.nextCorrelationID.CompareAndSwap(current, current+1) {
+			return current + 1
 		}
 	}
 }

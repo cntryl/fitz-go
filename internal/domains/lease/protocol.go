@@ -32,6 +32,7 @@ const (
 var (
 	ErrLeaseHeld          = errors.New("lease held")
 	ErrLeaseQueued        = errors.New("lease queued")
+	ErrLeaseAlreadyQueued = errors.New("lease acquisition already queued")
 	ErrInvalidFence       = errors.New("invalid fencing token")
 	ErrLeaseExpired       = errors.New("lease expired")
 	ErrLeaseNotFound      = errors.New("lease not found")

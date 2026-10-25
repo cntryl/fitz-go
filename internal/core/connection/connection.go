@@ -773,6 +773,9 @@ func (c *Connection) SendRequestWithFlags(ctx context.Context, msgType uint16, f
 	defer c.ReleaseRequestSlot()
 
 	correlationID := c.mux.NextCorrelationID()
+	if correlationID == 0 {
+		return nil, errors.New("correlation IDs exhausted; reconnect before sending another request")
+	}
 	frame := protocol.EncodeFrameOwnedWithHeader(msgType, flags, correlationID, payload)
 	if frame == nil {
 		err := errors.New("encode frame")
@@ -911,6 +914,9 @@ func (c *Connection) SendRequestWithWriterAndFlags(ctx context.Context, msgType 
 	defer c.ReleaseRequestSlot()
 
 	correlationID := c.mux.NextCorrelationID()
+	if correlationID == 0 {
+		return nil, errors.New("correlation IDs exhausted; reconnect before sending another request")
+	}
 	frame, err := protocol.EncodeFrameWithHeaderAndPayloadWriter(msgType, flags, correlationID, writePayload)
 	if err != nil {
 		wrapped := fmt.Errorf("encode frame: %w", err)
@@ -1026,6 +1032,9 @@ func (c *Connection) SendFireAndForget(ctx context.Context, msgType uint16, payl
 	correlationID := uint64(0)
 	if msgType >= protocol.MessageTypeRpcSubscribeWorker && msgType <= protocol.MessageTypeRpcLifecycle {
 		correlationID = c.mux.NextCorrelationID()
+		if correlationID == 0 {
+			return errors.New("correlation IDs exhausted; reconnect before sending another request")
+		}
 	}
 	frame := protocol.EncodeFrameOwnedWithHeader(msgType, 0, correlationID, payload)
 	if frame == nil {
@@ -1083,6 +1092,9 @@ func (c *Connection) SendFireAndForgetWithWriter(ctx context.Context, msgType ui
 	correlationID := uint64(0)
 	if msgType >= protocol.MessageTypeRpcSubscribeWorker && msgType <= protocol.MessageTypeRpcLifecycle {
 		correlationID = c.mux.NextCorrelationID()
+		if correlationID == 0 {
+			return errors.New("correlation IDs exhausted; reconnect before sending another request")
+		}
 	}
 	frame, err := protocol.EncodeFrameWithHeaderAndPayloadWriter(msgType, 0, correlationID, writePayload)
 	if err != nil {

@@ -480,6 +480,8 @@ func (c *leaseClient) Observe(ctx context.Context, pattern string, opts ...Obser
 var (
 	ErrLeaseHeld   = internallease.ErrLeaseHeld
 	ErrLeaseQueued = internallease.ErrLeaseQueued
+	// ErrLeaseAlreadyQueued reports a terminal duplicate queued acquisition.
+	ErrLeaseAlreadyQueued = internallease.ErrLeaseAlreadyQueued
 	// ErrLeaseLost marks an uncertain or rejected managed renewal.
 	ErrLeaseLost = errors.New("lease ownership lost")
 	// ErrLeaseInvalidListCursor: LIST cursor is unknown, evicted, or reused
