@@ -393,19 +393,17 @@ func TestConformanceSuite(t *testing.T) {
 			callCtx, callCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 			defer callCancel()
 			iter, err := f.Client().RPC().Call(callCtx, noWorkerRoute, []byte("ping"))
-			if err != nil {
-				ev = append(ev, fmt.Sprintf("call to unregistered route returned error: %v", err))
-			} else {
+			if err == nil {
 				defer closeQuietly(iter)
-				iter.Next()
-				if iterErr := iter.Err(); iterErr != nil {
-					ev = append(ev, fmt.Sprintf("iterator error on unregistered route: %v", iterErr))
-				} else {
-					ev = append(ev, "WARNING: unexpectedly got a response from unregistered route")
-					return VerdictFail, ev, nil
+				if iter.Next() {
+					return VerdictFail, ev, errors.New("unregistered route returned a response")
 				}
+				err = iter.Err()
 			}
-			ev = append(ev, "error is typed and surfaced (correct)")
+			if !errors.Is(err, fitz.ErrNoWorkers) {
+				return VerdictFail, ev, fmt.Errorf("expected no-workers error, got %w", err)
+			}
+			ev = append(ev, "unregistered route returned the no-workers error")
 
 			// Client must remain usable
 			route := uniqueRoute("kv")
@@ -413,8 +411,12 @@ func TestConformanceSuite(t *testing.T) {
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable after error: %w", txErr)
 			}
-			_ = tx.Put(ctx, []byte("k"), []byte("v"))
-			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
+			if err := tx.Put(ctx, []byte("k"), []byte("v")); err != nil {
+				return VerdictFail, ev, err
+			}
+			if err := tx.Commit(ctx, fitz.KVDurabilitySync); err != nil {
+				return VerdictFail, ev, err
+			}
 			ev = append(ev, "client remains usable after unknown-route error")
 			return VerdictPass, ev, nil
 		})
@@ -487,30 +489,43 @@ func TestConformanceSuite(t *testing.T) {
 			callCtx, callCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 			defer callCancel()
 			iter, err := f.Client().RPC().Call(callCtx, route, []byte("ping"))
-			if err != nil {
-				ev = append(ev, fmt.Sprintf("rpc call error type: %T", err))
-				ev = append(ev, fmt.Sprintf("rpc call error: %v", err))
-			} else {
+			if err == nil {
 				defer closeQuietly(iter)
-				iter.Next()
+				if iter.Next() {
+					return VerdictFail, ev, errors.New("unregistered RPC route returned a response")
+				}
 				err = iter.Err()
-				ev = append(ev, fmt.Sprintf("rpc iterator error type: %T", err))
 			}
-
-			if err != nil {
-				ev = append(ev, "server error surfaced as typed Go error (correct)")
+			var domainErr *fitz.DomainError
+			if !errors.Is(err, fitz.ErrNoWorkers) || !errors.As(err, &domainErr) ||
+				uint32(domainErr.Code) != fitz.ErrCodeRpcRouteNotRegistered || domainErr.Effect != 0 || !fitz.IsRetryable(err) {
+				return VerdictFail, ev, fmt.Errorf("unregistered RPC route did not preserve retryable NOT_APPLIED error: %w", err)
 			}
+			ev = append(ev, "unregistered RPC route preserved its domain code and NOT_APPLIED effect")
 
 			// Also verify kv conflict produces typed error
 			kvRoute := uniqueRoute("kv")
-			tx, _ := f.Client().KV().Begin(ctx, kvRoute)
-			_ = tx.Insert(ctx, []byte("x"), []byte("1"))
-			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
+			tx, err := f.Client().KV().Begin(ctx, kvRoute)
+			if err != nil {
+				return VerdictFail, ev, err
+			}
+			if err := tx.Insert(ctx, []byte("x"), []byte("1")); err != nil {
+				return VerdictFail, ev, err
+			}
+			if err := tx.Commit(ctx, fitz.KVDurabilitySync); err != nil {
+				return VerdictFail, ev, err
+			}
 
-			tx2, _ := f.Client().KV().Begin(ctx, kvRoute)
+			tx2, err := f.Client().KV().Begin(ctx, kvRoute)
+			if err != nil {
+				return VerdictFail, ev, err
+			}
 			kvErr := tx2.Insert(ctx, []byte("x"), []byte("2"))
 			_ = tx2.Rollback(ctx)
-			ev = append(ev, fmt.Sprintf("kv conflict error type: %T, value: %v", kvErr, kvErr))
+			if !errors.Is(kvErr, fitz.ErrKVKeyExists) || fitz.IsRetryable(kvErr) {
+				return VerdictFail, ev, fmt.Errorf("duplicate insert was not a terminal key-exists error: %w", kvErr)
+			}
+			ev = append(ev, "duplicate KV insert mapped to a terminal key-exists error")
 
 			return VerdictPass, ev, nil
 		})
@@ -524,29 +539,43 @@ func TestConformanceSuite(t *testing.T) {
 		r := run("CS-007", "timeout handling", "P0", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
+			worker := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
 			route := uniqueRoute("rpc")
-			start := time.Now()
-			callCtx, callCancel := context.WithTimeout(ctx, 250*time.Millisecond)
-			defer callCancel()
-			iter, err := f.Client().RPC().Call(callCtx, route, []byte("nobody"))
-			elapsed := time.Since(start)
-
-			var timeoutErr error
+			started := make(chan struct{})
+			sub, err := worker.Client().RPC().RegisterWorker(ctx, route, 1, func(workerCtx context.Context, _ fitz.RPCInboundRequest, _ fitz.RPCResponseWriter) error {
+				close(started)
+				<-workerCtx.Done()
+				return workerCtx.Err()
+			})
 			if err != nil {
-				timeoutErr = err
-			} else {
-				defer closeQuietly(iter)
-				iter.Next()
-				timeoutErr = iter.Err()
+				return VerdictFail, ev, fmt.Errorf("register blocked worker: %w", err)
+			}
+			defer sub.Deregister()
+			callCtx, callCancel := context.WithTimeout(ctx, 750*time.Millisecond)
+			defer callCancel()
+			start := time.Now()
+			iter, err := f.Client().RPC().Call(callCtx, route, []byte("blocked"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("start RPC call: %w", err)
+			}
+			defer closeQuietly(iter)
+			select {
+			case <-started:
+			case <-ctx.Done():
+				return VerdictFail, ev, errors.New("RPC worker did not start")
 			}
 
-			if timeoutErr == nil {
-				return VerdictFail, ev, errors.New("expected timeout error, got success")
+			if iter.Next() {
+				return VerdictFail, ev, errors.New("blocked RPC call returned a response")
 			}
-			ev = append(ev, fmt.Sprintf("rpc timed out after ~%dms (error: %v)", elapsed.Milliseconds(), timeoutErr))
+			timeoutErr := iter.Err()
+			if !errors.Is(timeoutErr, context.DeadlineExceeded) && !errors.Is(timeoutErr, fitz.ErrRPCTimeout) {
+				return VerdictFail, ev, fmt.Errorf("expected timeout, got %w", timeoutErr)
+			}
+			ev = append(ev, fmt.Sprintf("running RPC timed out after %dms (error: %v)", time.Since(start).Milliseconds(), timeoutErr))
 
 			// Connection must remain healthy
 			kvRoute := uniqueRoute("kv")
@@ -575,7 +604,9 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("rpc")
+			started := make(chan struct{})
 			sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, 7, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+				close(started)
 				select {
 				case <-workerCtx.Done():
 					return workerCtx.Err()
@@ -596,16 +627,20 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("rpc call: %w", err2)
 			}
 
-			time.Sleep(100 * time.Millisecond)
+			select {
+			case <-started:
+			case <-ctx.Done():
+				callCancel()
+				return VerdictFail, ev, errors.New("RPC worker did not start before cancellation")
+			}
 			callCancel()
 
 			iter.Next()
 			iterErr := iter.Err()
 			closeQuietly(iter)
 
-			if iterErr == nil {
-				ev = append(ev, "expected cancellation error, got nil (race: call may have completed)")
-				return VerdictPartial, ev, nil
+			if !errors.Is(iterErr, context.Canceled) {
+				return VerdictFail, ev, fmt.Errorf("expected caller cancellation, got %w", iterErr)
 			}
 			ev = append(ev, fmt.Sprintf("cancellation error: %v", iterErr))
 			ev = append(ev, "in-flight request failed on cancellation (correct)")
@@ -1169,8 +1204,9 @@ func TestConformanceSuite(t *testing.T) {
 			default:
 			}
 
-			ev = append(ev, "second RPC call remained pending while first was in flight")
-			ev = append(ev, "configured maxInFlightRequests=1 and burst size=2")
+			ev = append(ev, "both delayed RPC calls remained incomplete at the 100ms observation")
+			ev = append(ev, "this does not observe request admission or establish the required 16/64 ceiling")
+			ev = append(ev, "the canonical CS-017 is global filtered replay; this runner's scenario numbering is not reconciled")
 
 			callCancel()
 			firstErr := <-firstDoneCh
@@ -1182,11 +1218,13 @@ func TestConformanceSuite(t *testing.T) {
 				ev = append(ev, fmt.Sprintf("second RPC call ended with %v", secondErr))
 			}
 
-			return VerdictPass, ev, nil
+			return VerdictPartial, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass {
+		if r.Verdict == VerdictFail {
 			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+		} else if r.Verdict != VerdictPass {
+			t.Logf("CS-017: verdict=%s; admission ceiling was not measured", r.Verdict)
 		}
 	})
 

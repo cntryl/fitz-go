@@ -13,6 +13,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestShouldPreserveBrokerDispositionWhenMappingRPCError(t *testing.T) {
+	// Arrange
+	original := coreerrors.NewDomainErrorWithDisposition(coreerrors.RpcWorkerNotFound, 9, 1, "worker disconnected")
+
+	// Act
+	mapped := mapRPCError(original)
+
+	// Assert
+	require.ErrorIs(t, mapped, ErrNoWorkers)
+	var domainErr *coreerrors.DomainError
+	require.ErrorAs(t, mapped, &domainErr)
+	assert.Equal(t, uint8(1), domainErr.Effect)
+}
+
+func TestShouldNotInferRPCErrorFromDiagnosticText(t *testing.T) {
+	// Arrange
+	original := errors.New("unrelated timeout during client setup")
+
+	// Act
+	mapped := mapRPCError(original)
+
+	// Assert
+	assert.Same(t, original, mapped)
+	assert.NotErrorIs(t, mapped, ErrRPCTimeout)
+}
+
 // TestShouldMapRPCError tests error message mapping.
 func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) {
 	t.Run("map no workers error", func(t *testing.T) {
@@ -23,7 +49,7 @@ func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) 
 		mapped := mapRPCError(errMsg)
 
 		// Assert
-		assert.Equal(t, ErrNoWorkers, mapped)
+		assert.ErrorIs(t, mapped, ErrNoWorkers)
 	})
 
 	t.Run("map route not registered error", func(t *testing.T) {
@@ -34,7 +60,7 @@ func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) 
 		mapped := mapRPCError(errMsg)
 
 		// Assert
-		assert.Equal(t, ErrNoWorkers, mapped)
+		assert.ErrorIs(t, mapped, ErrNoWorkers)
 	})
 
 	t.Run("preserve typed correlation error", func(t *testing.T) {
@@ -82,7 +108,7 @@ func TestShouldMapRPCErrorGivenBrokerMessageWhenMapRPCErrorCalled(t *testing.T) 
 		mapped := mapRPCError(errMsg)
 
 		// Assert
-		assert.Equal(t, ErrRPCTimeout, mapped)
+		assert.ErrorIs(t, mapped, ErrRPCTimeout)
 	})
 }
 

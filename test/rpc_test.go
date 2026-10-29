@@ -38,7 +38,8 @@ func TestShouldReturnTypedFailureGivenThrowingRPCWorker(t *testing.T) {
 		require.False(t, iter.Next())
 		var domainErr *coreerrors.DomainError
 		require.ErrorAs(t, iter.Err(), &domainErr)
-		assert.Equal(t, uint32(6010), uint32(domainErr.Code))
+		assert.Equal(t, fitz.ErrCodeRpcBackendError, uint32(domainErr.Code))
+		assert.Equal(t, uint8(1), domainErr.Effect)
 	})
 }
 
@@ -68,7 +69,8 @@ func TestShouldPreservePriorChunkThenFailGivenThrowingRPCWorker(t *testing.T) {
 		require.False(t, iter.Next())
 		var domainErr *coreerrors.DomainError
 		require.ErrorAs(t, iter.Err(), &domainErr)
-		assert.Equal(t, uint32(6010), uint32(domainErr.Code))
+		assert.Equal(t, fitz.ErrCodeRpcBackendError, uint32(domainErr.Code))
+		assert.Equal(t, uint8(1), domainErr.Effect)
 	})
 }
 
@@ -92,7 +94,8 @@ func TestShouldBoundTerminalErrorGivenVeryLongWorkerFailure(t *testing.T) {
 		require.False(t, iter.Next())
 		var domainErr *coreerrors.DomainError
 		require.ErrorAs(t, iter.Err(), &domainErr)
-		assert.Equal(t, uint32(6010), uint32(domainErr.Code))
+		assert.Equal(t, fitz.ErrCodeRpcBackendError, uint32(domainErr.Code))
+		assert.Equal(t, uint8(1), domainErr.Effect)
 	})
 }
 
@@ -213,7 +216,7 @@ func TestShouldReassembleStreamingResponseGivenMultiFrameResponseWhenSequenced(t
 	})
 }
 
-func TestShouldReturnTimeoutGivenNoWorkerResponseWhenRequestTimeout(t *testing.T) {
+func TestShouldReportUnregisteredRouteGivenNoWorker(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -225,7 +228,11 @@ func TestShouldReturnTimeoutGivenNoWorkerResponseWhenRequestTimeout(t *testing.T
 		iter, err := f.Client().RPC().Call(callCtx, f.UniqueRoute("rpc"), []byte("nobody-home"))
 		require.NoError(t, err)
 		assert.False(t, iter.Next())
-		assert.Error(t, iter.Err())
+		require.ErrorIs(t, iter.Err(), fitz.ErrNoWorkers)
+		var domainErr *fitz.DomainError
+		require.ErrorAs(t, iter.Err(), &domainErr)
+		assert.Equal(t, fitz.ErrCodeRpcRouteNotRegistered, uint32(domainErr.Code))
+		assert.Zero(t, domainErr.Effect)
 	})
 }
 

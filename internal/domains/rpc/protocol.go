@@ -3,7 +3,7 @@ package rpc
 import (
 	"bytes"
 	"errors"
-	"strings"
+	"fmt"
 
 	"github.com/cntryl/fitz-go/internal/core/encoding"
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
@@ -39,27 +39,16 @@ func mapRPCError(err error) error {
 	if errors.As(err, &domainErr) {
 		switch uint32(domainErr.Code) {
 		case coreerrors.RpcTimeout:
-			return ErrRPCTimeout
+			return fmt.Errorf("%w: %w", ErrRPCTimeout, err)
 		case coreerrors.RpcWorkerNotFound, coreerrors.RpcRouteNotRegistered:
-			return ErrNoWorkers
+			return fmt.Errorf("%w: %w", ErrNoWorkers, err)
 		case coreerrors.RpcBackpressure:
-			return ErrRPCBackpressure
+			return fmt.Errorf("%w: %w", ErrRPCBackpressure, err)
 		default:
 			return err
 		}
 	}
-
-	l := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(l, "no workers"), strings.Contains(l, "worker not found"), strings.Contains(l, "route not registered"):
-		return ErrNoWorkers
-	case strings.Contains(l, "timeout"):
-		return ErrRPCTimeout
-	case strings.Contains(l, "backpressure"):
-		return ErrRPCBackpressure
-	default:
-		return err
-	}
+	return err
 }
 
 // encodeRPCSubscribeWorker encodes an RPC SUBSCRIBE_WORKER request per CLIENT_SPEC.md.

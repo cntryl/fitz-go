@@ -1018,7 +1018,7 @@ func fireAndForgetNeedsCorrelation(messageType uint16, payload []byte) bool {
 		return false
 	}
 	switch messageType {
-	case protocol.MessageTypeRpcLifecycle:
+	case protocol.MessageTypeRpcResponse, protocol.MessageTypeRpcLifecycle:
 		return false
 	case protocol.MessageTypeRpcCancellation:
 		return len(payload) > 0 && payload[0] == 1
