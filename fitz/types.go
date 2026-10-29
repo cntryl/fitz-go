@@ -302,6 +302,7 @@ var (
 	ErrConnectionClosed      = connection.ErrConnectionClosed
 	ErrNotAuthenticated      = connection.ErrNotAuthenticated
 	ErrAuthenticationFailed  = connection.ErrAuthenticationFailed
+	ErrVersionMismatch       = connection.ErrVersionMismatch
 	ErrAuthenticationTimeout = connection.ErrAuthenticationTimeout
 	ErrRequestQueueFull      = connection.ErrRequestQueueFull
 	ErrStaleHandle           = connection.ErrStaleHandle

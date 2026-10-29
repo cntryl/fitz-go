@@ -483,7 +483,7 @@ func (c *Client) ConnectWhenReady(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, connection.ErrAuthenticationFailed) || errors.Is(err, connection.ErrConnectionClosed) || ctx.Err() != nil {
+		if errors.Is(err, connection.ErrAuthenticationFailed) || errors.Is(err, connection.ErrVersionMismatch) || errors.Is(err, connection.ErrConnectionClosed) || ctx.Err() != nil {
 			return err
 		}
 		timer := time.NewTimer(retry.CalculateDelay(backoff, attempt-1))
@@ -948,6 +948,10 @@ func (c *Client) beginReconnect(cause error) {
 			cause = err
 		}
 		attemptSpan.End()
+		if errors.Is(cause, connection.ErrVersionMismatch) {
+			c.emitLifecycle("reconnect_exhausted", transportType, attempt, cause)
+			return
+		}
 
 		timer := time.NewTimer(retry.CalculateDelay(boCfg, attempt-1))
 		select {

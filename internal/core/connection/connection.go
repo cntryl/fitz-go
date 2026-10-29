@@ -188,6 +188,7 @@ func DefaultConfig() Config {
 var (
 	ErrNotAuthenticated         = errors.New("not authenticated")
 	ErrAuthenticationFailed     = errors.New("authentication failed")
+	ErrVersionMismatch          = errors.New("wire version mismatch")
 	ErrAuthenticationTimeout    = errors.New("authentication timeout")
 	ErrConnectionClosed         = errors.New("connection closed")
 	ErrConnectionAlreadyStarted = errors.New("connection already started")
@@ -675,6 +676,9 @@ func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
 			return false, errors.New("malformed CONNECT_REJECTED")
 		}
 		rejection := fmt.Errorf("connection rejected with code %d: %s", code, message)
+		if code == 50 {
+			rejection = fmt.Errorf("%w (code %d): %s", ErrVersionMismatch, code, message)
+		}
 		c.authError = rejection
 		return false, rejection
 	case protocol.MessageTypeGoAway:
