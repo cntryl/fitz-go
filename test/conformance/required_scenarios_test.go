@@ -36,21 +36,30 @@ func runSameTypeReserves(t *testing.T) (Verdict, []string, error) {
 	time.Sleep(100 * time.Millisecond)
 	select {
 	case result := <-parked:
-		return VerdictFail, nil, fmt.Errorf("first reserve did not park: %v", result.err)
+		if result.err != nil {
+			return VerdictFail, nil, fmt.Errorf("first reserve did not park: %w", result.err)
+		}
+		return VerdictFail, nil, errors.New("first reserve completed instead of parking")
 	default:
 	}
 	secondCtx, secondCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer secondCancel()
 	second, err := queue.ReserveWithOptions(secondCtx, readyRoute, 30, fitz.WithQueueReserveBatchSize(1), fitz.WithQueueReserveWaitSeconds(0))
-	if err != nil || len(second) != 1 || string(second[0].Body) != "second" {
-		return VerdictFail, nil, fmt.Errorf("second reserve: items=%d error=%v", len(second), err)
+	if err != nil {
+		return VerdictFail, nil, fmt.Errorf("second reserve: %w", err)
+	}
+	if len(second) != 1 || string(second[0].Body) != "second" {
+		return VerdictFail, nil, fmt.Errorf("second reserve returned %d unexpected items", len(second))
 	}
 	if _, err := queue.Enqueue(ctx, parkedRoute, []byte("first")); err != nil {
 		return VerdictFail, nil, err
 	}
 	first := <-parked
-	if first.err != nil || len(first.items) != 1 || string(first.items[0].Body) != "first" {
-		return VerdictFail, nil, fmt.Errorf("first reserve: items=%d error=%v", len(first.items), first.err)
+	if first.err != nil {
+		return VerdictFail, nil, fmt.Errorf("first reserve: %w", first.err)
+	}
+	if len(first.items) != 1 || string(first.items[0].Body) != "first" {
+		return VerdictFail, nil, fmt.Errorf("first reserve returned %d unexpected items", len(first.items))
 	}
 	return VerdictPass, []string{"second reserve resolved first with its own payload", "parked first reserve resolved with its own payload"}, nil
 }
@@ -72,14 +81,20 @@ func runStreamBoundary(t *testing.T) (Verdict, []string, error) {
 		}
 		if offset == 0 {
 			_, err = session.Append(ctx, 0, make([]byte, len(body)+1), fitz.WithStreamMetadata(metadata))
+			if err == nil {
+				return VerdictFail, nil, errors.New("oversized event was accepted")
+			}
 			var domain *fitz.DomainError
 			if !errors.As(err, &domain) || uint32(domain.Code) != 2008 || domain.Effect != 0 {
-				return VerdictFail, nil, fmt.Errorf("oversized event did not return BAD_REQUEST/NOT_APPLIED: %v", err)
+				return VerdictFail, nil, fmt.Errorf("oversized event did not return BAD_REQUEST/NOT_APPLIED: %w", err)
 			}
 		}
 		assigned, err := session.Append(ctx, uint64(offset), body, fitz.WithStreamMetadata(metadata))
-		if err != nil || assigned != uint64(offset) {
-			return VerdictFail, nil, fmt.Errorf("boundary append %d: offset=%d error=%v", offset, assigned, err)
+		if err != nil {
+			return VerdictFail, nil, fmt.Errorf("boundary append %d: %w", offset, err)
+		}
+		if assigned != uint64(offset) {
+			return VerdictFail, nil, fmt.Errorf("boundary append %d returned offset %d", offset, assigned)
 		}
 		if err := session.Commit(ctx, fitz.StreamCommitSync); err != nil {
 			return VerdictFail, nil, err

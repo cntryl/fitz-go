@@ -432,6 +432,16 @@ func TestConformanceSuite(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
+			_, invalidErr := f.Client().Schedule().Create(ctx, uniqueRoute("schedule"), "not a cron", fitz.ScheduleDeliveryBroadcast, []byte("payload"))
+			if invalidErr == nil {
+				return VerdictFail, ev, errors.New("invalid cron was accepted")
+			}
+			var invalid *fitz.DomainError
+			if !errors.As(invalidErr, &invalid) || uint32(invalid.Code) != fitz.ErrCodeScheduleInvalidCron {
+				return VerdictFail, ev, fmt.Errorf("invalid cron did not produce a Schedule domain error: %w", invalidErr)
+			}
+			ev = append(ev, "invalid cron produced a Schedule domain error")
+
 			route := uniqueRoute("kv")
 			tx1, err := f.Client().KV().Begin(ctx, route)
 			if err != nil {
@@ -552,7 +562,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("register blocked worker: %w", err)
 			}
-			defer sub.Deregister()
+			defer func() { _ = sub.Deregister() }()
 			callCtx, callCancel := context.WithTimeout(ctx, 750*time.Millisecond)
 			defer callCancel()
 			start := time.Now()
@@ -617,7 +627,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
-			defer sub.Deregister()
+			defer func() { _ = sub.Deregister() }()
 
 			callCtx, callCancel := context.WithCancel(ctx)
 			iter, err2 := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
@@ -774,7 +784,8 @@ func TestConformanceSuite(t *testing.T) {
 				case body := <-received:
 					if body == "after-disconnect" {
 						ev = append(ev, "subscription restored after reconnect")
-						return VerdictPass, ev, nil
+						ev = append(ev, "worker restoration and stale session handles were not checked")
+						return VerdictPartial, ev, nil
 					}
 				default:
 				}
@@ -787,7 +798,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictFail, ev, errors.New("subscription was not restored after reconnect")
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass {
+		if r.Verdict != VerdictPartial {
 			t.Errorf("CS-010: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -830,13 +841,13 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("iterator error: %w", err)
 			}
 
-			if len(offsets) < 3 {
-				ev = append(ev, fmt.Sprintf("expected >=3 records, got %d", len(offsets)))
+			if len(offsets) != 3 {
+				ev = append(ev, fmt.Sprintf("expected 3 records, got %d", len(offsets)))
 				return VerdictPartial, ev, nil
 			}
-			for i := 1; i < len(offsets); i++ {
-				if offsets[i] <= offsets[i-1] {
-					ev = append(ev, fmt.Sprintf("out-of-order offsets at index %d: %d <= %d", i, offsets[i], offsets[i-1]))
+			for i, offset := range offsets {
+				if offset != uint64(i) {
+					ev = append(ev, fmt.Sprintf("expected offset %d, got %d", i, offset))
 					return VerdictPartial, ev, nil
 				}
 			}
@@ -875,6 +886,9 @@ func TestConformanceSuite(t *testing.T) {
 			var count int
 			for iter.Next() {
 				count++
+			}
+			if err := iter.Err(); err != nil {
+				return VerdictFail, ev, fmt.Errorf("iterator error: %w", err)
 			}
 			closeQuietly(iter)
 
@@ -926,13 +940,18 @@ func TestConformanceSuite(t *testing.T) {
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable: %w", txErr)
 			}
-			_ = tx.Put(ctx, []byte("k"), []byte("v"))
-			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
+			if err := tx.Put(ctx, []byte("k"), []byte("v")); err != nil {
+				return VerdictFail, ev, fmt.Errorf("put after stream error: %w", err)
+			}
+			if err := tx.Commit(ctx, fitz.KVDurabilitySync); err != nil {
+				return VerdictFail, ev, fmt.Errorf("commit after stream error: %w", err)
+			}
 			ev = append(ev, "client still usable after stream error")
-			return VerdictPass, ev, nil
+			ev = append(ev, "an error during an active streaming read was not exercised")
+			return VerdictPartial, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass {
+		if r.Verdict != VerdictPartial {
 			t.Errorf("CS-013: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -989,10 +1008,11 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, "3 concurrent kv transactions completed correctly")
 			ev = append(ev, "all responses correlated to correct request contexts")
-			return VerdictPass, ev, nil
+			ev = append(ev, "cross-domain concurrency and within-domain ordering were not exercised")
+			return VerdictPartial, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass {
+		if r.Verdict != VerdictPartial {
 			t.Errorf("CS-014: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -1026,13 +1046,13 @@ func TestConformanceSuite(t *testing.T) {
 
 			time.Sleep(50 * time.Millisecond)
 			if closeErr := client.Close(); closeErr != nil {
-				ev = append(ev, fmt.Sprintf("close returned: %v", closeErr))
+				return VerdictFail, ev, fmt.Errorf("close: %w", closeErr)
 			}
 			ev = append(ev, "close during active work did not panic")
 
-			// Double close must not panic
+			// Double close must succeed.
 			if closeErr := client.Close(); closeErr != nil {
-				ev = append(ev, fmt.Sprintf("double close returned: %v (expected if idempotent)", closeErr))
+				return VerdictFail, ev, fmt.Errorf("double close: %w", closeErr)
 			}
 			ev = append(ev, "double close is safe")
 
@@ -1047,10 +1067,11 @@ func TestConformanceSuite(t *testing.T) {
 				ev = append(ev, "in-flight begin timed out waiting for result")
 			}
 
-			return VerdictPass, ev, nil
+			ev = append(ev, "the KV request may have completed before close; active-work interruption was not established")
+			return VerdictPartial, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass {
+		if r.Verdict != VerdictPartial {
 			t.Errorf("CS-015: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -1169,7 +1190,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
-			defer sub.Deregister()
+			defer func() { _ = sub.Deregister() }()
 
 			callCtx, callCancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 			defer callCancel()
