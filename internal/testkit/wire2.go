@@ -38,7 +38,9 @@ func ResponseRequiresCorrelation(kind uint16) bool {
 	return true
 }
 
-// CorrelateResponse binds a fixture reply to the latest matching request, preserving explicit IDs.
+// CorrelateResponse binds an implicit fixture reply to its latest matching request.
+// A queued Lease acquisition is intermediate; other implicit replies are final.
+// Explicitly correlated frames are left unchanged.
 func CorrelateResponse(frame []byte, written [][]byte) []byte {
 	frame = append([]byte(nil), frame...)
 	r, e := protocol.DecodeMessage(frame)
@@ -49,6 +51,9 @@ func CorrelateResponse(frame []byte, written [][]byte) []byte {
 		q, e := protocol.DecodeMessage(v)
 		if e == nil && q.MessageType == r.MessageType && q.CorrelationID != 0 {
 			binary.BigEndian.PutUint64(frame[3:11], q.CorrelationID)
+			if r.MessageType != protocol.MessageTypeLeaseAcquire || !bytes.HasPrefix(r.Payload, []byte{0, 2}) {
+				frame[2] |= protocol.FlagResponseFinal
+			}
 			break
 		}
 	}

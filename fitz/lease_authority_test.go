@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	internallease "github.com/cntryl/fitz-go/internal/domains/lease"
 	"github.com/cntryl/fitz-go/internal/protocol"
+	"github.com/cntryl/fitz-go/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -74,19 +74,9 @@ func (s *scriptedManagedLeaseTransport) RemoteAddr() string {
 }
 
 func (s *scriptedManagedLeaseTransport) enqueue(ctx context.Context, frame []byte) error {
-	frame = append([]byte(nil), frame...)
-	response, err := protocol.DecodeMessage(frame)
-	if err == nil && response.CorrelationID == 0 {
-		s.mu.Lock()
-		for _, v := range slices.Backward(s.written) {
-			request, e := protocol.DecodeMessage(v)
-			if e == nil && request.MessageType == response.MessageType && request.CorrelationID != 0 {
-				binary.BigEndian.PutUint64(frame[3:11], request.CorrelationID)
-				break
-			}
-		}
-		s.mu.Unlock()
-	}
+	s.mu.Lock()
+	frame = testkit.CorrelateResponse(frame, s.written)
+	s.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		return context.Cause(ctx)

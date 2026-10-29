@@ -1,13 +1,10 @@
 package testkit
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"io"
 	"net"
-	"slices"
 	"sync"
 	"time"
 
@@ -125,18 +122,9 @@ func (m *MockTransport) Read(ctx context.Context) ([]byte, error) {
 			canRead := true
 			response, e := protocol.DecodeMessage(frame)
 			if m.autoHello && e == nil && response.CorrelationID == 0 && ResponseRequiresCorrelation(response.MessageType) {
-				canRead = false
-				for _, v := range slices.Backward(m.writeFrames) {
-					request, e := protocol.DecodeMessage(v)
-					if e == nil && request.MessageType == response.MessageType && request.CorrelationID != 0 {
-						binary.BigEndian.PutUint64(frame[3:11], request.CorrelationID)
-						canRead = true
-						break
-					}
-				}
-			}
-			if m.autoHello && e == nil && response.CorrelationID != 0 && (response.MessageType != 400 || !bytes.HasPrefix(response.Payload, []byte{0, 2})) {
-				frame[2] |= protocol.FlagResponseFinal
+				frame = CorrelateResponse(frame, m.writeFrames)
+				correlated, err := protocol.DecodeMessage(frame)
+				canRead = err == nil && correlated.CorrelationID != 0
 			}
 			if canRead {
 				m.readIndex++

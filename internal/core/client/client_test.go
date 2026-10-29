@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1026,19 +1025,9 @@ func (s *scriptedTransport) RemoteAddr() string {
 }
 
 func (s *scriptedTransport) PushReadFrame(frame []byte) {
-	frame = append([]byte(nil), frame...)
-	response, err := protocol.DecodeMessage(frame)
-	if err == nil && response.CorrelationID == 0 {
-		s.mu.Lock()
-		for _, v := range slices.Backward(s.written) {
-			request, e := protocol.DecodeMessage(v)
-			if e == nil && request.MessageType == response.MessageType && request.CorrelationID != 0 {
-				binary.BigEndian.PutUint64(frame[3:11], request.CorrelationID)
-				break
-			}
-		}
-		s.mu.Unlock()
-	}
+	s.mu.Lock()
+	frame = testkit.CorrelateResponse(frame, s.written)
+	s.mu.Unlock()
 	s.readCh <- frame
 }
 
