@@ -2,10 +2,9 @@
 
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
-// Covers 22 scenarios: all 17 scenarios from the cross-language spec plus
-// 5 Go-client scenarios (CS-018 through CS-022) added
-// to close coverage gaps for Queue, Lease, Notice, Schedule, and reconnect
-// restoration behavior:
+// Covers shared scenarios CS-001 through CS-017 and five additional Go-client
+// scenarios for Queue, Lease, Notice, Schedule, and reconnect restoration.
+// CS-018 through CS-024 in the current shared suite remain to be reconciled:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
 //
@@ -67,16 +66,17 @@ type ScenarioResult struct {
 }
 
 type AggregateResult struct {
-	Suite         string           `json:"suite"`
-	Version       string           `json:"version"`
-	GeneratedAt   string           `json:"generated_at"`
-	Client        string           `json:"client"`
-	Transport     string           `json:"transport"`
-	AuthMode      string           `json:"auth_mode"`
-	P0PassRate    float64          `json:"p0_pass_rate"`
-	P1PassRate    float64          `json:"p1_pass_rate"`
-	OverallStatus string           `json:"overall_status"`
-	Scenarios     []ScenarioResult `json:"scenarios"`
+	Suite            string           `json:"suite"`
+	Version          string           `json:"version"`
+	GeneratedAt      string           `json:"generated_at"`
+	Client           string           `json:"client"`
+	Transport        string           `json:"transport"`
+	AuthMode         string           `json:"auth_mode"`
+	P0PassRate       float64          `json:"p0_pass_rate"`
+	P1PassRate       float64          `json:"p1_pass_rate"`
+	OverallStatus    string           `json:"overall_status"`
+	MissingScenarios []string         `json:"missing_scenarios"`
+	Scenarios        []ScenarioResult `json:"scenarios"`
 }
 
 // ---------------------------------------------------------------------------
@@ -98,52 +98,49 @@ func (c *collector) aggregate(client, transport, authMode string) AggregateResul
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	passRate := func(priority string) float64 {
-		var total, passed int
-		for _, r := range c.results {
-			if r.Priority == priority {
-				total++
-				if r.Verdict == VerdictPass {
-					passed++
-				}
-			}
-		}
-		if total == 0 {
-			return 1.0
-		}
-		return float64(passed) / float64(total)
+	byID := make(map[string]ScenarioResult, len(c.results))
+	for _, result := range c.results {
+		byID[result.ScenarioID] = result
 	}
-
-	p0Rate := passRate("P0")
-	p1Rate := passRate("P1")
-
+	missing := make([]string, 0)
+	var p0Total, p0Passed, p1Total, p1Passed int
 	overall := "pass"
-	for _, r := range c.results {
-		if r.Priority == "P0" && r.Verdict != VerdictPass {
-			overall = "fail"
-			break
+	for number := 1; number <= 24; number++ {
+		id := fmt.Sprintf("CS-%03d", number)
+		result, present := byID[id]
+		if !present {
+			missing = append(missing, id)
 		}
-	}
-	if overall == "pass" {
-		for _, r := range c.results {
-			if r.Priority == "P1" && (r.Verdict == VerdictFail || r.Verdict == VerdictPartial) {
+		passed := present && result.Verdict == VerdictPass
+		if number <= 8 || number == 19 || number == 20 || number == 24 {
+			p0Total++
+			if passed {
+				p0Passed++
+			} else {
+				overall = "fail"
+			}
+		} else {
+			p1Total++
+			if passed {
+				p1Passed++
+			} else if overall == "pass" {
 				overall = "partial"
-				break
 			}
 		}
 	}
 
 	return AggregateResult{
-		Suite:         "fitz-cross-language-client-conformance",
-		Version:       "1.0",
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
-		Client:        client,
-		Transport:     transport,
-		AuthMode:      authMode,
-		P0PassRate:    p0Rate,
-		P1PassRate:    p1Rate,
-		OverallStatus: overall,
-		Scenarios:     c.results,
+		Suite:            "fitz-cross-language-client-conformance",
+		Version:          "1.0",
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		Client:           client,
+		Transport:        transport,
+		AuthMode:         authMode,
+		P0PassRate:       float64(p0Passed) / float64(p0Total),
+		P1PassRate:       float64(p1Passed) / float64(p1Total),
+		OverallStatus:    overall,
+		MissingScenarios: missing,
+		Scenarios:        c.results,
 	}
 }
 
@@ -264,6 +261,9 @@ func TestMain(m *testing.M) {
 				aggregate.P1PassRate*100,
 			)
 		}
+	}
+	if code == 0 && len(results.results) > 0 && aggregate.OverallStatus == "fail" {
+		code = 1
 	}
 
 	os.Exit(code)
@@ -1135,8 +1135,18 @@ func TestConformanceSuite(t *testing.T) {
 		}
 	})
 
-	t.Run("CS-017_bounded_concurrency_under_burst_load", func(t *testing.T) {
-		r := run("CS-017", "bounded concurrency under burst load", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-017_global_filtered_multi_page_replay", func(t *testing.T) {
+		r := run("CS-017", "global filtered multi-page replay", "P1", func() (Verdict, []string, error) {
+			return runGlobalFilteredReplay(t)
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("GO-RPC-BURST_smoke", func(t *testing.T) {
+		r := run("GO-RPC-BURST", "RPC burst smoke", "P1", func() (Verdict, []string, error) {
 			var ev []string
 
 			f := newFixture(t)
@@ -1206,7 +1216,6 @@ func TestConformanceSuite(t *testing.T) {
 
 			ev = append(ev, "both delayed RPC calls remained incomplete at the 100ms observation")
 			ev = append(ev, "this does not observe request admission or establish the required 16/64 ceiling")
-			ev = append(ev, "the canonical CS-017 is global filtered replay; this runner's scenario numbering is not reconciled")
 
 			callCancel()
 			firstErr := <-firstDoneCh
@@ -1220,22 +1229,21 @@ func TestConformanceSuite(t *testing.T) {
 
 			return VerdictPartial, ev, nil
 		})
-		results.record(r)
 		if r.Verdict == VerdictFail {
-			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-RPC-BURST: verdict=%s error=%s", r.Verdict, r.Error)
 		} else if r.Verdict != VerdictPass {
-			t.Logf("CS-017: verdict=%s; admission ceiling was not measured", r.Verdict)
+			t.Logf("GO-RPC-BURST: verdict=%s; admission ceiling was not measured", r.Verdict)
 		}
 	})
 
 	// -------------------------------------------------------------------------
-	// CS-018–CS-022: Go-client scenarios not in the cross-language spec but
+	// GO-001–GO-005: Go-client scenarios separate from the cross-language spec,
 	// required to close coverage gaps for Queue, Lease, Notice, Schedule, and
 	// reconnect restoration behavior.
 	// -------------------------------------------------------------------------
 
-	t.Run("CS-018_queue_enqueue_reserve_complete", func(t *testing.T) {
-		r := run("CS-018", "queue enqueue/reserve/complete lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-001_queue_enqueue_reserve_complete", func(t *testing.T) {
+		r := run("GO-001", "queue enqueue/reserve/complete lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1282,12 +1290,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-018: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-001: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-019_lease_acquire_contention_release", func(t *testing.T) {
-		r := run("CS-019", "lease acquire/contention/release lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-002_lease_acquire_contention_release", func(t *testing.T) {
+		r := run("GO-002", "lease acquire/contention/release lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 
 			f1 := connectFixture(t)
@@ -1330,12 +1338,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-019: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-002: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-020_notice_subscribe_publish_deliver", func(t *testing.T) {
-		r := run("CS-020", "notice subscribe/publish/deliver lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-003_notice_subscribe_publish_deliver", func(t *testing.T) {
+		r := run("GO-003", "notice subscribe/publish/deliver lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1389,12 +1397,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-020: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-003: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-021_schedule_create_subscribe_cancel", func(t *testing.T) {
-		r := run("CS-021", "schedule create/subscribe/cancel lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-004_schedule_create_subscribe_cancel", func(t *testing.T) {
+		r := run("GO-004", "schedule create/subscribe/cancel lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1438,12 +1446,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-021: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-004: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-022_queue_reconnect_restore", func(t *testing.T) {
-		r := run("CS-022", "queue subscription restore after reconnect", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-005_queue_reconnect_restore", func(t *testing.T) {
+		r := run("GO-005", "queue subscription restore after reconnect", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			harness := fixture.NewProxyReconnectHarness(t, transportType(), authMode())
 			subscriber := harness.Proxied
@@ -1523,7 +1531,7 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-022: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-005: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 }
