@@ -2,9 +2,8 @@
 
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
-// Covers shared scenarios CS-001 through CS-017 and five additional Go-client
-// scenarios for Queue, Lease, Notice, Schedule, and reconnect restoration.
-// CS-018 through CS-024 in the current shared suite remain to be reconciled:
+// Covers shared scenarios CS-001 through CS-017, CS-019 and CS-024, plus
+// five additional Go-client scenarios. Other shared scenarios remain open:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
 //
@@ -1233,6 +1232,26 @@ func TestConformanceSuite(t *testing.T) {
 			t.Errorf("GO-RPC-BURST: verdict=%s error=%s", r.Verdict, r.Error)
 		} else if r.Verdict != VerdictPass {
 			t.Logf("GO-RPC-BURST: verdict=%s; admission ceiling was not measured", r.Verdict)
+		}
+	})
+
+	t.Run("CS-019_concurrent_same_type_requests", func(t *testing.T) {
+		r := run("CS-019", "concurrent same-message-type requests", "P0", func() (Verdict, []string, error) {
+			return runSameTypeReserves(t)
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-019: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("CS-024_stream_event_boundary_and_replay", func(t *testing.T) {
+		r := run("CS-024", "400 KiB Stream event boundary and replay", "P0", func() (Verdict, []string, error) {
+			return runStreamBoundary(t)
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-024: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
