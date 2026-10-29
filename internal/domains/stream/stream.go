@@ -268,7 +268,11 @@ func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte
 	if err := s.conn.CheckLiveHandle(); err != nil {
 		return 0, err
 	}
-	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, expectedOffset, body, nil, opts...))
+	var metadata []byte
+	if len(opts) > 0 && opts[0] != nil {
+		metadata = opts[0].Metadata
+	}
+	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, expectedOffset, body, metadata, opts...))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -864,7 +868,9 @@ func readOptionalBytes(data []byte, offset int) ([]byte, int, error) {
 		if err != nil {
 			return nil, newOffset, err
 		}
-		return append([]byte(nil), value...), newOffset, nil
+		copied := make([]byte, len(value))
+		copy(copied, value)
+		return copied, newOffset, nil
 	default:
 		return nil, offset, fmt.Errorf("invalid optional bytes flag: %d", flag)
 	}

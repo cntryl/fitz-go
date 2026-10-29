@@ -28,9 +28,18 @@ type StreamFilterSet = internalstream.StreamFilterSet
 
 type streamAppendConfig struct {
 	discriminator *string
+	metadata      []byte
 }
 
 type StreamAppendOption func(*streamAppendConfig)
+
+// WithStreamMetadata attaches opaque metadata to one Stream record.
+// A nil slice omits metadata; an empty, non-nil slice is preserved.
+func WithStreamMetadata(metadata []byte) StreamAppendOption {
+	return func(cfg *streamAppendConfig) {
+		cfg.metadata = metadata
+	}
+}
 
 func WithStreamDiscriminator(discriminator string) StreamAppendOption {
 	return func(cfg *streamAppendConfig) {
@@ -80,13 +89,14 @@ const (
 )
 
 type StreamRecord struct {
-	Route       string
-	Offset      uint64
-	AreaOffset  *uint64
-	RealmOffset *uint64
-	Body        []byte
-	Metadata    []byte
-	Timestamp   uint64
+	Route        string
+	Offset       uint64
+	AreaOffset   *uint64
+	RealmOffset  *uint64
+	GlobalOffset *uint64
+	Body         []byte
+	Metadata     []byte
+	Timestamp    uint64
 }
 
 type StreamReadItem struct {
@@ -232,13 +242,14 @@ func (c *streamClient) ReadPage(ctx context.Context, route string, fromOffset ui
 		}
 		if item.Record != nil {
 			converted.Record = &StreamRecord{
-				Route:       item.Record.Route,
-				Offset:      item.Record.Offset,
-				AreaOffset:  item.Record.AreaOffset,
-				RealmOffset: item.Record.RealmOffset,
-				Body:        item.Record.Body,
-				Metadata:    item.Record.Metadata,
-				Timestamp:   item.Record.Timestamp,
+				Route:        item.Record.Route,
+				Offset:       item.Record.Offset,
+				AreaOffset:   item.Record.AreaOffset,
+				RealmOffset:  item.Record.RealmOffset,
+				GlobalOffset: item.Record.GlobalOffset,
+				Body:         item.Record.Body,
+				Metadata:     item.Record.Metadata,
+				Timestamp:    item.Record.Timestamp,
 			}
 		}
 		items = append(items, converted)
@@ -330,13 +341,14 @@ func (c *streamClient) Peek(ctx context.Context, route string) (*StreamRecord, e
 		return nil, err
 	}
 	return &StreamRecord{
-		Route:       record.Route,
-		Offset:      record.Offset,
-		AreaOffset:  record.AreaOffset,
-		RealmOffset: record.RealmOffset,
-		Body:        record.Body,
-		Metadata:    record.Metadata,
-		Timestamp:   record.Timestamp,
+		Route:        record.Route,
+		Offset:       record.Offset,
+		AreaOffset:   record.AreaOffset,
+		RealmOffset:  record.RealmOffset,
+		GlobalOffset: record.GlobalOffset,
+		Body:         record.Body,
+		Metadata:     record.Metadata,
+		Timestamp:    record.Timestamp,
 	}, nil
 }
 
@@ -385,7 +397,10 @@ func (s *streamSession) Append(ctx context.Context, expectedOffset uint64, body 
 	for _, option := range opts {
 		option(cfg)
 	}
-	return s.inner.Append(ctx, expectedOffset, body, &internalstream.StreamAppendOptions{Discriminator: cfg.discriminator})
+	return s.inner.Append(ctx, expectedOffset, body, &internalstream.StreamAppendOptions{
+		Discriminator: cfg.discriminator,
+		Metadata:      cfg.metadata,
+	})
 }
 
 func applyStreamReadOptions(options []StreamReadOption) *internalstream.StreamReadOptions {
@@ -413,13 +428,14 @@ func (it *streamRecordIterator) Next() bool {
 	}
 	record := it.inner.Value()
 	it.current = StreamRecord{
-		Route:       record.Route,
-		Offset:      record.Offset,
-		AreaOffset:  record.AreaOffset,
-		RealmOffset: record.RealmOffset,
-		Body:        record.Body,
-		Metadata:    record.Metadata,
-		Timestamp:   record.Timestamp,
+		Route:        record.Route,
+		Offset:       record.Offset,
+		AreaOffset:   record.AreaOffset,
+		RealmOffset:  record.RealmOffset,
+		GlobalOffset: record.GlobalOffset,
+		Body:         record.Body,
+		Metadata:     record.Metadata,
+		Timestamp:    record.Timestamp,
 	}
 	return true
 }
