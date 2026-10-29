@@ -71,6 +71,10 @@ type AggregateResult struct {
 	Client           string           `json:"client"`
 	Transport        string           `json:"transport"`
 	AuthMode         string           `json:"auth_mode"`
+	P0Pass           int              `json:"p0_pass"`
+	P0Total          int              `json:"p0_total"`
+	P1Pass           int              `json:"p1_pass"`
+	P1Total          int              `json:"p1_total"`
 	P0PassRate       float64          `json:"p0_pass_rate"`
 	P1PassRate       float64          `json:"p1_pass_rate"`
 	OverallStatus    string           `json:"overall_status"`
@@ -135,6 +139,10 @@ func (c *collector) aggregate(client, transport, authMode string) AggregateResul
 		Client:           client,
 		Transport:        transport,
 		AuthMode:         authMode,
+		P0Pass:           p0Passed,
+		P0Total:          p0Total,
+		P1Pass:           p1Passed,
+		P1Total:          p1Total,
 		P0PassRate:       float64(p0Passed) / float64(p0Total),
 		P1PassRate:       float64(p1Passed) / float64(p1Total),
 		OverallStatus:    overall,

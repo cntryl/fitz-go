@@ -23,6 +23,10 @@ func TestShouldFailCoverageGivenMissingP0ScenarioWhenAggregated(t *testing.T) {
 
 	require.Equal(t, "fail", aggregate.OverallStatus)
 	require.Equal(t, []string{"CS-019"}, aggregate.MissingScenarios)
+	require.Equal(t, 10, aggregate.P0Pass)
+	require.Equal(t, 11, aggregate.P0Total)
+	require.Equal(t, 13, aggregate.P1Pass)
+	require.Equal(t, 13, aggregate.P1Total)
 	require.Less(t, aggregate.P0PassRate, 1.0)
 }
 
