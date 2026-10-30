@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cntryl/fitz-go/internal/testkit"
+
 	coreerrors "github.com/cntryl/fitz-go/internal/core/errors"
 
 	"github.com/cntryl/fitz-go/internal/core/connection"
@@ -18,6 +20,7 @@ import (
 const testIOTimeout = 3 * time.Second
 
 type scriptedTransport struct {
+	written [][]byte
 	mu      sync.Mutex
 	writes  chan []byte
 	reads   chan []byte
@@ -34,6 +37,13 @@ func newScriptedTransport() *scriptedTransport {
 }
 
 func (t *scriptedTransport) Write(ctx context.Context, frame []byte) error {
+	t.mu.Lock()
+	t.written = append(t.written, append([]byte(nil), frame...))
+	t.mu.Unlock()
+	kind, _, e := protocol.DecodeFrame(frame)
+	if e == nil && kind == 1 {
+		t.reads <- protocol.EncodeFrame(2, testkit.HelloPayload())
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -47,6 +57,9 @@ func (t *scriptedTransport) Read(ctx context.Context) ([]byte, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case frame := <-t.reads:
+		t.mu.Lock()
+		frame = testkit.CorrelateResponse(frame, t.written)
+		t.mu.Unlock()
 		return frame, nil
 	}
 }
@@ -153,11 +166,13 @@ func TestShouldRejectInvalidCronBeforeSendingRequestWhenCreateCalled(t *testing.
 	}
 }
 
-func TestShouldParseEntriesAndTotalCountGivenCanonicalListResponse(t *testing.T) {
+func TestShouldParseEntriesGivenCanonicalCursorPage(t *testing.T) {
 	// Arrange
 	client, transport := newStartedScheduleClient(t)
 	buf := connection.GetBuffer()
-	connection.WriteU64BE(buf, 2)
+	connection.WriteU8(buf, 1)
+	connection.WriteU8(buf, 0)
+	connection.WriteU8(buf, 0)
 	connection.WriteU8(buf, 1)
 	connection.WriteString(buf, "schedule://realm/area/one/run")
 	connection.WriteString(buf, "0 0 * * *")
@@ -178,7 +193,7 @@ func TestShouldParseEntriesAndTotalCountGivenCanonicalListResponse(t *testing.T)
 
 	// Assert
 	require.NoError(t, err)
-	assert.Equal(t, uint64(2), page.TotalCount)
+	assert.Equal(t, uint64(0), page.TotalCount)
 	require.Len(t, page.Entries, 2)
 	assert.Equal(t, "schedule://realm/area/one/run", page.Entries[0].Route)
 	assert.Equal(t, ScheduleDeliveryBroadcast, page.Entries[0].DeliveryMode)
@@ -215,7 +230,9 @@ func TestShouldReturnErrorGivenShortListPageResponseWhenListPageCalled(t *testin
 func TestShouldReturnErrorGivenTruncatedEntryWhenListPageCalled(t *testing.T) {
 	client, transport := newStartedScheduleClient(t)
 	buf := connection.GetBuffer()
-	connection.WriteU64BE(buf, 1)
+	connection.WriteU8(buf, 1)
+	connection.WriteU8(buf, 0)
+	connection.WriteU8(buf, 0)
 	connection.WriteU8(buf, 1)
 	connection.WriteString(buf, "schedule://realm/area/one/run")
 	connection.WriteString(buf, "0 0 * * *")
@@ -233,7 +250,9 @@ func TestShouldReturnErrorGivenTruncatedEntryWhenListPageCalled(t *testing.T) {
 func TestShouldReturnErrorGivenTrailingBytesAfterTerminatorWhenListPageCalled(t *testing.T) {
 	client, transport := newStartedScheduleClient(t)
 	buf := connection.GetBuffer()
-	connection.WriteU64BE(buf, 0)
+	connection.WriteU8(buf, 1)
+	connection.WriteU8(buf, 0)
+	connection.WriteU8(buf, 0)
 	connection.WriteU8(buf, 0)
 	buf.WriteByte(0xFF)
 	payload := append([]byte(nil), buf.Bytes()...)

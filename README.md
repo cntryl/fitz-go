@@ -1,10 +1,9 @@
 # fitz-go
 
-`Connect` waits for a parsed `SERVER_HELLO` before publishing domain handles.
-The caller context and configured read timeout bound a missing advertisement.
-An explicit zero capability advertisement preserves legacy behavior. The
-authentication settlement window alone no longer establishes capability
-readiness.
+`Connect` sends a Wire-2 `CONNECT` and waits for `HELLO` before publishing
+domain handles. The hello supplies the negotiated message-size and
+in-flight-request limits. Capability bits are reserved as zero in Wire 2;
+correlation and the updated domain encodings are part of the wire version.
 
 Reference Go client for Fitz.
 
@@ -63,8 +62,8 @@ func main() {
 }
 ```
 
-`WithServiceName` is optional. New brokers record it on the active session after
-advertising the `SESSION_METADATA` capability; older brokers receive no metadata frame.
+`WithServiceName` is optional and is sent in the Wire-2 `CONNECT` payload with
+the client build identity. Capability bits are reserved as zero in Wire 2.
 
 ## Canonical usage patterns
 
@@ -149,11 +148,11 @@ defer sub.Unsubscribe()
 ```
 
 `client.Notice().UnsubscribeAll(ctx)` removes all Notice subscriptions for the
-current broker session and completes their local handles. Schedule's canonical
-`Create` and offset-based `List` remain portable; brokers supporting the 706/707
-extensions also accept `CreateBatch(ctx, entries)` and
-`ListV2(ctx, cursor, limit)`. `ListV2` returns `HasMore` and an opaque
-`Continuation` for the next page.
+current broker session and completes their local handles. Schedule `List` now
+uses cursor pagination on message 702; pass no offset or zero to request the
+first page. `ListV2(ctx, cursor, limit)` is a compatibility API name for that
+same message and returns `HasMore` and an opaque `Continuation` for the next
+page. `CreateBatch(ctx, entries)` uses message 706. Message 707 is retired.
 
 Stream replay pattern:
 
@@ -359,7 +358,7 @@ scenario coverage in `test/conformance`.
 | Lease | 400-403, 407-409 | ACQUIRE, RENEW, RELEASE, QUERY, NOTIFY | CS-019 |
 | Notice | 500-504 | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, UNSUBSCRIBE_ALL, NOTIFY | CS-010, CS-020 |
 | Stream | 600-609 | BEGIN, APPEND, COMMIT, READ, SUBSCRIBE | CS-011, CS-012, CS-013, CS-016 |
-| Schedule | 700-707 | CREATE, CANCEL, LIST, SUBSCRIBE, NOTIFY, CREATE_BATCH, LIST_V2 | CS-021 |
+| Schedule | 700-706 | CREATE, CANCEL, LIST, SUBSCRIBE, NOTIFY, CREATE_BATCH | CS-021 |
 
 Notes:
 

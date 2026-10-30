@@ -8,28 +8,39 @@ import (
 	"sync"
 )
 
-const pooledBufferMaxCap = 64 * 1024
+const (
+	HeaderLen                = 15
+	MaxMessageSize           = 1 << 20
+	MaxPayloadSize           = MaxMessageSize - HeaderLen
+	FlagAckRequested   uint8 = 1 << 0
+	FlagResponseFinal  uint8 = 1 << 1
+	validFlags               = FlagAckRequested | FlagResponseFinal
+	pooledBufferMaxCap       = MaxMessageSize
+)
 
-// bufferPool provides buffer pooling for frame encoding
-var bufferPool = sync.Pool{
-	New: func() any {
-		return new(bytes.Buffer)
-	},
-}
+const (
+	MessageTypeServerHello = MessageTypeHello
 
-var frameBufferPool = sync.Pool{
-	New: func() any {
-		return &FrameBuffer{}
-	},
-}
+	// Deprecated wire-1 control IDs. Wire 2 carries correlation in the header.
+	MessageTypeCorrelate       uint16 = 0
+	MessageTypeCorrelated      uint16 = 0
+	MessageTypeSessionMetadata uint16 = 0
+
+	// Wire 2 reserves capability bits; these names remain as zero-valued compatibility aliases.
+	CapabilityCorrelation     uint32 = 0
+	CapabilitySessionMetadata uint32 = 0
+	CapabilityKVScanExclusive uint32 = 0
+	CapabilityRPCCancellation uint32 = 0
+)
+
+var (
+	bufferPool      = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	frameBufferPool = sync.Pool{New: func() any { return &FrameBuffer{} }}
+)
 
 // FrameBuffer wraps a pooled frame buffer with explicit release.
-// Call Release() when done with the bytes.
-type FrameBuffer struct {
-	buf *bytes.Buffer
-}
+type FrameBuffer struct{ buf *bytes.Buffer }
 
-// Bytes returns the frame bytes.
 func (f *FrameBuffer) Bytes() []byte {
 	if f == nil || f.buf == nil {
 		return nil
@@ -37,7 +48,6 @@ func (f *FrameBuffer) Bytes() []byte {
 	return f.buf.Bytes()
 }
 
-// Len returns the frame length.
 func (f *FrameBuffer) Len() int {
 	if f == nil || f.buf == nil {
 		return 0
@@ -45,7 +55,6 @@ func (f *FrameBuffer) Len() int {
 	return f.buf.Len()
 }
 
-// Release returns the buffer to the pool.
 func (f *FrameBuffer) Release() {
 	if f == nil || f.buf == nil {
 		return
@@ -55,328 +64,177 @@ func (f *FrameBuffer) Release() {
 	frameBufferPool.Put(f)
 }
 
-// getBuffer gets a buffer from the pool
-func getBuffer() *bytes.Buffer {
-	return bufferPool.Get().(*bytes.Buffer)
-}
+func getBuffer() *bytes.Buffer { return bufferPool.Get().(*bytes.Buffer) }
 
-// putBuffer returns a buffer to the pool
 func putBuffer(buf *bytes.Buffer) {
 	buf.Reset()
-	if buf.Cap() > pooledBufferMaxCap {
-		return
+	if buf.Cap() <= pooledBufferMaxCap {
+		bufferPool.Put(buf)
 	}
-	bufferPool.Put(buf)
 }
-
-// writeU16BE writes a u16 in big-endian format
-func writeU16BE(buf *bytes.Buffer, val uint16) {
-	var b [2]byte
-	binary.BigEndian.PutUint16(b[:], val)
-	buf.Write(b[:])
-}
-
-// Frame encoding/decoding per CLIENT_SPEC.md
-// Wire format: [MessageType (variable 1-3 bytes)][Length (u16 BE)][Payload]
-//
-// MessageType encoding:
-//   - If type <= 254: encoded as single byte
-//   - If type > 254: escape byte 0xFF followed by u16 BE
-//
-// Length: u16 BE (max 65535 bytes)
-// Payload: domain-specific concatenated fields
-
-const (
-	// MaxPayloadSize is the maximum allowed payload size per CLIENT_SPEC.md
-	MaxPayloadSize = 65535
-
-	// MessageTypeEscape is the escape byte for types > 254
-	MessageTypeEscape = 0xFF
-)
-
-const (
-	MessageTypeCorrelate       uint16 = 2
-	MessageTypeCorrelated      uint16 = 3
-	MessageTypeServerHello     uint16 = 4
-	MessageTypeSessionMetadata uint16 = 5
-	CapabilityCorrelation      uint32 = 1 << 0
-	CapabilitySessionMetadata  uint32 = 1 << 1
-	CapabilityKVScanExclusive  uint32 = 1 << 2
-	CapabilityRPCCancellation  uint32 = 1 << 3
-)
 
 type Frame struct {
-	MessageType uint16
-	Payload     []byte
+	MessageType   uint16
+	Flags         uint8
+	CorrelationID uint64
+	Payload       []byte
 }
 
-// EncodeMessageType encodes MessageType using variable-length encoding
-// Per CLIENT_SPEC.md: types 0-254 = 1 byte, types 255+ = [0xFF][u16 BE]
-func EncodeMessageType(msgType uint16) []byte {
-	if msgType <= 254 {
-		return []byte{byte(msgType)}
-	}
-	// Escape encoding for types 255+
-	buf := make([]byte, 3)
-	buf[0] = MessageTypeEscape
-	binary.BigEndian.PutUint16(buf[1:3], msgType)
-	return buf
-}
-
-// DecodeMessageType decodes variable-length MessageType
-// Returns (messageType, bytesRead, error)
-func DecodeMessageType(data []byte) (msgType uint16, bytesRead int, err error) {
-	if len(data) < 1 {
-		return 0, 0, errors.New("insufficient data for message type")
-	}
-
-	if data[0] != MessageTypeEscape {
-		// Single-byte encoding
-		return uint16(data[0]), 1, nil
-	}
-
-	// Escape encoding
-	if len(data) < 3 {
-		return 0, 0, errors.New("insufficient data for escaped message type")
-	}
-	msgType = binary.BigEndian.Uint16(data[1:3])
-	if msgType <= 254 {
-		return 0, 0, fmt.Errorf("non-canonical escaped message type: %d", msgType)
-	}
-	return msgType, 3, nil
-}
-
-// EncodeFrame encodes a complete message frame using buffer pools
-// Format: [MessageType (variable)][Length (u16 BE)][Payload]
+// EncodeFrame returns a complete wire-2 message with zero flags and correlation.
 func EncodeFrame(msgType uint16, payload []byte) []byte {
 	frame := EncodeFrameOwned(msgType, payload)
 	if frame == nil {
 		return nil
 	}
 	defer frame.Release()
-
-	result := make([]byte, frame.Len())
-	copy(result, frame.Bytes())
-	return result
+	return append([]byte(nil), frame.Bytes()...)
 }
 
-// EncodeFrameOwned encodes a complete message frame using a pooled buffer.
-// Caller must Release() the returned FrameBuffer.
 func EncodeFrameOwned(msgType uint16, payload []byte) *FrameBuffer {
-	if len(payload) > MaxPayloadSize {
-		return nil
-	}
-
-	buf := getBuffer()
-	headerSize := 1
-	if msgType > 254 {
-		headerSize = 3
-	}
-	buf.Grow(headerSize + 2 + len(payload))
-
-	// Write message type (variable length)
-	if msgType <= 254 {
-		buf.WriteByte(byte(msgType))
-	} else {
-		buf.WriteByte(MessageTypeEscape)
-		writeU16BE(buf, msgType)
-	}
-
-	// Write length (u16 BE)
-	writeU16BE(buf, uint16(len(payload)))
-
-	// Write payload
-	buf.Write(payload)
-
-	frame := frameBufferPool.Get().(*FrameBuffer)
-	frame.buf = buf
-	return frame
+	return EncodeFrameOwnedWithHeader(msgType, 0, 0, payload)
 }
 
-// EncodeCorrelatedFrameOwned encodes CORRELATE immediately before the labeled
-// request in the same transport frame.
 func EncodeCorrelatedFrameOwned(correlationID uint64, msgType uint16, payload []byte) *FrameBuffer {
-	if correlationID == 0 || len(payload) > MaxPayloadSize {
+	if correlationID == 0 {
+		return nil
+	}
+	return EncodeFrameOwnedWithHeader(msgType, 0, correlationID, payload)
+}
+
+func EncodeFrameOwnedWithHeader(msgType uint16, flags uint8, correlationID uint64, payload []byte) *FrameBuffer {
+	if len(payload) > MaxPayloadSize || flags&^validFlags != 0 {
 		return nil
 	}
 	buf := getBuffer()
-	buf.Grow(11 + 3 + 2 + len(payload))
-	buf.WriteByte(byte(MessageTypeCorrelate))
-	writeU16BE(buf, 8)
-	var id [8]byte
-	binary.BigEndian.PutUint64(id[:], correlationID)
-	buf.Write(id[:])
-	if msgType <= 254 {
-		buf.WriteByte(byte(msgType))
-	} else {
-		buf.WriteByte(MessageTypeEscape)
-		writeU16BE(buf, msgType)
-	}
-	writeU16BE(buf, uint16(len(payload)))
+	buf.Grow(HeaderLen + len(payload))
+	writeU16BE(buf, msgType)
+	buf.WriteByte(flags)
+	var header [12]byte
+	binary.BigEndian.PutUint64(header[:8], correlationID)
+	binary.BigEndian.PutUint32(header[8:], uint32(len(payload)))
+	buf.Write(header[:])
 	buf.Write(payload)
 	frame := frameBufferPool.Get().(*FrameBuffer)
 	frame.buf = buf
 	return frame
 }
 
-// EncodeFrameWithPayloadWriter encodes a frame using a payload writer callback.
-// This avoids intermediate payload allocations by writing directly into the frame buffer.
 func EncodeFrameWithPayloadWriter(msgType uint16, writePayload func(*bytes.Buffer)) (*FrameBuffer, error) {
+	return EncodeFrameWithHeaderAndPayloadWriter(msgType, 0, 0, writePayload)
+}
+
+func EncodeFrameWithHeaderAndPayloadWriter(msgType uint16, flags uint8, correlationID uint64, writePayload func(*bytes.Buffer)) (*FrameBuffer, error) {
 	if writePayload == nil {
 		return nil, errors.New("payload writer is nil")
 	}
-
+	if flags&^validFlags != 0 {
+		return nil, fmt.Errorf("unsupported frame flags: %#x", flags)
+	}
 	buf := getBuffer()
-	headerSize := 1
-	if msgType > 254 {
-		headerSize = 3
-	}
-	buf.Grow(headerSize + 2)
-
-	// Write message type (variable length)
-	if msgType <= 254 {
-		buf.WriteByte(byte(msgType))
-	} else {
-		buf.WriteByte(MessageTypeEscape)
-		writeU16BE(buf, msgType)
-	}
-
-	// Write payload length placeholder
-	lengthPos := buf.Len()
-	writeU16BE(buf, 0)
+	buf.Grow(HeaderLen)
+	writeU16BE(buf, msgType)
+	buf.WriteByte(flags)
+	var zeroHeader [12]byte
+	buf.Write(zeroHeader[:])
 	payloadStart := buf.Len()
-
-	// Write payload directly into the frame buffer
 	writePayload(buf)
-
-	// Backfill payload length
 	payloadLen := buf.Len() - payloadStart
 	if payloadLen > MaxPayloadSize {
 		putBuffer(buf)
-		return nil, fmt.Errorf("payload too large: %d bytes (max %d)", payloadLen, MaxPayloadSize)
+		return nil, fmt.Errorf("message too large: %d bytes (max %d)", payloadLen+HeaderLen, MaxMessageSize)
 	}
 	result := buf.Bytes()
-	binary.BigEndian.PutUint16(result[lengthPos:lengthPos+2], uint16(payloadLen))
-
+	binary.BigEndian.PutUint64(result[3:11], correlationID)
+	binary.BigEndian.PutUint32(result[11:15], uint32(payloadLen))
 	frame := frameBufferPool.Get().(*FrameBuffer)
 	frame.buf = buf
 	return frame, nil
 }
 
-// DecodeFrame decodes a message frame
-// Returns (messageType, payload, error)
-func DecodeFrame(data []byte) (msgType uint16, payload []byte, err error) {
-	// Decode message type
-	msgType, typeLen, err := DecodeMessageType(data)
-	if err != nil {
-		return 0, nil, fmt.Errorf("decode message type: %w", err)
+// DecodeMessage decodes exactly one complete wire-2 message.
+func DecodeMessage(data []byte) (Frame, error) {
+	if len(data) < HeaderLen {
+		return Frame{}, fmt.Errorf("message header is truncated: got %d bytes", len(data))
 	}
-
-	offset := typeLen
-	if len(data) < offset+2 {
-		return 0, nil, errors.New("insufficient data for length field")
+	flags := data[2]
+	if flags&^validFlags != 0 {
+		return Frame{}, fmt.Errorf("unsupported frame flags: %#x", flags)
 	}
-
-	// Decode length
-	length := binary.BigEndian.Uint16(data[offset : offset+2])
-	offset += 2
-
-	// Extract payload
-	if len(data) < offset+int(length) {
-		return 0, nil, fmt.Errorf("insufficient data for payload: need %d, have %d", length, len(data)-offset)
+	length := uint64(binary.BigEndian.Uint32(data[11:15]))
+	if length+HeaderLen != uint64(len(data)) {
+		return Frame{}, fmt.Errorf("message length %d does not match frame size %d", length, len(data)-HeaderLen)
 	}
-	if len(data) != offset+int(length) {
-		return 0, nil, errors.New("unexpected trailing bytes after frame payload")
-	}
-
-	payload = data[offset : offset+int(length)]
-	return msgType, payload, nil
+	return Frame{
+		MessageType:   binary.BigEndian.Uint16(data[:2]),
+		Flags:         flags,
+		CorrelationID: binary.BigEndian.Uint64(data[3:11]),
+		Payload:       data[HeaderLen:],
+	}, nil
 }
 
-// DecodeFrames decodes every TLV record in one message-bounded transport frame.
+// DecodeFrame is retained as a convenience for payload-only callers.
+func DecodeFrame(data []byte) (uint16, []byte, error) {
+	frame, err := DecodeMessage(data)
+	return frame.MessageType, frame.Payload, err
+}
+
+// DecodeFrames preserves the old collection-shaped API; wire 2 permits one message per transport frame.
 func DecodeFrames(data []byte) ([]Frame, error) {
-	frames := make([]Frame, 0, 2)
-	for len(data) > 0 {
-		msgType, typeLen, err := DecodeMessageType(data)
-		if err != nil {
-			return nil, fmt.Errorf("decode message type: %w", err)
-		}
-		if len(data) < typeLen+2 {
-			return nil, errors.New("insufficient data for length field")
-		}
-		length := int(binary.BigEndian.Uint16(data[typeLen : typeLen+2]))
-		end := typeLen + 2 + length
-		if len(data) < end {
-			return nil, fmt.Errorf("insufficient data for payload: need %d, have %d", length, len(data)-typeLen-2)
-		}
-		frames = append(frames, Frame{MessageType: msgType, Payload: data[typeLen+2 : end]})
-		data = data[end:]
+	frame, err := DecodeMessage(data)
+	if err != nil {
+		return nil, err
 	}
-	return frames, nil
+	return []Frame{frame}, nil
 }
 
-// EncodeTCPFrame encodes a frame for TCP transport using buffer pools
-// Format: [Frame Length (u32 BE)][MessageType][Length][Payload]
-// where Frame Length = total size of [MessageType][Length][Payload]
 func EncodeTCPFrame(msgType uint16, payload []byte) []byte {
 	frame := EncodeTCPFrameOwned(msgType, payload)
 	if frame == nil {
 		return nil
 	}
 	defer frame.Release()
-
-	final := make([]byte, frame.Len())
-	copy(final, frame.Bytes())
-	return final
+	return append([]byte(nil), frame.Bytes()...)
 }
 
-// EncodeTCPFrameOwned encodes a TCP frame using a pooled buffer.
-// Caller must Release() the returned FrameBuffer.
 func EncodeTCPFrameOwned(msgType uint16, payload []byte) *FrameBuffer {
-	if len(payload) > MaxPayloadSize {
+	message := EncodeFrameOwned(msgType, payload)
+	if message == nil {
 		return nil
 	}
-
+	defer message.Release()
 	buf := getBuffer()
-	headerSize := 1
-	if msgType > 254 {
-		headerSize = 3
-	}
-	buf.Grow(4 + headerSize + 2 + len(payload))
-
-	// Reserve space for frame length (will write later)
-	lengthPos := buf.Len()
-	var zeroPrefix [4]byte
-	buf.Write(zeroPrefix[:])
-
-	// Write message type (variable length)
-	if msgType <= 254 {
-		buf.WriteByte(byte(msgType))
-	} else {
-		buf.WriteByte(MessageTypeEscape)
-		writeU16BE(buf, msgType)
-	}
-
-	// Write payload length (u16 BE)
-	writeU16BE(buf, uint16(len(payload)))
-
-	// Write payload
-	buf.Write(payload)
-
-	// Calculate and write frame length
-	// Frame length = everything after the u32 length field
-	frameLength := uint32(buf.Len() - 4)
-	result := buf.Bytes()
-	binary.BigEndian.PutUint32(result[lengthPos:lengthPos+4], frameLength)
-
-	return &FrameBuffer{buf: buf}
+	buf.Grow(4 + message.Len())
+	var prefix [4]byte
+	binary.BigEndian.PutUint32(prefix[:], uint32(message.Len()))
+	buf.Write(prefix[:])
+	buf.Write(message.Bytes())
+	frame := frameBufferPool.Get().(*FrameBuffer)
+	frame.buf = buf
+	return frame
 }
 
-// DecodeTCPFrameLength reads the frame length prefix from TCP stream
-// Returns the frame length (excluding the 4-byte prefix itself)
 func DecodeTCPFrameLength(lengthPrefix []byte) (uint32, error) {
 	if len(lengthPrefix) < 4 {
 		return 0, errors.New("insufficient data for TCP frame length")
 	}
 	return binary.BigEndian.Uint32(lengthPrefix), nil
+}
+
+func EncodeMessageType(msgType uint16) []byte {
+	encoded := make([]byte, 2)
+	binary.BigEndian.PutUint16(encoded, msgType)
+	return encoded
+}
+
+func DecodeMessageType(data []byte) (uint16, int, error) {
+	if len(data) < 2 {
+		return 0, 0, errors.New("insufficient data for message type")
+	}
+	return binary.BigEndian.Uint16(data[:2]), 2, nil
+}
+
+func writeU16BE(buf *bytes.Buffer, value uint16) {
+	var encoded [2]byte
+	binary.BigEndian.PutUint16(encoded[:], value)
+	buf.Write(encoded[:])
 }

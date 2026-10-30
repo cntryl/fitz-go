@@ -107,6 +107,7 @@ type Config struct {
 	// Connection
 	URL                        string
 	ServiceName                string
+	OnGoAway                   func(code uint16, grace time.Duration, reason string)
 	serviceNameSet             bool
 	AuthSettleDelay            time.Duration
 	ReadTimeout                time.Duration
@@ -180,12 +181,17 @@ func WithURL(url string) Option {
 	return func(c *Config) { c.URL = url }
 }
 
-// WithServiceName reports a friendly service name to brokers that advertise session metadata.
+// WithServiceName reports the client service name in CONNECT.
 func WithServiceName(name string) Option {
 	return func(c *Config) {
 		c.ServiceName = name
 		c.serviceNameSet = true
 	}
+}
+
+// WithGoAwayHandler receives the broker's drain code, grace period, and reason.
+func WithGoAwayHandler(handler func(code uint16, grace time.Duration, reason string)) Option {
+	return func(c *Config) { c.OnGoAway = handler }
 }
 
 // WithAuthSettleDelay sets the silent CONNECT settle window.
@@ -477,7 +483,7 @@ func (c *Client) ConnectWhenReady(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, connection.ErrAuthenticationFailed) || errors.Is(err, connection.ErrConnectionClosed) || ctx.Err() != nil {
+		if errors.Is(err, connection.ErrAuthenticationFailed) || errors.Is(err, connection.ErrVersionMismatch) || errors.Is(err, connection.ErrConnectionClosed) || ctx.Err() != nil {
 			return err
 		}
 		timer := time.NewTimer(retry.CalculateDelay(backoff, attempt-1))
@@ -634,6 +640,14 @@ func (c *Client) ServerCapabilities() (uint16, uint32) {
 	return 0, 0
 }
 
+// ServerLimits reports the current negotiated frame and in-flight limits.
+func (c *Client) ServerLimits() (uint32, uint32) {
+	if conn := c.currentConnection(); conn != nil {
+		return conn.ServerLimits()
+	}
+	return 0, 0
+}
+
 // Domain client accessors.
 
 // KV returns the KV domain client.
@@ -711,6 +725,9 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 	connCfg := connection.Config{
 		Token:                      token,
 		ServiceName:                c.config.ServiceName,
+		ClientBuild:                "fitz-go/0.3.0",
+		OnGoAway:                   c.config.OnGoAway,
+		MaxMessageBytes:            c.config.MaxFrameSize,
 		AuthSettleDelay:            c.config.AuthSettleDelay,
 		ReadTimeout:                c.config.ReadTimeout,
 		WriteTimeout:               c.config.WriteTimeout,
@@ -939,6 +956,10 @@ func (c *Client) beginReconnect(cause error) {
 			cause = err
 		}
 		attemptSpan.End()
+		if errors.Is(cause, connection.ErrVersionMismatch) {
+			c.emitLifecycle("reconnect_exhausted", transportType, attempt, cause)
+			return
+		}
 
 		timer := time.NewTimer(retry.CalculateDelay(boCfg, attempt-1))
 		select {

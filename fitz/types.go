@@ -87,10 +87,17 @@ func WithAuthSettleDelay(delay time.Duration) Option {
 	}
 }
 
-// WithServiceName reports a trimmed friendly service name to brokers that advertise session metadata.
+// WithServiceName reports a trimmed friendly service name in CONNECT.
 func WithServiceName(name string) Option {
 	return func(cfg *clientConfig) {
 		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithServiceName(name))
+	}
+}
+
+// WithGoAwayHandler receives broker drain notifications and their grace period.
+func WithGoAwayHandler(handler func(code uint16, grace time.Duration, reason string)) Option {
+	return func(cfg *clientConfig) {
+		cfg.coreOptions = append(cfg.coreOptions, coreclient.WithGoAwayHandler(handler))
 	}
 }
 
@@ -295,6 +302,7 @@ var (
 	ErrConnectionClosed      = connection.ErrConnectionClosed
 	ErrNotAuthenticated      = connection.ErrNotAuthenticated
 	ErrAuthenticationFailed  = connection.ErrAuthenticationFailed
+	ErrVersionMismatch       = connection.ErrVersionMismatch
 	ErrAuthenticationTimeout = connection.ErrAuthenticationTimeout
 	ErrRequestQueueFull      = connection.ErrRequestQueueFull
 	ErrStaleHandle           = connection.ErrStaleHandle

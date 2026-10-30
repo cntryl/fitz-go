@@ -12,8 +12,8 @@ var (
 	ErrRPCBackpressure = internalrpc.ErrRPCBackpressure
 )
 
-// CapabilityRPCCancellation is set when the broker supports RPC cancellation and budgets.
-const CapabilityRPCCancellation uint32 = 1 << 3
+// CapabilityRPCCancellation is a reserved Wire-2 compatibility constant; cancellation is part of the base protocol.
+const CapabilityRPCCancellation uint32 = 0
 
 type RPCInboundRequest struct {
 	Route         string

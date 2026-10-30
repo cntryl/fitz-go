@@ -4,7 +4,6 @@ package schedule
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -32,8 +31,10 @@ type ScheduleEntry struct {
 	Payload      []byte
 }
 type ScheduleListPage struct {
-	Entries    []ScheduleEntry
-	TotalCount uint64
+	Entries      []ScheduleEntry
+	TotalCount   uint64 // Deprecated: wire 2 uses continuation cursors and does not include a total.
+	HasMore      bool
+	Continuation *string
 }
 
 type ScheduleCursorPage struct {
@@ -310,37 +311,22 @@ func (c *client) Cancel(ctx context.Context, route string) error {
 }
 
 func (c *client) List(ctx context.Context, offset *uint64, limit *uint64) (ScheduleListPage, error) {
-	resp, err := c.currentConn().SendRequestWithWriter(ctx, protocol.MessageTypeScheduleListPage, scheduleListPayloadWriter(offset, limit))
+	if offset != nil && *offset != 0 {
+		return ScheduleListPage{}, errors.New("Schedule.List offset pagination was retired; use ListV2 cursor pagination")
+	}
+	page, err := c.ListV2(ctx, nil, limit)
 	if err != nil {
 		return ScheduleListPage{}, err
 	}
-	success, remaining, err := connection.ParseStandardResponse(resp)
-	if err != nil {
-		return ScheduleListPage{}, err
-	}
-	if !success {
-		return ScheduleListPage{}, errors.New("schedule LIST failed")
-	}
-	if len(remaining) < 9 {
-		return ScheduleListPage{}, errors.New("invalid schedule LIST response")
-	}
-	totalCount, _, err := connection.ReadU64BE(remaining, 0)
-	if err != nil {
-		return ScheduleListPage{}, err
-	}
-	entries, err := parseScheduleListEntries(remaining[8:])
-	if err != nil {
-		return ScheduleListPage{}, err
-	}
-	return ScheduleListPage{Entries: entries, TotalCount: totalCount}, nil
+	return ScheduleListPage{Entries: page.Entries, HasMore: page.HasMore, Continuation: page.Continuation}, nil
 }
 
-// ListV2 reads one optional cursor page using the broker extension wire format.
+// ListV2 reads one cursor page using Wire-2 Schedule LIST (702).
 func (c *client) ListV2(ctx context.Context, cursor *string, limit *uint64) (ScheduleCursorPage, error) {
 	if limit != nil && *limit > 1000 {
 		return ScheduleCursorPage{}, errors.New("schedule LIST_V2 limit must be at most 1000")
 	}
-	resp, err := c.currentConn().SendRequestWithWriter(ctx, protocol.MessageTypeScheduleListV2, scheduleListV2PayloadWriter(cursor, limit))
+	resp, err := c.currentConn().SendRequestWithWriter(ctx, protocol.MessageTypeScheduleListPage, scheduleListV2PayloadWriter(cursor, limit))
 	if err != nil {
 		return ScheduleCursorPage{}, err
 	}
@@ -375,11 +361,7 @@ func (c *client) ListV2(ctx context.Context, cursor *string, limit *uint64) (Sch
 	return page, nil
 }
 
-// Schedule domain errors are uncoded, while broker ingress errors are coded.
 func parseScheduleExtensionResponse(payload []byte) (bool, []byte, error) {
-	if len(payload) >= 5 && payload[0] == 1 && int(binary.BigEndian.Uint32(payload[1:5]))+5 == len(payload) {
-		return connection.ParsePlainResponse(payload)
-	}
 	return connection.ParseStandardResponse(payload)
 }
 
@@ -439,17 +421,16 @@ func parseScheduleListEntries(remaining []byte) ([]ScheduleEntry, error) {
 	}
 }
 
-// ListBySelector retrieves schedules matching a canonical schedule selector by
-// consuming the offset-based LIST API.
+// ListBySelector retrieves schedules by consuming the cursor-based LIST API.
 func (c *client) ListBySelector(ctx context.Context, selector string) ([]ScheduleEntry, error) {
 	if err := types.ValidateScheduleSelector(selector); err != nil {
 		return nil, fmt.Errorf("invalid selector: %w", err)
 	}
-	var offset uint64
+	var cursor *string
 	limit := uint64(1000)
 	matches := make([]ScheduleEntry, 0)
 	for {
-		page, err := c.List(ctx, &offset, &limit)
+		page, err := c.ListV2(ctx, cursor, &limit)
 		if err != nil {
 			return nil, err
 		}
@@ -459,13 +440,16 @@ func (c *client) ListBySelector(ctx context.Context, selector string) ([]Schedul
 			}
 			matches = append(matches, entry)
 		}
-		offset += uint64(len(page.Entries))
-		if offset >= page.TotalCount {
+		if !page.HasMore {
 			return matches, nil
 		}
-		if len(page.Entries) == 0 {
-			return nil, errors.New("schedule LIST returned an empty page before total_count")
+		if page.Continuation == nil {
+			return nil, errors.New("schedule LIST marked has_more without a continuation")
 		}
+		if len(page.Entries) == 0 {
+			return nil, errors.New("schedule LIST returned an empty page before its continuation")
+		}
+		cursor = page.Continuation
 	}
 }
 

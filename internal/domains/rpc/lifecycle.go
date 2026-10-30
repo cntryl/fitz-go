@@ -11,13 +11,13 @@ import (
 )
 
 func decodeRPCRequestBudget(extension []byte) (*uint32, error) {
-	if len(extension) == 0 {
+	if len(extension) == 1 && extension[0] == 0 {
 		return nil, nil
 	}
-	if len(extension) != 6 || extension[0] != 1 || extension[1] != 1 {
+	if len(extension) != 5 || extension[0] != 1 {
 		return nil, errors.New("invalid RPC request budget extension")
 	}
-	remaining := binary.BigEndian.Uint32(extension[2:])
+	remaining := binary.BigEndian.Uint32(extension[1:])
 	if remaining > 86_400_000 {
 		return nil, errors.New("RPC request budget exceeds one day")
 	}
@@ -52,8 +52,8 @@ func (c *client) sendWorkerCleanupAck(correlationID [16]byte) {
 }
 
 func (c *client) supportsRPCCancellation() bool {
-	_, capabilities := c.conn.ServerCapabilities()
-	return capabilities&protocol.CapabilityRPCCancellation != 0
+	version, _ := c.conn.ServerCapabilities()
+	return version >= 2
 }
 
 func (c *client) handleRPCLifecycle(payload []byte) {
@@ -186,8 +186,7 @@ func (c *client) cancelPendingRPC(correlationID [16]byte, reason byte) {
 	stream := c.pendingRPCs[correlationID]
 	c.mu.Unlock()
 
-	_, capabilities := c.conn.ServerCapabilities()
-	if capabilities&protocol.CapabilityRPCCancellation == 0 {
+	if !c.supportsRPCCancellation() {
 		c.finishCancellation(correlationID, CancellationUnsupported)
 		return
 	}

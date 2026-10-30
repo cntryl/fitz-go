@@ -4,11 +4,12 @@ package integration
 
 import (
 	"context"
+	"testing"
+	"time"
+
 	"github.com/cntryl/fitz-go/fitz"
 	"github.com/cntryl/fitz-go/test/fixture"
 	"github.com/stretchr/testify/require"
-	"testing"
-	"time"
 )
 
 func TestShouldCommitBothDomainsGivenExplicitPersistenceWhenUsingDevelopBroker(t *testing.T) {

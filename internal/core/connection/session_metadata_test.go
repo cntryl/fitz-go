@@ -1,7 +1,7 @@
 package connection
 
 import (
-	"encoding/binary"
+	"context"
 	"strings"
 	"testing"
 
@@ -10,32 +10,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestShouldReportServiceNameGivenMetadataCapabilityWhenServerHelloIsReceived(t *testing.T) {
-	transport := testkit.NewMockTransport()
-	serviceName := strings.Repeat("é", 64)
-	conn := New(transport, Config{ServiceName: " " + serviceName + " "})
-	payload := make([]byte, 6)
-	binary.BigEndian.PutUint16(payload[:2], 1)
-	binary.BigEndian.PutUint32(payload[2:], protocol.CapabilitySessionMetadata)
-
-	_, err := conn.dispatchTransportFrame(protocol.EncodeFrame(protocol.MessageTypeServerHello, payload))
+func TestShouldSendServiceNameInConnectGivenZeroOptionalCapabilities(t *testing.T) {
+	// Arrange
+	transport := testkit.NewWire2MockTransport()
+	name := strings.Repeat("é", 64)
+	conn := New(transport, Config{ServiceName: " " + name + " "})
+	t.Cleanup(func() { _ = conn.Close() })
+	// Act
+	require.NoError(t, conn.Start(context.Background()))
+	frames := transport.GetWrittenFrames()
+	// Assert
+	require.Len(t, frames, 1)
+	kind, payload, err := protocol.DecodeFrame(frames[0])
 	require.NoError(t, err)
-
-	written := transport.GetWrittenFrames()
-	require.Len(t, written, 1)
-	messageType, metadata, err := protocol.DecodeFrame(written[0])
+	require.Equal(t, uint16(1), kind)
+	jwt, next, err := ReadString(payload, 8)
 	require.NoError(t, err)
-	require.Equal(t, protocol.MessageTypeSessionMetadata, messageType)
-	require.Equal(t, append([]byte{0, 0, 0, 128}, []byte(serviceName)...), metadata)
+	require.Empty(t, jwt)
+	actual, _, err := ReadString(payload, next)
+	require.NoError(t, err)
+	require.Equal(t, name, actual)
+	version, bits := conn.ServerCapabilities()
+	require.Equal(t, uint16(2), version)
+	require.Zero(t, bits)
 }
-
-func TestShouldOmitServiceNameGivenMetadataCapabilityIsMissing(t *testing.T) {
-	transport := testkit.NewMockTransport()
-	conn := New(transport, Config{ServiceName: "orders-worker"})
-	payload := make([]byte, 6)
-	binary.BigEndian.PutUint16(payload[:2], 1)
-
-	_, err := conn.dispatchTransportFrame(protocol.EncodeFrame(protocol.MessageTypeServerHello, payload))
-	require.NoError(t, err)
-	require.Empty(t, transport.GetWrittenFrames())
+func TestShouldRejectLegacyHelloGivenTruncatedNegotiation(t *testing.T) {
+	// Arrange
+	conn := New(testkit.NewMockTransport(), Config{})
+	t.Cleanup(func() { _ = conn.Close() })
+	// Act
+	_, err := conn.dispatchTransportFrame(protocol.EncodeFrame(2, []byte{0, 1, 0, 0, 0, 0}))
+	// Assert
+	require.Error(t, err)
 }

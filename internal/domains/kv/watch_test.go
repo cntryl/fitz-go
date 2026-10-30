@@ -15,7 +15,7 @@ import (
 
 func TestShouldDeliverConcreteRouteGivenWildcardKVSubscriptionWhenNotificationArrives(t *testing.T) {
 	// Arrange
-	transport := testkit.NewMockTransport()
+	transport := testkit.NewWire2MockTransport()
 	conn := connection.New(transport, connection.DefaultConfig())
 	require.NoError(t, conn.Start(context.Background()))
 	defer func() { require.NoError(t, conn.Close()) }()

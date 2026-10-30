@@ -71,38 +71,39 @@ func TestShouldReturnExpectedDomainErrorsGivenRejectedOperations(t *testing.T) {
 
 func TestShouldClassifyRetryabilityGivenErrorCodeWhenIsRetryableCalled(t *testing.T) {
 	tests := []struct {
-		name string
-		code uint32
-		want bool
+		name  string
+		code  uint32
+		class uint8
+		want  bool
 	}{
-		{name: "kv isolation conflict", code: fitz.ErrCodeKvIsolationConflict, want: true},
-		{name: "stream invalid read bound", code: fitz.ErrCodeStreamInvalidReadBound, want: false},
-		{name: "stream busy", code: fitz.ErrCodeStreamBusy, want: true},
-		{name: "queue full", code: fitz.ErrCodeQueueFull, want: true},
-		{name: "lease held", code: fitz.ErrCodeLeaseHeld, want: true},
-		{name: "kv key not found", code: fitz.ErrCodeKvKeyNotFound, want: false},
-		{name: "schedule not found", code: fitz.ErrCodeScheduleNotFound, want: false},
+		{name: "kv isolation conflict", code: fitz.ErrCodeKvIsolationConflict, class: 0, want: true},
+		{name: "stream invalid read bound", code: fitz.ErrCodeStreamInvalidReadBound, class: 8, want: false},
+		{name: "stream busy", code: fitz.ErrCodeStreamBusy, class: 5, want: true},
+		{name: "queue full", code: fitz.ErrCodeQueueFull, class: 5, want: true},
+		{name: "lease held", code: fitz.ErrCodeLeaseHeld, class: 0, want: true},
+		{name: "kv key not found", code: fitz.ErrCodeKvKeyNotFound, class: 9, want: false},
+		{name: "schedule not found", code: fitz.ErrCodeScheduleNotFound, class: 9, want: false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := coreerrors.NewDomainError(tc.code, tc.name)
+			err := coreerrors.NewDomainErrorWithDisposition(uint16(tc.code), tc.class, 0, tc.name)
 			assert.Equal(t, tc.want, fitz.IsRetryable(err))
 			assert.Equal(t, tc.want, fitz.IsRetryable(errors.Join(errors.New("outer"), err)))
 		})
 	}
 }
 
-func TestShouldClassifyRetryableGivenRPCTimeoutWhenCallErrorEvaluated(t *testing.T) {
-	err := coreerrors.NewDomainError(fitz.ErrCodeRpcTimeout, "rpc timeout")
+func TestShouldNotClassifyIndeterminateRPCTimeoutAsRetryable(t *testing.T) {
+	err := coreerrors.NewDomainErrorWithDisposition(uint16(fitz.ErrCodeRpcTimeout), 7, 1, "rpc timeout")
 
-	assert.True(t, fitz.IsRetryable(err))
+	assert.False(t, fitz.IsRetryable(err))
 }
 
-func TestShouldClassifyRetryableGivenRPCWorkerNotFoundWhenCallErrorEvaluated(t *testing.T) {
-	err := coreerrors.NewDomainError(fitz.ErrCodeRpcWorkerNotFound, "rpc worker not found")
+func TestShouldNotClassifyIndeterminateRPCWorkerLossAsRetryable(t *testing.T) {
+	err := coreerrors.NewDomainErrorWithDisposition(uint16(fitz.ErrCodeRpcWorkerNotFound), 9, 1, "rpc worker not found")
 
-	assert.True(t, fitz.IsRetryable(err))
+	assert.False(t, fitz.IsRetryable(err))
 }
 
 func TestShouldClassifyFatalGivenRPCUnauthorizedWhenCallErrorEvaluated(t *testing.T) {

@@ -11,18 +11,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestShouldClassifyNegotiatedRPCBudgetAsWorkerDelivery(t *testing.T) {
+func TestShouldClassifyWorkerRequestGivenWire2BudgetFlag(t *testing.T) {
 	// Arrange
 	var mux Multiplexer
-	route := "rpc://realm/area/resource"
-	payload := rpcWorkerRequestPayloadForTest(route, "", []byte("body"))
-	payload = append(payload, 1, 1, 0, 0, 0, 100)
-
+	base := rpcWorkerRequestPayloadForTest("rpc://realm/area/resource", "", []byte("body"))
+	base = base[:len(base)-1]
+	cases := []struct {
+		extension []byte
+		want      bool
+	}{{[]byte{0}, true}, {[]byte{1, 0, 0, 0, 0}, true}, {[]byte{1, 0, 0, 0, 100}, true}, {nil, false}, {[]byte{0, 0}, false}, {[]byte{2}, false}, {[]byte{1, 255, 255, 255, 255}, false}}
 	// Act
-	workerDelivery := mux.looksLikeRpcWorkerRequest(payload)
-
-	// Assert
-	require.True(t, workerDelivery)
+	for _, tc := range cases {
+		payload := append(append([]byte(nil), base...), tc.extension...)
+		actual := mux.looksLikeRpcWorkerRequest(payload)
+		// Assert
+		require.Equal(t, tc.want, actual)
+	}
 }
 
 func TestShouldDispatchCorrelatedRequestsOutOfOrderGivenSameMessageType(t *testing.T) {
@@ -37,13 +41,67 @@ func TestShouldDispatchCorrelatedRequestsOutOfOrderGivenSameMessageType(t *testi
 	require.True(t, mux.RegisterCorrelatedRequest(1, first))
 	require.True(t, mux.RegisterCorrelatedRequest(2, second))
 
-	mux.DispatchCorrelated(2, protocol.MessageTypeQueueReserve, []byte("second"))
-	mux.DispatchCorrelated(1, protocol.MessageTypeQueueReserve, []byte("first"))
+	require.True(t, mux.DispatchCorrelated(2, protocol.MessageTypeQueueReserve, []byte("second"), true))
+	require.True(t, mux.DispatchCorrelated(1, protocol.MessageTypeQueueReserve, []byte("first"), true))
 
 	<-first.ready
 	<-second.ready
 	require.Equal(t, []byte("first"), first.response)
 	require.Equal(t, []byte("second"), second.response)
+}
+
+func TestShouldRetainCorrelatedRequestUntilFinalFrame(t *testing.T) {
+	mux := NewMultiplexer()
+	waiter := acquireRequestWaiter()
+	t.Cleanup(func() {
+		releaseRequestWaiter(waiter)
+		_ = mux.Close()
+	})
+	require.True(t, mux.RegisterCorrelatedRequest(7, waiter))
+
+	// Act
+	require.True(t, mux.DispatchCorrelated(7, protocol.MessageTypeLeaseAcquire, []byte("queued"), false))
+	select {
+	case <-waiter.ready:
+		t.Fatal("intermediate frame completed the request")
+	default:
+	}
+	require.True(t, mux.DispatchCorrelated(7, protocol.MessageTypeLeaseAcquire, []byte("grant"), true))
+
+	// Assert
+	<-waiter.ready
+	require.Equal(t, []byte("grant"), waiter.response)
+}
+
+func TestShouldRejectUnmatchedCorrelationWithoutTypeFallback(t *testing.T) {
+	mux := NewMultiplexer()
+	defer func() { _ = mux.Close() }()
+	called := false
+	mux.SetRawPushHandler(protocol.MessageTypeLeaseAcquire, func([]byte) { called = true })
+
+	// Act
+	routed := mux.DispatchCorrelated(99, protocol.MessageTypeLeaseAcquire, []byte("late"), true)
+
+	// Assert
+	require.False(t, routed)
+	require.False(t, called)
+}
+
+func TestShouldConsumeAllPhasesAfterCorrelatedRequestCancellation(t *testing.T) {
+	mux := NewMultiplexer()
+	waiter := acquireRequestWaiter()
+	require.True(t, mux.RegisterCorrelatedRequest(18, waiter))
+	require.True(t, mux.UnregisterCorrelatedRequest(18, waiter))
+	releaseRequestWaiter(waiter)
+	defer func() { _ = mux.Close() }()
+
+	// Act
+	require.True(t, mux.DispatchCorrelated(18, protocol.MessageTypeLeaseAcquire, []byte("queued"), false))
+	require.True(t, mux.DispatchCorrelated(18, protocol.MessageTypeLeaseAcquire, []byte("late grant"), true))
+
+	// Assert
+	require.False(t, mux.DispatchCorrelated(18, protocol.MessageTypeLeaseAcquire, []byte("duplicate"), true))
+	require.EqualValues(t, 0, mux.requestsInFlight.Load())
 }
 
 func TestShouldRouteRpcWorkerRequestGivenPendingRpcRequestWhenDispatchCalled(t *testing.T) {
@@ -289,6 +347,7 @@ func rpcWorkerRequestPayloadForTest(route string, _ string, body []byte) []byte 
 
 	writeTLVString(route)
 	writeTLVBytes(body)
+	payload = append(payload, 0)
 	return payload
 }
 

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cntryl/fitz-go/internal/testkit"
+
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
@@ -536,7 +538,7 @@ func leaseErrorResponsePayload(code uint32, msg string) []byte {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	buf.WriteByte(1)
-	connection.WriteU32BE(buf, code)
+	testkit.WriteErrorCode(buf, code)
 	connection.WriteBytes(buf, []byte(msg))
 	return append([]byte(nil), buf.Bytes()...)
 }

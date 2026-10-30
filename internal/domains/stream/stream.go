@@ -24,43 +24,10 @@ import (
 )
 
 func parsePlainStreamResponse(payload []byte) (bool, []byte, error) {
-	if len(payload) == 0 {
-		return false, nil, errors.New("response too short")
-	}
-	if payload[0] == 0 {
-		return true, payload[1:], nil
-	}
-	if payload[0] == 2 {
-		code, offset, err := connection.ReadU32BE(payload, 1)
-		if err != nil {
-			return false, nil, fmt.Errorf("decode stream error code: %w", err)
-		}
-		message, end, err := connection.ReadString(payload, offset)
-		if err != nil {
-			return false, nil, fmt.Errorf("decode stream error: %w", err)
-		}
-		if end != len(payload) {
-			return false, nil, errors.New("trailing bytes after stream error")
-		}
-		return false, nil, coreerrors.NewDomainError(code, message)
-	}
-	if payload[0] != 1 {
-		return false, nil, fmt.Errorf("unknown response status: %d", payload[0])
-	}
-	message, end, err := connection.ReadString(payload, 1)
-	if err != nil {
-		return false, nil, fmt.Errorf("decode stream error: %w", err)
-	}
-	if end != len(payload) {
-		return false, nil, errors.New("trailing bytes after stream error")
-	}
-	return false, nil, errors.New(message)
+	return connection.ParseStandardResponse(payload)
 }
 
 func parseStreamReadResponse(payload []byte) (bool, []byte, error) {
-	if len(payload) > 0 && payload[0] == 2 {
-		return parsePlainStreamResponse(payload)
-	}
 	return connection.ParseStandardResponse(payload)
 }
 
@@ -301,7 +268,11 @@ func (s *session) Append(ctx context.Context, expectedOffset uint64, body []byte
 	if err := s.conn.CheckLiveHandle(); err != nil {
 		return 0, err
 	}
-	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, expectedOffset, body, nil, opts...))
+	var metadata []byte
+	if len(opts) > 0 && opts[0] != nil {
+		metadata = opts[0].Metadata
+	}
+	resp, err := s.conn.SendRequestWithWriter(ctx, protocol.MessageTypeStreamAppend, streamAppendPayloadWriter(s.sessionID, expectedOffset, body, metadata, opts...))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -897,7 +868,9 @@ func readOptionalBytes(data []byte, offset int) ([]byte, int, error) {
 		if err != nil {
 			return nil, newOffset, err
 		}
-		return append([]byte(nil), value...), newOffset, nil
+		copied := make([]byte, len(value))
+		copy(copied, value)
+		return copied, newOffset, nil
 	default:
 		return nil, offset, fmt.Errorf("invalid optional bytes flag: %d", flag)
 	}

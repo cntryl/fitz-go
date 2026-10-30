@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cntryl/fitz-go/internal/testkit"
+
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/protocol"
 	"github.com/stretchr/testify/assert"
@@ -13,18 +15,19 @@ import (
 )
 
 type transactionScriptTransport struct {
-	mu     sync.Mutex
-	writes int
-	readCh chan []byte
-	closed chan struct{}
-	close  sync.Once
+	written [][]byte
+	mu      sync.Mutex
+	writes  int
+	readCh  chan []byte
+	closed  chan struct{}
+	close   sync.Once
 }
 
 func newTransactionScriptTransport() *transactionScriptTransport {
 	return &transactionScriptTransport{readCh: make(chan []byte, 1), closed: make(chan struct{})}
 }
 
-func (s *transactionScriptTransport) Write(ctx context.Context, _ []byte) error {
+func (s *transactionScriptTransport) Write(ctx context.Context, frame []byte) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -34,7 +37,12 @@ func (s *transactionScriptTransport) Write(ctx context.Context, _ []byte) error 
 	}
 	s.mu.Lock()
 	s.writes++
+	s.written = append(s.written, append([]byte(nil), frame...))
 	s.mu.Unlock()
+	kind, _, err := protocol.DecodeFrame(frame)
+	if err == nil && kind == 1 {
+		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+	}
 	return nil
 }
 
@@ -45,6 +53,9 @@ func (s *transactionScriptTransport) Read(ctx context.Context) ([]byte, error) {
 	case <-s.closed:
 		return nil, connection.ErrConnectionClosed
 	case frame := <-s.readCh:
+		s.mu.Lock()
+		frame = testkit.CorrelateResponse(frame, s.written)
+		s.mu.Unlock()
 		return frame, nil
 	}
 }
@@ -86,7 +97,7 @@ func kvDomainErrorPayload(code uint32, message string) []byte {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	buf.WriteByte(1)
-	connection.WriteU32BE(buf, code)
+	testkit.WriteErrorCode(buf, code)
 	connection.WriteString(buf, message)
 	return append([]byte(nil), buf.Bytes()...)
 }

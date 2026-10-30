@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -167,6 +168,7 @@ func TestShouldReturnNilGivenNoConnectionWhenCloseCalledTwice(t *testing.T) {
 
 func TestShouldClosePendingRPCsGivenConnectionLossWhenMonitorConnectionEnds(t *testing.T) {
 	transport := testkit.NewMockTransport()
+	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeHello, wire2HelloPayload())})
 	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -203,6 +205,7 @@ func TestShouldClosePendingRPCsGivenConnectionLossWhenMonitorConnectionEnds(t *t
 
 func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t *testing.T) {
 	oldTransport := testkit.NewMockTransport()
+	oldTransport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeHello, wire2HelloPayload())})
 	oldConn := connection.New(oldTransport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, oldConn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -210,6 +213,7 @@ func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t 
 	})
 
 	newTransport := testkit.NewMockTransport()
+	newTransport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeHello, wire2HelloPayload())})
 	newConn := connection.New(newTransport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, newConn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -246,6 +250,7 @@ func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t 
 
 func TestShouldClosePendingRPCsGivenClientShutdownWhenMonitorConnectionEnds(t *testing.T) {
 	transport := testkit.NewMockTransport()
+	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeHello, wire2HelloPayload())})
 	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 
@@ -371,7 +376,10 @@ func TestShouldAllowManualReconnectGivenConnectionLossWhenReconnectDisabled(t *t
 	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeConnect, connectType)
-	assert.Equal(t, []byte("token-1"), connectPayload)
+	require.Equal(t, []byte{0, 2, 0, 2, 0, 0, 0, 0}, connectPayload[:8])
+	token, _, err := connection.ReadString(connectPayload, 8)
+	require.NoError(t, err)
+	assert.Equal(t, "token-1", token)
 }
 
 func TestShouldConnectGivenDelayedStartupWhenConnectWhenReadyCalled(t *testing.T) {
@@ -636,7 +644,9 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeConnect, connectType)
-	assert.Equal(t, []byte("token-2"), connectPayload)
+	token, _, err := connection.ReadString(connectPayload, 8)
+	require.NoError(t, err)
+	assert.Equal(t, "token-2", token)
 
 	subscribeType, _, err := protocol.DecodeFrame(writtenFrames[1])
 	require.NoError(t, err)
@@ -848,7 +858,9 @@ func TestShouldSendOnlyConnectFrameGivenAuthenticatedTokenWhenConnectCalled(t *t
 	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeConnect, connectType)
-	assert.Equal(t, []byte("token-1"), connectPayload)
+	token, _, err := connection.ReadString(connectPayload, 8)
+	require.NoError(t, err)
+	assert.Equal(t, "token-1", token)
 }
 
 func TestShouldLogClientLifecycleGivenReconnectLoggerWhenConnectionRestored(t *testing.T) {
@@ -916,7 +928,7 @@ func TestShouldLogClientLifecycleGivenReconnectLoggerWhenConnectionRestored(t *t
 	assertLogEntry(t, entries, slog.LevelInfo, "connect started")
 	assertLogEntry(t, entries, slog.LevelInfo, "connect success")
 	assertLogEntry(t, entries, slog.LevelInfo, "connection authenticating")
-	assertLogEntry(t, entries, slog.LevelInfo, "connection authenticated after silent CONNECT window")
+	assertLogEntry(t, entries, slog.LevelInfo, "wire-2 connection negotiated")
 	assertLogEntry(t, entries, slog.LevelWarn, "reconnect attempt")
 	assertLogEntry(t, entries, slog.LevelInfo, "reconnect success")
 	assertLogEntry(t, entries, slog.LevelInfo, "client close")
@@ -983,7 +995,7 @@ func (s *scriptedTransport) Write(ctx context.Context, frame []byte) error {
 	s.written = append(s.written, append([]byte(nil), frame...))
 	messageType, _, err := protocol.DecodeFrame(frame)
 	if err == nil && messageType == protocol.MessageTypeConnect && s.helloOnConnect {
-		s.readCh <- protocol.EncodeFrame(protocol.MessageTypeServerHello, []byte{0, 1, 0, 0, 0, 0})
+		s.readCh <- protocol.EncodeFrame(protocol.MessageTypeServerHello, wire2HelloPayload())
 	}
 	return nil
 }
@@ -1013,7 +1025,10 @@ func (s *scriptedTransport) RemoteAddr() string {
 }
 
 func (s *scriptedTransport) PushReadFrame(frame []byte) {
-	s.readCh <- append([]byte(nil), frame...)
+	s.mu.Lock()
+	frame = testkit.CorrelateResponse(frame, s.written)
+	s.mu.Unlock()
+	s.readCh <- frame
 }
 
 func (s *scriptedTransport) WrittenFrames() [][]byte {
@@ -1085,4 +1100,13 @@ func assertLogEntry(t *testing.T, entries []logRecord, level slog.Level, message
 		}
 	}
 	t.Fatalf("expected log entry level=%s message=%q, got %#v", level, message, entries)
+}
+
+func wire2HelloPayload() []byte {
+	payload := make([]byte, 22)
+	binary.BigEndian.PutUint16(payload, 2)
+	binary.BigEndian.PutUint32(payload[6:], 1<<20)
+	binary.BigEndian.PutUint32(payload[10:], 64)
+	binary.BigEndian.PutUint64(payload[14:], 1)
+	return payload
 }

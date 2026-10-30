@@ -50,6 +50,7 @@ type StreamFilterSet struct {
 
 type StreamAppendOptions struct {
 	Discriminator *string
+	Metadata      []byte
 }
 
 type StreamReadOptions struct {

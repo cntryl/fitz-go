@@ -41,6 +41,7 @@ func (s *NoticeSubscription) Completion() <-chan error {
 
 type NoticeClient interface {
 	Publish(ctx context.Context, route string, body []byte) error
+	PublishWithAck(ctx context.Context, route string, body []byte) error
 	Subscribe(ctx context.Context, pattern string, handler NoticeHandler) (*NoticeSubscription, error)
 	UnsubscribeAll(ctx context.Context) error
 }
@@ -52,6 +53,10 @@ type noticeClient struct {
 // Publish sends a notice payload to a fixed route.
 func (c *noticeClient) Publish(ctx context.Context, route string, body []byte) error {
 	return c.inner.Publish(ctx, route, body)
+}
+
+func (c *noticeClient) PublishWithAck(ctx context.Context, route string, body []byte) error {
+	return c.inner.PublishWithAck(ctx, route, body)
 }
 
 // UnsubscribeAll removes every Notice subscription on this client session.

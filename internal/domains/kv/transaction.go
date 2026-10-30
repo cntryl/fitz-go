@@ -327,13 +327,6 @@ func (t *transaction) Scan(ctx context.Context, query ScanQuery) (iter.Iterator[
 	if err := t.checkState(); err != nil {
 		return nil, false, err
 	}
-	if query.StartExclusive {
-		_, capabilities := t.conn.ServerCapabilities()
-		if capabilities&protocol.CapabilityKVScanExclusive == 0 {
-			return nil, false, errors.New("broker did not advertise exclusive KV SCAN resume support")
-		}
-	}
-
 	// Encode request
 	writer, err := scanPayloadWriter(t.txID, t.route, query)
 	if err != nil {

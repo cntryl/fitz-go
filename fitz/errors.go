@@ -116,35 +116,24 @@ type AsyncHandlerOverflowError = coreerrors.AsyncHandlerOverflowError
 var ErrAsyncHandlerOverflow = coreerrors.ErrAsyncHandlerOverflow
 
 // IsRetryable reports whether err indicates a transient, retryable condition.
-// The following server-signaled situations are considered retryable:
-//   - KV isolation conflict (concurrent transaction collision)      [1004]
-//   - KV, Stream, and Notice mailbox saturation                     [1014, 2014, 3006]
-//   - Queue full (backpressure)                                     [4005]
-//   - Lease held (contention, retry after backoff)                  [5001]
-//   - Lease queue full                                               [5007]
-//   - RPC timeout (worker temporarily overloaded)                   [6001]
-//   - RPC worker not found (route may not yet be registered)        [6002]
-//   - RPC backpressure                                              [6003]
-//   - RPC route not registered (transient routing gap)              [6004]
-//   - Schedule backend unavailable or saturated                    [7010]
+// A server error is retryable only when its effect is NOT_APPLIED. BUSY
+// class errors and the specific KV, Lease, and RPC conflict codes qualify.
 func IsRetryable(err error) bool {
 	var de *coreerrors.DomainError
 	if !errors.As(err, &de) {
-		return errors.Is(err, ErrQueueFull)
+		return errors.Is(err, ErrQueueFull) || errors.Is(err, ErrRPCBackpressure)
+	}
+	if de.Effect != 0 {
+		return false
+	}
+	if de.Class == 5 {
+		return true
 	}
 	switch uint32(de.Code) {
 	case ErrCodeKvIsolationConflict,
-		ErrCodeKvBusy,
-		ErrCodeStreamBusy,
-		ErrCodeNoticeBusy,
-		ErrCodeQueueFull,
 		ErrCodeLeaseHeld,
 		ErrCodeLeaseQueueFull,
-		ErrCodeRpcTimeout,
-		ErrCodeRpcWorkerNotFound,
-		ErrCodeRpcBackpressure,
-		ErrCodeRpcRouteNotRegistered,
-		ErrCodeScheduleBackendError:
+		ErrCodeRpcRouteNotRegistered:
 		return true
 	}
 	return false

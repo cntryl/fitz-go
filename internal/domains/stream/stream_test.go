@@ -25,14 +25,18 @@ func TestShouldDecodePlainErrorMessageGivenLastResponseWhenParsePlainStreamRespo
 
 	assert.False(t, success)
 	assert.Nil(t, remaining)
-	assert.EqualError(t, err, message)
+	require.Error(t, err)
+	var domainErr *coreerrors.DomainError
+	assert.NotErrorAs(t, err, &domainErr)
 }
 
 func TestShouldPreserveCodedErrorGivenReadResponseWhenParseStreamReadResponseCalled(t *testing.T) {
 	message := "stream read failed"
 	payload := make([]byte, 9+len(message))
 	payload[0] = 1
-	binary.BigEndian.PutUint32(payload[1:5], uint32(coreerrors.StreamResourceNotFound))
+	binary.BigEndian.PutUint16(payload[1:3], uint16(uint32(coreerrors.StreamResourceNotFound)))
+	payload[3] = 0
+	payload[4] = 0
 	binary.BigEndian.PutUint32(payload[5:9], uint32(len(message)))
 	copy(payload[9:], message)
 

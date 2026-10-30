@@ -5,7 +5,10 @@ package protocol
 
 const (
 	// Control messages (0-99)
-	MessageTypeConnect uint16 = 1
+	MessageTypeConnect         uint16 = 1
+	MessageTypeHello           uint16 = 2
+	MessageTypeConnectRejected uint16 = 3
+	MessageTypeGoAway          uint16 = 4
 
 	// KV Domain (100-199)
 	MessageTypeKvBegin       uint16 = 100
@@ -75,7 +78,7 @@ const (
 	MessageTypeScheduleUnsubscribe uint16 = 704
 	MessageTypeScheduleNotify      uint16 = 705 // Server -> Client only
 	MessageTypeScheduleCreateBatch uint16 = 706
-	MessageTypeScheduleListV2      uint16 = 707
+	MessageTypeScheduleListV2      uint16 = 702 // Deprecated alias; LIST cursor paging uses 702.
 )
 
 // RouteDomain returns the domain name for a given MessageType

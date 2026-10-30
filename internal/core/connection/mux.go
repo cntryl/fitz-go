@@ -7,8 +7,6 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-
-	"github.com/cntryl/fitz-go/internal/protocol"
 )
 
 // pendingRequest represents one in-flight request awaiting response.
@@ -267,10 +265,11 @@ func NewMultiplexer() *Multiplexer {
 func (m *Multiplexer) SetCapabilities(protocolVersion uint16, capabilities uint32) {
 	m.protocolVersion.Store(uint32(protocolVersion))
 	m.capabilities.Store(capabilities)
+	m.nextCorrelationID.Store(0)
 }
 
 func (m *Multiplexer) CorrelationEnabled() bool {
-	return m.capabilities.Load()&protocol.CapabilityCorrelation != 0
+	return m.protocolVersion.Load() >= 2
 }
 
 func (m *Multiplexer) Capabilities() (uint16, uint32) {
@@ -279,9 +278,12 @@ func (m *Multiplexer) Capabilities() (uint16, uint32) {
 
 func (m *Multiplexer) NextCorrelationID() uint64 {
 	for {
-		id := m.nextCorrelationID.Add(1)
-		if id != 0 {
-			return id
+		current := m.nextCorrelationID.Load()
+		if current == ^uint64(0) {
+			return 0
+		}
+		if m.nextCorrelationID.CompareAndSwap(current, current+1) {
+			return current + 1
 		}
 	}
 }
@@ -367,8 +369,9 @@ func (m *Multiplexer) UnregisterCorrelatedRequest(id uint64, waiter *requestWait
 	if !exists || req.waiter != waiter {
 		return false
 	}
-	delete(m.correlated, id)
-	m.requestsInFlight.Add(-1)
+	req.waiter = nil
+	req.discard = true
+	m.correlated[id] = req
 	return true
 }
 
@@ -481,20 +484,24 @@ func (m *Multiplexer) Dispatch(msgType uint16, payload []byte) {
 	req.waiter.deliver(payload)
 }
 
-func (m *Multiplexer) DispatchCorrelated(id uint64, msgType uint16, payload []byte) {
+func (m *Multiplexer) DispatchCorrelated(id uint64, msgType uint16, payload []byte, final bool) bool {
 	m.mu.Lock()
 	req, exists := m.correlated[id]
-	if exists {
+	if exists && final {
 		delete(m.correlated, id)
 	}
 	m.mu.Unlock()
 	if !exists {
-		m.Dispatch(msgType, payload)
-		return
+		return false
 	}
-	m.requestsInFlight.Add(-1)
-	m.responsesTotal.Add(1)
-	req.waiter.deliver(payload)
+	if final {
+		m.requestsInFlight.Add(-1)
+		m.responsesTotal.Add(1)
+		if !req.discard && req.waiter != nil {
+			req.waiter.deliver(payload)
+		}
+	}
+	return true
 }
 
 // handleKVNotify processes KV NOTIFY messages (111):
@@ -604,7 +611,7 @@ func (m *Multiplexer) looksLikeRpcWorkerRequest(payload []byte) bool {
 		return false
 	}
 	extension := payload[bodyEnd:]
-	return len(extension) == 0 || (len(extension) == 6 && extension[0] == 1 && extension[1] == 1 && binary.BigEndian.Uint32(extension[2:]) <= 86_400_000)
+	return (len(extension) == 1 && extension[0] == 0) || (len(extension) == 5 && extension[0] == 1 && binary.BigEndian.Uint32(extension[1:]) <= 86_400_000)
 }
 
 // handleRpcResponse processes RPC RESPONSE messages (async delivery).

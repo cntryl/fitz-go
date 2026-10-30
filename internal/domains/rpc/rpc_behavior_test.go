@@ -69,7 +69,7 @@ func TestShouldReturnBrokerErrorGivenRejectedWorkerUnsubscribe(t *testing.T) {
 
 func TestShouldRejectWorkerConcurrencyAboveWireLimit(t *testing.T) {
 	// Arrange
-	conn := connection.New(testkit.NewMockTransport(), connection.Config{})
+	conn := connection.New(testkit.NewWire2MockTransport(), connection.Config{})
 	client := NewClient(conn)
 
 	// Act
@@ -83,7 +83,7 @@ func rpcDomainErrorPayload(code uint32, message string) []byte {
 	buf := connection.GetBuffer()
 	defer connection.PutBuffer(buf)
 	buf.WriteByte(1)
-	connection.WriteU32BE(buf, code)
+	testkit.WriteErrorCode(buf, code)
 	connection.WriteString(buf, message)
 	return append([]byte(nil), buf.Bytes()...)
 }
@@ -114,6 +114,10 @@ func (s *scriptedRPCRestoreTransport) Write(ctx context.Context, frame []byte) e
 	s.mu.Lock()
 	s.written = append(s.written, append([]byte(nil), frame...))
 	s.mu.Unlock()
+	kind, _, err := protocol.DecodeFrame(frame)
+	if err == nil && kind == protocol.MessageTypeConnect {
+		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+	}
 	return nil
 }
 
@@ -140,7 +144,10 @@ func (s *scriptedRPCRestoreTransport) RemoteAddr() string {
 }
 
 func (s *scriptedRPCRestoreTransport) enqueue(frame []byte) {
-	s.readCh <- append([]byte(nil), frame...)
+	s.mu.Lock()
+	frame = testkit.CorrelateResponse(frame, s.written)
+	s.mu.Unlock()
+	s.readCh <- frame
 }
 
 func scriptedRPCFrame(t *testing.T, msgType uint16, payload []byte) []byte {
@@ -169,7 +176,7 @@ func waitForRPCWrites(t *testing.T, trans *scriptedRPCRestoreTransport, expected
 
 func newStartedRPCConnection(t *testing.T) (*connection.Connection, *testkit.MockTransport) {
 	t.Helper()
-	transport := testkit.NewMockTransport()
+	transport := testkit.NewWire2MockTransport()
 	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -185,9 +192,8 @@ func newStartedRPCConnectionWithCapabilities(t *testing.T, capabilities uint32) 
 
 func newStartedRPCConnectionWithConfig(t *testing.T, capabilities uint32, config connection.Config) (*connection.Connection, *testkit.MockTransport) {
 	t.Helper()
-	transport := testkit.NewMockTransport()
-	payload := make([]byte, 6)
-	binary.BigEndian.PutUint16(payload[:2], 1)
+	transport := testkit.NewWire2MockTransport()
+	payload := testkit.HelloPayload()
 	binary.BigEndian.PutUint32(payload[2:], capabilities)
 	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeServerHello, payload)})
 	conn := connection.New(transport, config)
@@ -228,9 +234,9 @@ func TestShouldEncodeNegotiatedRPCBudgetAndWorkerSupportExtensions(t *testing.T)
 
 	// Assert
 	assert.Equal(t, requestPayload, negotiatedRequest.Bytes()[:len(requestPayload)])
-	assert.Equal(t, []byte{1, 1, 0, 0, 1, 65}, negotiatedRequest.Bytes()[len(requestPayload):])
-	assert.Equal(t, legacyRegistration.Bytes(), negotiatedRegistration.Bytes()[:legacyRegistration.Len()])
-	assert.Equal(t, []byte{1, 1}, negotiatedRegistration.Bytes()[legacyRegistration.Len():])
+	assert.Equal(t, []byte{1, 0, 0, 1, 65}, negotiatedRequest.Bytes()[len(requestPayload):])
+	assert.Equal(t, legacyRegistration.Bytes()[:legacyRegistration.Len()-1], negotiatedRegistration.Bytes()[:legacyRegistration.Len()-1])
+	assert.Equal(t, []byte{1}, negotiatedRegistration.Bytes()[legacyRegistration.Len()-1:])
 	decodedBudget, err := decodeRPCRequestBudget(negotiatedRequest.Bytes()[len(requestPayload):])
 	require.NoError(t, err)
 	require.NotNil(t, decodedBudget)
@@ -369,7 +375,7 @@ func TestShouldAcknowledgeFinishedCleanupBeforeDelayedCancellationArrives(t *tes
 
 func TestShouldCountDispatchBufferingAgainstInboundDeadline(t *testing.T) {
 	// Arrange
-	transport := testkit.NewMockTransport()
+	transport := testkit.NewWire2MockTransport()
 	conn := connection.New(transport, connection.Config{AsyncHandlerMaxConcurrency: 1, AsyncHandlerQueueCapacity: 1})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() { _ = conn.Close() })
@@ -385,7 +391,8 @@ func TestShouldCountDispatchBufferingAgainstInboundDeadline(t *testing.T) {
 		received <- ctx.Err()
 		return nil
 	}}, activeInvocations: make(map[[16]byte]*activeRPCInvocation)}
-	payload := append(rpcWorkerPayload(route, "", nil), 1, 1, 0, 0, 0, 1)
+	payload := rpcWorkerPayload(route, "", nil)
+	payload = append(payload[:len(payload)-1], 1, 0, 0, 0, 1)
 
 	// Act
 	c.handleWorkerRequest([16]byte{}, payload)
@@ -510,6 +517,7 @@ func rpcWorkerPayload(route, replyRoute string, body []byte) []byte {
 	defer connection.PutBuffer(buf)
 	encoding.WriteRoute(buf, route)
 	encoding.WriteBytes(buf, body)
+	buf.WriteByte(0)
 	return append([]byte(nil), buf.Bytes()...)
 }
 

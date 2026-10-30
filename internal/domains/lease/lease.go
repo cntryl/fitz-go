@@ -358,7 +358,7 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64, opti
 	switch responseType {
 	case 0: // Acquired
 	case 1: // AlreadyHeld (we already hold it, idempotent)
-	case 2, 3:
+	case 2:
 		if waiter == nil {
 			return nil, ErrLeaseQueued
 		}
@@ -376,6 +376,8 @@ func (c *client) Acquire(ctx context.Context, route string, ttlSecs uint64, opti
 			c.markAcquireWaiterDone(waiter)
 			return nil, context.Cause(ctx)
 		}
+	case 3:
+		return nil, ErrLeaseAlreadyQueued
 	default:
 		return nil, fmt.Errorf("unknown ACQUIRE response type %d", responseType)
 	}

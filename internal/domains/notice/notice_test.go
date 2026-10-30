@@ -18,7 +18,7 @@ import (
 )
 
 func TestShouldTerminateSubscriptionWithTypedErrorGivenAsyncHandlerQueueOverflow(t *testing.T) {
-	conn := connection.New(testkit.NewMockTransport(), connection.Config{
+	conn := connection.New(testkit.NewWire2MockTransport(), connection.Config{
 		AsyncHandlerMaxConcurrency: 1,
 		AsyncHandlerQueueCapacity:  1,
 	})
@@ -83,6 +83,10 @@ func (s *scriptedRestoreTransport) Write(ctx context.Context, frame []byte) erro
 	s.mu.Lock()
 	s.written = append(s.written, append([]byte(nil), frame...))
 	s.mu.Unlock()
+	kind, _, err := protocol.DecodeFrame(frame)
+	if err == nil && kind == protocol.MessageTypeConnect {
+		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+	}
 	return nil
 }
 
@@ -109,7 +113,10 @@ func (s *scriptedRestoreTransport) RemoteAddr() string {
 }
 
 func (s *scriptedRestoreTransport) enqueue(frame []byte) {
-	s.readCh <- append([]byte(nil), frame...)
+	s.mu.Lock()
+	frame = testkit.CorrelateResponse(frame, s.written)
+	s.mu.Unlock()
+	s.readCh <- frame
 }
 
 func noticeRestoreFrame(t *testing.T, msgType uint16, payload []byte) []byte {
@@ -262,7 +269,7 @@ func TestShouldRejectMalformedStatusGivenTrailingOrTruncatedEnvelopeWhenDecodeSt
 	})
 
 	t.Run("error status with trailing bytes", func(t *testing.T) {
-		body := []byte{0x01, 0x00, 0x00, 0x0B, 0xBA, 0x00, 0x00, 0x00, 0x03, 'b', 'a', 'd', 0xFF}
+		body := []byte{0x01, 0x0B, 0xBB, 3, 0, 0x00, 0x00, 0x00, 0x03, 'b', 'a', 'd', 0xFF}
 		status, code, message, ok := decodeStatus(body)
 
 		assert.False(t, ok)
@@ -274,7 +281,7 @@ func TestShouldRejectMalformedStatusGivenTrailingOrTruncatedEnvelopeWhenDecodeSt
 
 func TestShouldPreserveDomainCodeGivenTypedNoticeErrorWhenDecodeStatusCalled(t *testing.T) {
 	// Arrange
-	body := []byte{0x01, 0x00, 0x00, 0x0B, 0xBA, 0x00, 0x00, 0x00, 0x03, 'b', 'a', 'd'}
+	body := []byte{0x01, 0x0B, 0xBB, 3, 0, 0x00, 0x00, 0x00, 0x03, 'b', 'a', 'd'}
 
 	// Act
 	status, code, message, ok := decodeStatus(body)
@@ -282,7 +289,7 @@ func TestShouldPreserveDomainCodeGivenTypedNoticeErrorWhenDecodeStatusCalled(t *
 	// Assert
 	assert.True(t, ok)
 	assert.Equal(t, uint8(1), status)
-	assert.Equal(t, uint32(3002), code)
+	assert.Equal(t, uint32(3003), code)
 	assert.Equal(t, "bad", message)
 }
 

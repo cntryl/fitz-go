@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cntryl/fitz-go/internal/testkit"
+
 	"github.com/cntryl/fitz-go/internal/core/connection"
 	"github.com/cntryl/fitz-go/internal/core/subscriptions"
 	"github.com/cntryl/fitz-go/internal/protocol"
@@ -41,6 +43,10 @@ func (s *scriptedRestoreTransport) Write(ctx context.Context, frame []byte) erro
 	s.mu.Lock()
 	s.written = append(s.written, append([]byte(nil), frame...))
 	s.mu.Unlock()
+	kind, _, err := protocol.DecodeFrame(frame)
+	if err == nil && kind == protocol.MessageTypeConnect {
+		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+	}
 	return nil
 }
 
@@ -67,7 +73,10 @@ func (s *scriptedRestoreTransport) RemoteAddr() string {
 }
 
 func (s *scriptedRestoreTransport) enqueue(frame []byte) {
-	s.readCh <- append([]byte(nil), frame...)
+	s.mu.Lock()
+	frame = testkit.CorrelateResponse(frame, s.written)
+	s.mu.Unlock()
+	s.readCh <- frame
 }
 
 func queueRestoreFrame(t *testing.T, msgType uint16, payload []byte) []byte {
@@ -631,18 +640,17 @@ func TestShouldEncodeCompleteRequestGivenLeaseFieldsWhenEncodeCompleteCalled(t *
 	})
 }
 
-func TestParsePlainQueueResponseMapsCanonicalDomainMessages(t *testing.T) {
-	for message, expected := range map[string]error{
-		"InvalidToken":    ErrInvalidToken,
-		"InflightExpired": ErrLeaseExpiredQ,
-		"NotFound":        ErrMessageNotFound,
-		"QueueNotFound":   ErrQueueNotFound,
-	} {
-		t.Run(message, func(t *testing.T) {
-			payload := append([]byte{1, 0, 0, 0, byte(len(message))}, []byte(message)...)
-			_, _, err := parsePlainQueueResponse(payload)
-			require.ErrorIs(t, err, expected)
-		})
+func TestShouldMapCodedQueueErrorGivenCommonEnvelope(t *testing.T) {
+	// Arrange
+	for _, tc := range []struct {
+		code     uint16
+		expected error
+	}{{4050, ErrInvalidToken}, {4051, ErrLeaseExpiredQ}, {4052, ErrMessageNotFound}, {4053, ErrQueueNotFound}} {
+		payload := []byte{1, byte(tc.code >> 8), byte(tc.code), 0, 0, 0, 0, 0, 0}
+		// Act
+		_, _, err := parsePlainQueueResponse(payload)
+		// Assert
+		require.ErrorIs(t, err, tc.expected)
 	}
 }
 

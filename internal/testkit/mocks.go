@@ -7,11 +7,15 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/cntryl/fitz-go/internal/protocol"
 )
 
 // MockTransport is a controllable transport for unit tests.
 // It allows tests to specify read responses and track written frames.
 type MockTransport struct {
+	autoHello   bool
+	changed     chan struct{}
 	mu          sync.Mutex
 	readFrames  [][]byte // Frames to return on Read() calls
 	readIndex   int
@@ -26,6 +30,7 @@ type MockTransport struct {
 func NewMockTransport() *MockTransport {
 	return &MockTransport{
 		remoteAddr: "mock://test",
+		changed:    make(chan struct{}),
 	}
 }
 
@@ -38,6 +43,7 @@ func (m *MockTransport) SetReadFrames(frames [][]byte) {
 		m.readFrames = append(m.readFrames, append([]byte(nil), frame...))
 	}
 	m.readIndex = 0
+	m.signal()
 }
 
 // SetReadError sets an error to return for all Read() calls.
@@ -45,6 +51,7 @@ func (m *MockTransport) SetReadError(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.readErr = err
+	m.signal()
 }
 
 // SetWriteError sets an error to return for all Write() calls.
@@ -81,37 +88,57 @@ func (m *MockTransport) Write(ctx context.Context, frame []byte) error {
 	default:
 	}
 	m.writeFrames = append(m.writeFrames, append([]byte(nil), frame...))
+	kind, _, err := protocol.DecodeFrame(frame)
+	if err == nil && kind == protocol.MessageTypeConnect && m.autoHello {
+		isControl := false
+		if m.readIndex < len(m.readFrames) {
+			f, e := protocol.DecodeMessage(m.readFrames[m.readIndex])
+			isControl = e == nil && (f.MessageType == 2 || f.MessageType == 3)
+		}
+		if !isControl {
+			m.readFrames = append(m.readFrames[:m.readIndex], append([][]byte{protocol.EncodeFrame(2, HelloPayload())}, m.readFrames[m.readIndex:]...)...)
+		}
+	}
+	m.signal()
 	return nil
 }
 
 // Read returns the next queued read frame or an error.
 func (m *MockTransport) Read(ctx context.Context) ([]byte, error) {
-	m.mu.Lock()
-	if m.readErr != nil {
-		err := m.readErr
+	for {
+		m.mu.Lock()
+		if m.readErr != nil {
+			err := m.readErr
+			m.mu.Unlock()
+			return nil, err
+		}
+		if m.closed {
+			m.mu.Unlock()
+			return nil, errors.New("transport closed")
+		}
+		changed := m.changed
+		if m.readIndex < len(m.readFrames) {
+			frame := append([]byte(nil), m.readFrames[m.readIndex]...)
+			canRead := true
+			response, e := protocol.DecodeMessage(frame)
+			if m.autoHello && e == nil && response.CorrelationID == 0 && ResponseRequiresCorrelation(response.MessageType) {
+				frame = CorrelateResponse(frame, m.writeFrames)
+				correlated, err := protocol.DecodeMessage(frame)
+				canRead = err == nil && correlated.CorrelationID != 0
+			}
+			if canRead {
+				m.readIndex++
+				m.mu.Unlock()
+				return frame, nil
+			}
+		}
 		m.mu.Unlock()
-		return nil, err
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-changed:
+		}
 	}
-	if m.closed {
-		m.mu.Unlock()
-		return nil, errors.New("transport closed")
-	}
-	if m.readIndex >= len(m.readFrames) {
-		m.mu.Unlock()
-		// Block until context canceled
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	frame := append([]byte(nil), m.readFrames[m.readIndex]...)
-	m.readIndex++
-	m.mu.Unlock()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-	return frame, nil
 }
 
 // Close marks the transport as closed.
@@ -119,6 +146,7 @@ func (m *MockTransport) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closed = true
+	m.signal()
 	return nil
 }
 

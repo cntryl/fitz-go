@@ -2,10 +2,8 @@
 
 // Package conformance implements the Fitz cross-language conformance harness for fitz-go.
 //
-// Covers 22 scenarios: all 17 scenarios from the cross-language spec plus
-// 5 Go-client scenarios (CS-018 through CS-022) added
-// to close coverage gaps for Queue, Lease, Notice, Schedule, and reconnect
-// restoration behavior:
+// Covers shared scenarios CS-001 through CS-017, CS-019 and CS-024, plus
+// five additional Go-client scenarios. Other shared scenarios remain open:
 //
 //	fitz/docs/clients/cross-language-conformance-suite.yaml
 //
@@ -67,16 +65,21 @@ type ScenarioResult struct {
 }
 
 type AggregateResult struct {
-	Suite         string           `json:"suite"`
-	Version       string           `json:"version"`
-	GeneratedAt   string           `json:"generated_at"`
-	Client        string           `json:"client"`
-	Transport     string           `json:"transport"`
-	AuthMode      string           `json:"auth_mode"`
-	P0PassRate    float64          `json:"p0_pass_rate"`
-	P1PassRate    float64          `json:"p1_pass_rate"`
-	OverallStatus string           `json:"overall_status"`
-	Scenarios     []ScenarioResult `json:"scenarios"`
+	Suite            string           `json:"suite"`
+	Version          string           `json:"version"`
+	GeneratedAt      string           `json:"generated_at"`
+	Client           string           `json:"client"`
+	Transport        string           `json:"transport"`
+	AuthMode         string           `json:"auth_mode"`
+	P0Pass           int              `json:"p0_pass"`
+	P0Total          int              `json:"p0_total"`
+	P1Pass           int              `json:"p1_pass"`
+	P1Total          int              `json:"p1_total"`
+	P0PassRate       float64          `json:"p0_pass_rate"`
+	P1PassRate       float64          `json:"p1_pass_rate"`
+	OverallStatus    string           `json:"overall_status"`
+	MissingScenarios []string         `json:"missing_scenarios"`
+	Scenarios        []ScenarioResult `json:"scenarios"`
 }
 
 // ---------------------------------------------------------------------------
@@ -98,52 +101,53 @@ func (c *collector) aggregate(client, transport, authMode string) AggregateResul
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	passRate := func(priority string) float64 {
-		var total, passed int
-		for _, r := range c.results {
-			if r.Priority == priority {
-				total++
-				if r.Verdict == VerdictPass {
-					passed++
-				}
-			}
-		}
-		if total == 0 {
-			return 1.0
-		}
-		return float64(passed) / float64(total)
+	byID := make(map[string]ScenarioResult, len(c.results))
+	for _, result := range c.results {
+		byID[result.ScenarioID] = result
 	}
-
-	p0Rate := passRate("P0")
-	p1Rate := passRate("P1")
-
+	missing := make([]string, 0)
+	var p0Total, p0Passed, p1Total, p1Passed int
 	overall := "pass"
-	for _, r := range c.results {
-		if r.Priority == "P0" && r.Verdict != VerdictPass {
-			overall = "fail"
-			break
+	for number := 1; number <= 24; number++ {
+		id := fmt.Sprintf("CS-%03d", number)
+		result, present := byID[id]
+		if !present {
+			missing = append(missing, id)
 		}
-	}
-	if overall == "pass" {
-		for _, r := range c.results {
-			if r.Priority == "P1" && (r.Verdict == VerdictFail || r.Verdict == VerdictPartial) {
+		passed := present && result.Verdict == VerdictPass
+		if number <= 8 || number == 19 || number == 20 || number == 24 {
+			p0Total++
+			if passed {
+				p0Passed++
+			} else {
+				overall = "fail"
+			}
+		} else {
+			p1Total++
+			if passed {
+				p1Passed++
+			} else if overall == "pass" {
 				overall = "partial"
-				break
 			}
 		}
 	}
 
 	return AggregateResult{
-		Suite:         "fitz-cross-language-client-conformance",
-		Version:       "1.0",
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
-		Client:        client,
-		Transport:     transport,
-		AuthMode:      authMode,
-		P0PassRate:    p0Rate,
-		P1PassRate:    p1Rate,
-		OverallStatus: overall,
-		Scenarios:     c.results,
+		Suite:            "fitz-cross-language-client-conformance",
+		Version:          "1.0",
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		Client:           client,
+		Transport:        transport,
+		AuthMode:         authMode,
+		P0Pass:           p0Passed,
+		P0Total:          p0Total,
+		P1Pass:           p1Passed,
+		P1Total:          p1Total,
+		P0PassRate:       float64(p0Passed) / float64(p0Total),
+		P1PassRate:       float64(p1Passed) / float64(p1Total),
+		OverallStatus:    overall,
+		MissingScenarios: missing,
+		Scenarios:        c.results,
 	}
 }
 
@@ -264,6 +268,9 @@ func TestMain(m *testing.M) {
 				aggregate.P1PassRate*100,
 			)
 		}
+	}
+	if code == 0 && len(results.results) > 0 && aggregate.OverallStatus == "fail" {
+		code = 1
 	}
 
 	os.Exit(code)
@@ -393,19 +400,17 @@ func TestConformanceSuite(t *testing.T) {
 			callCtx, callCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 			defer callCancel()
 			iter, err := f.Client().RPC().Call(callCtx, noWorkerRoute, []byte("ping"))
-			if err != nil {
-				ev = append(ev, fmt.Sprintf("call to unregistered route returned error: %v", err))
-			} else {
+			if err == nil {
 				defer closeQuietly(iter)
-				iter.Next()
-				if iterErr := iter.Err(); iterErr != nil {
-					ev = append(ev, fmt.Sprintf("iterator error on unregistered route: %v", iterErr))
-				} else {
-					ev = append(ev, "WARNING: unexpectedly got a response from unregistered route")
-					return VerdictFail, ev, nil
+				if iter.Next() {
+					return VerdictFail, ev, errors.New("unregistered route returned a response")
 				}
+				err = iter.Err()
 			}
-			ev = append(ev, "error is typed and surfaced (correct)")
+			if !errors.Is(err, fitz.ErrNoWorkers) {
+				return VerdictFail, ev, fmt.Errorf("expected no-workers error, got %w", err)
+			}
+			ev = append(ev, "unregistered route returned the no-workers error")
 
 			// Client must remain usable
 			route := uniqueRoute("kv")
@@ -413,8 +418,12 @@ func TestConformanceSuite(t *testing.T) {
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable after error: %w", txErr)
 			}
-			_ = tx.Put(ctx, []byte("k"), []byte("v"))
-			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
+			if err := tx.Put(ctx, []byte("k"), []byte("v")); err != nil {
+				return VerdictFail, ev, err
+			}
+			if err := tx.Commit(ctx, fitz.KVDurabilitySync); err != nil {
+				return VerdictFail, ev, err
+			}
 			ev = append(ev, "client remains usable after unknown-route error")
 			return VerdictPass, ev, nil
 		})
@@ -430,6 +439,16 @@ func TestConformanceSuite(t *testing.T) {
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+
+			_, invalidErr := f.Client().Schedule().Create(ctx, uniqueRoute("schedule"), "not a cron", fitz.ScheduleDeliveryBroadcast, []byte("payload"))
+			if invalidErr == nil {
+				return VerdictFail, ev, errors.New("invalid cron was accepted")
+			}
+			var invalid *fitz.DomainError
+			if !errors.As(invalidErr, &invalid) || uint32(invalid.Code) != fitz.ErrCodeScheduleInvalidCron {
+				return VerdictFail, ev, fmt.Errorf("invalid cron did not produce a Schedule domain error: %w", invalidErr)
+			}
+			ev = append(ev, "invalid cron produced a Schedule domain error")
 
 			route := uniqueRoute("kv")
 			tx1, err := f.Client().KV().Begin(ctx, route)
@@ -487,30 +506,43 @@ func TestConformanceSuite(t *testing.T) {
 			callCtx, callCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 			defer callCancel()
 			iter, err := f.Client().RPC().Call(callCtx, route, []byte("ping"))
-			if err != nil {
-				ev = append(ev, fmt.Sprintf("rpc call error type: %T", err))
-				ev = append(ev, fmt.Sprintf("rpc call error: %v", err))
-			} else {
+			if err == nil {
 				defer closeQuietly(iter)
-				iter.Next()
+				if iter.Next() {
+					return VerdictFail, ev, errors.New("unregistered RPC route returned a response")
+				}
 				err = iter.Err()
-				ev = append(ev, fmt.Sprintf("rpc iterator error type: %T", err))
 			}
-
-			if err != nil {
-				ev = append(ev, "server error surfaced as typed Go error (correct)")
+			var domainErr *fitz.DomainError
+			if !errors.Is(err, fitz.ErrNoWorkers) || !errors.As(err, &domainErr) ||
+				uint32(domainErr.Code) != fitz.ErrCodeRpcRouteNotRegistered || domainErr.Effect != 0 || !fitz.IsRetryable(err) {
+				return VerdictFail, ev, fmt.Errorf("unregistered RPC route did not preserve retryable NOT_APPLIED error: %w", err)
 			}
+			ev = append(ev, "unregistered RPC route preserved its domain code and NOT_APPLIED effect")
 
 			// Also verify kv conflict produces typed error
 			kvRoute := uniqueRoute("kv")
-			tx, _ := f.Client().KV().Begin(ctx, kvRoute)
-			_ = tx.Insert(ctx, []byte("x"), []byte("1"))
-			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
+			tx, err := f.Client().KV().Begin(ctx, kvRoute)
+			if err != nil {
+				return VerdictFail, ev, err
+			}
+			if err := tx.Insert(ctx, []byte("x"), []byte("1")); err != nil {
+				return VerdictFail, ev, err
+			}
+			if err := tx.Commit(ctx, fitz.KVDurabilitySync); err != nil {
+				return VerdictFail, ev, err
+			}
 
-			tx2, _ := f.Client().KV().Begin(ctx, kvRoute)
+			tx2, err := f.Client().KV().Begin(ctx, kvRoute)
+			if err != nil {
+				return VerdictFail, ev, err
+			}
 			kvErr := tx2.Insert(ctx, []byte("x"), []byte("2"))
 			_ = tx2.Rollback(ctx)
-			ev = append(ev, fmt.Sprintf("kv conflict error type: %T, value: %v", kvErr, kvErr))
+			if !errors.Is(kvErr, fitz.ErrKVKeyExists) || fitz.IsRetryable(kvErr) {
+				return VerdictFail, ev, fmt.Errorf("duplicate insert was not a terminal key-exists error: %w", kvErr)
+			}
+			ev = append(ev, "duplicate KV insert mapped to a terminal key-exists error")
 
 			return VerdictPass, ev, nil
 		})
@@ -524,29 +556,43 @@ func TestConformanceSuite(t *testing.T) {
 		r := run("CS-007", "timeout handling", "P0", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
+			worker := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
 			route := uniqueRoute("rpc")
-			start := time.Now()
-			callCtx, callCancel := context.WithTimeout(ctx, 250*time.Millisecond)
-			defer callCancel()
-			iter, err := f.Client().RPC().Call(callCtx, route, []byte("nobody"))
-			elapsed := time.Since(start)
-
-			var timeoutErr error
+			started := make(chan struct{})
+			sub, err := worker.Client().RPC().RegisterWorker(ctx, route, 1, func(workerCtx context.Context, _ fitz.RPCInboundRequest, _ fitz.RPCResponseWriter) error {
+				close(started)
+				<-workerCtx.Done()
+				return workerCtx.Err()
+			})
 			if err != nil {
-				timeoutErr = err
-			} else {
-				defer closeQuietly(iter)
-				iter.Next()
-				timeoutErr = iter.Err()
+				return VerdictFail, ev, fmt.Errorf("register blocked worker: %w", err)
+			}
+			defer func() { _ = sub.Deregister() }()
+			callCtx, callCancel := context.WithTimeout(ctx, 750*time.Millisecond)
+			defer callCancel()
+			start := time.Now()
+			iter, err := f.Client().RPC().Call(callCtx, route, []byte("blocked"))
+			if err != nil {
+				return VerdictFail, ev, fmt.Errorf("start RPC call: %w", err)
+			}
+			defer closeQuietly(iter)
+			select {
+			case <-started:
+			case <-ctx.Done():
+				return VerdictFail, ev, errors.New("RPC worker did not start")
 			}
 
-			if timeoutErr == nil {
-				return VerdictFail, ev, errors.New("expected timeout error, got success")
+			if iter.Next() {
+				return VerdictFail, ev, errors.New("blocked RPC call returned a response")
 			}
-			ev = append(ev, fmt.Sprintf("rpc timed out after ~%dms (error: %v)", elapsed.Milliseconds(), timeoutErr))
+			timeoutErr := iter.Err()
+			if !errors.Is(timeoutErr, context.DeadlineExceeded) && !errors.Is(timeoutErr, fitz.ErrRPCTimeout) {
+				return VerdictFail, ev, fmt.Errorf("expected timeout, got %w", timeoutErr)
+			}
+			ev = append(ev, fmt.Sprintf("running RPC timed out after %dms (error: %v)", time.Since(start).Milliseconds(), timeoutErr))
 
 			// Connection must remain healthy
 			kvRoute := uniqueRoute("kv")
@@ -575,7 +621,9 @@ func TestConformanceSuite(t *testing.T) {
 			defer cancel()
 
 			route := uniqueRoute("rpc")
+			started := make(chan struct{})
 			sub, err := fWorker.Client().RPC().RegisterWorker(ctx, route, 7, func(workerCtx context.Context, _ fitz.RPCInboundRequest, w fitz.RPCResponseWriter) error {
+				close(started)
 				select {
 				case <-workerCtx.Done():
 					return workerCtx.Err()
@@ -587,7 +635,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
-			defer sub.Deregister()
+			defer func() { _ = sub.Deregister() }()
 
 			callCtx, callCancel := context.WithCancel(ctx)
 			iter, err2 := fCaller.Client().RPC().Call(callCtx, route, []byte("block"))
@@ -596,16 +644,20 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("rpc call: %w", err2)
 			}
 
-			time.Sleep(100 * time.Millisecond)
+			select {
+			case <-started:
+			case <-ctx.Done():
+				callCancel()
+				return VerdictFail, ev, errors.New("RPC worker did not start before cancellation")
+			}
 			callCancel()
 
 			iter.Next()
 			iterErr := iter.Err()
 			closeQuietly(iter)
 
-			if iterErr == nil {
-				ev = append(ev, "expected cancellation error, got nil (race: call may have completed)")
-				return VerdictPartial, ev, nil
+			if !errors.Is(iterErr, context.Canceled) {
+				return VerdictFail, ev, fmt.Errorf("expected caller cancellation, got %w", iterErr)
 			}
 			ev = append(ev, fmt.Sprintf("cancellation error: %v", iterErr))
 			ev = append(ev, "in-flight request failed on cancellation (correct)")
@@ -740,7 +792,8 @@ func TestConformanceSuite(t *testing.T) {
 				case body := <-received:
 					if body == "after-disconnect" {
 						ev = append(ev, "subscription restored after reconnect")
-						return VerdictPass, ev, nil
+						ev = append(ev, "worker restoration and stale session handles were not checked")
+						return VerdictPartial, ev, nil
 					}
 				default:
 				}
@@ -753,7 +806,7 @@ func TestConformanceSuite(t *testing.T) {
 			return VerdictFail, ev, errors.New("subscription was not restored after reconnect")
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass {
+		if r.Verdict != VerdictPartial {
 			t.Errorf("CS-010: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -796,13 +849,13 @@ func TestConformanceSuite(t *testing.T) {
 				return VerdictFail, ev, fmt.Errorf("iterator error: %w", err)
 			}
 
-			if len(offsets) < 3 {
-				ev = append(ev, fmt.Sprintf("expected >=3 records, got %d", len(offsets)))
+			if len(offsets) != 3 {
+				ev = append(ev, fmt.Sprintf("expected 3 records, got %d", len(offsets)))
 				return VerdictPartial, ev, nil
 			}
-			for i := 1; i < len(offsets); i++ {
-				if offsets[i] <= offsets[i-1] {
-					ev = append(ev, fmt.Sprintf("out-of-order offsets at index %d: %d <= %d", i, offsets[i], offsets[i-1]))
+			for i, offset := range offsets {
+				if offset != uint64(i) {
+					ev = append(ev, fmt.Sprintf("expected offset %d, got %d", i, offset))
 					return VerdictPartial, ev, nil
 				}
 			}
@@ -841,6 +894,9 @@ func TestConformanceSuite(t *testing.T) {
 			var count int
 			for iter.Next() {
 				count++
+			}
+			if err := iter.Err(); err != nil {
+				return VerdictFail, ev, fmt.Errorf("iterator error: %w", err)
 			}
 			closeQuietly(iter)
 
@@ -892,13 +948,18 @@ func TestConformanceSuite(t *testing.T) {
 			if txErr != nil {
 				return VerdictFail, ev, fmt.Errorf("client not reusable: %w", txErr)
 			}
-			_ = tx.Put(ctx, []byte("k"), []byte("v"))
-			_ = tx.Commit(ctx, fitz.KVDurabilitySync)
+			if err := tx.Put(ctx, []byte("k"), []byte("v")); err != nil {
+				return VerdictFail, ev, fmt.Errorf("put after stream error: %w", err)
+			}
+			if err := tx.Commit(ctx, fitz.KVDurabilitySync); err != nil {
+				return VerdictFail, ev, fmt.Errorf("commit after stream error: %w", err)
+			}
 			ev = append(ev, "client still usable after stream error")
-			return VerdictPass, ev, nil
+			ev = append(ev, "an error during an active streaming read was not exercised")
+			return VerdictPartial, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass {
+		if r.Verdict != VerdictPartial {
 			t.Errorf("CS-013: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -955,10 +1016,11 @@ func TestConformanceSuite(t *testing.T) {
 			}
 			ev = append(ev, "3 concurrent kv transactions completed correctly")
 			ev = append(ev, "all responses correlated to correct request contexts")
-			return VerdictPass, ev, nil
+			ev = append(ev, "cross-domain concurrency and within-domain ordering were not exercised")
+			return VerdictPartial, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass {
+		if r.Verdict != VerdictPartial {
 			t.Errorf("CS-014: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -992,13 +1054,13 @@ func TestConformanceSuite(t *testing.T) {
 
 			time.Sleep(50 * time.Millisecond)
 			if closeErr := client.Close(); closeErr != nil {
-				ev = append(ev, fmt.Sprintf("close returned: %v", closeErr))
+				return VerdictFail, ev, fmt.Errorf("close: %w", closeErr)
 			}
 			ev = append(ev, "close during active work did not panic")
 
-			// Double close must not panic
+			// Double close must succeed.
 			if closeErr := client.Close(); closeErr != nil {
-				ev = append(ev, fmt.Sprintf("double close returned: %v (expected if idempotent)", closeErr))
+				return VerdictFail, ev, fmt.Errorf("double close: %w", closeErr)
 			}
 			ev = append(ev, "double close is safe")
 
@@ -1013,10 +1075,11 @@ func TestConformanceSuite(t *testing.T) {
 				ev = append(ev, "in-flight begin timed out waiting for result")
 			}
 
-			return VerdictPass, ev, nil
+			ev = append(ev, "the KV request may have completed before close; active-work interruption was not established")
+			return VerdictPartial, ev, nil
 		})
 		results.record(r)
-		if r.Verdict != VerdictPass {
+		if r.Verdict != VerdictPartial {
 			t.Errorf("CS-015: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
@@ -1100,8 +1163,18 @@ func TestConformanceSuite(t *testing.T) {
 		}
 	})
 
-	t.Run("CS-017_bounded_concurrency_under_burst_load", func(t *testing.T) {
-		r := run("CS-017", "bounded concurrency under burst load", "P1", func() (Verdict, []string, error) {
+	t.Run("CS-017_global_filtered_multi_page_replay", func(t *testing.T) {
+		r := run("CS-017", "global filtered multi-page replay", "P1", func() (Verdict, []string, error) {
+			return runGlobalFilteredReplay(t)
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("GO-RPC-BURST_smoke", func(t *testing.T) {
+		r := run("GO-RPC-BURST", "RPC burst smoke", "P1", func() (Verdict, []string, error) {
 			var ev []string
 
 			f := newFixture(t)
@@ -1125,7 +1198,7 @@ func TestConformanceSuite(t *testing.T) {
 			if err != nil {
 				return VerdictFail, ev, fmt.Errorf("register worker: %w", err)
 			}
-			defer sub.Deregister()
+			defer func() { _ = sub.Deregister() }()
 
 			callCtx, callCancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 			defer callCancel()
@@ -1169,8 +1242,8 @@ func TestConformanceSuite(t *testing.T) {
 			default:
 			}
 
-			ev = append(ev, "second RPC call remained pending while first was in flight")
-			ev = append(ev, "configured maxInFlightRequests=1 and burst size=2")
+			ev = append(ev, "both delayed RPC calls remained incomplete at the 100ms observation")
+			ev = append(ev, "this does not observe request admission or establish the required 16/64 ceiling")
 
 			callCancel()
 			firstErr := <-firstDoneCh
@@ -1182,22 +1255,67 @@ func TestConformanceSuite(t *testing.T) {
 				ev = append(ev, fmt.Sprintf("second RPC call ended with %v", secondErr))
 			}
 
-			return VerdictPass, ev, nil
+			return VerdictPartial, ev, nil
+		})
+		if r.Verdict == VerdictFail {
+			t.Errorf("GO-RPC-BURST: verdict=%s error=%s", r.Verdict, r.Error)
+		} else if r.Verdict != VerdictPass {
+			t.Logf("GO-RPC-BURST: verdict=%s; admission ceiling was not measured", r.Verdict)
+		}
+	})
+
+	t.Run("CS-019_concurrent_same_type_requests", func(t *testing.T) {
+		r := run("CS-019", "concurrent same-message-type requests", "P0", func() (Verdict, []string, error) {
+			return runSameTypeReserves(t)
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-017: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("CS-019: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("CS-020_handshake_negotiation", func(t *testing.T) {
+		r := run("CS-020", "handshake negotiation", "P0", func() (Verdict, []string, error) {
+			f := connectFixture(t)
+			version, capabilities := f.Client().ServerCapabilities()
+			maxMessageBytes, maxInFlight := f.Client().ServerLimits()
+			if version != 2 || capabilities != 0 || maxMessageBytes == 0 || maxInFlight == 0 {
+				return VerdictFail, nil, fmt.Errorf(
+					"unexpected HELLO state: version=%d caps=%d max_message_bytes=%d max_in_flight=%d",
+					version, capabilities, maxMessageBytes, maxInFlight,
+				)
+			}
+			return VerdictPass, []string{
+				fmt.Sprintf("protocol_version=%d", version),
+				fmt.Sprintf("broker_caps=%d", capabilities),
+				fmt.Sprintf("max_message_bytes=%d", maxMessageBytes),
+				fmt.Sprintf("max_in_flight=%d", maxInFlight),
+			}, nil
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-020: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
+	t.Run("CS-024_stream_event_boundary_and_replay", func(t *testing.T) {
+		r := run("CS-024", "400 KiB Stream event boundary and replay", "P0", func() (Verdict, []string, error) {
+			return runStreamBoundary(t)
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-024: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
 	// -------------------------------------------------------------------------
-	// CS-018–CS-022: Go-client scenarios not in the cross-language spec but
+	// GO-001–GO-005: Go-client scenarios separate from the cross-language spec,
 	// required to close coverage gaps for Queue, Lease, Notice, Schedule, and
 	// reconnect restoration behavior.
 	// -------------------------------------------------------------------------
 
-	t.Run("CS-018_queue_enqueue_reserve_complete", func(t *testing.T) {
-		r := run("CS-018", "queue enqueue/reserve/complete lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-001_queue_enqueue_reserve_complete", func(t *testing.T) {
+		r := run("GO-001", "queue enqueue/reserve/complete lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1244,12 +1362,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-018: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-001: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-019_lease_acquire_contention_release", func(t *testing.T) {
-		r := run("CS-019", "lease acquire/contention/release lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-002_lease_acquire_contention_release", func(t *testing.T) {
+		r := run("GO-002", "lease acquire/contention/release lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 
 			f1 := connectFixture(t)
@@ -1292,12 +1410,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-019: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-002: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-020_notice_subscribe_publish_deliver", func(t *testing.T) {
-		r := run("CS-020", "notice subscribe/publish/deliver lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-003_notice_subscribe_publish_deliver", func(t *testing.T) {
+		r := run("GO-003", "notice subscribe/publish/deliver lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1351,12 +1469,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-020: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-003: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-021_schedule_create_subscribe_cancel", func(t *testing.T) {
-		r := run("CS-021", "schedule create/subscribe/cancel lifecycle", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-004_schedule_create_subscribe_cancel", func(t *testing.T) {
+		r := run("GO-004", "schedule create/subscribe/cancel lifecycle", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			f := connectFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1400,12 +1518,12 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-021: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-004: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 
-	t.Run("CS-022_queue_reconnect_restore", func(t *testing.T) {
-		r := run("CS-022", "queue subscription restore after reconnect", "P1", func() (Verdict, []string, error) {
+	t.Run("GO-005_queue_reconnect_restore", func(t *testing.T) {
+		r := run("GO-005", "queue subscription restore after reconnect", "P1", func() (Verdict, []string, error) {
 			var ev []string
 			harness := fixture.NewProxyReconnectHarness(t, transportType(), authMode())
 			subscriber := harness.Proxied
@@ -1485,7 +1603,7 @@ func TestConformanceSuite(t *testing.T) {
 		})
 		results.record(r)
 		if r.Verdict != VerdictPass {
-			t.Errorf("CS-022: verdict=%s error=%s", r.Verdict, r.Error)
+			t.Errorf("GO-005: verdict=%s error=%s", r.Verdict, r.Error)
 		}
 	})
 }
