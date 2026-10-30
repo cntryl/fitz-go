@@ -73,6 +73,9 @@ func (c *Client) CorrelationEnabled() bool { return c.inner.CorrelationEnabled()
 // ServerCapabilities returns the advertised protocol version and capability bits.
 func (c *Client) ServerCapabilities() (uint16, uint32) { return c.inner.ServerCapabilities() }
 
+// ServerLimits returns the negotiated maximum message size and in-flight requests.
+func (c *Client) ServerLimits() (uint32, uint32) { return c.inner.ServerLimits() }
+
 // Notice returns the Notice domain client for publish/subscribe messaging.
 func (c *Client) Notice() NoticeClient {
 	return &noticeClient{inner: c.inner.Notice()}

@@ -162,6 +162,10 @@ func (c *Connection) CorrelationEnabled() bool { return c.mux.CorrelationEnabled
 
 func (c *Connection) ServerCapabilities() (uint16, uint32) { return c.mux.Capabilities() }
 
+func (c *Connection) ServerLimits() (uint32, uint32) {
+	return c.maxMessageBytes.Load(), c.maxInFlight.Load()
+}
+
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{

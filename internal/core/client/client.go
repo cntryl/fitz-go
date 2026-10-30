@@ -640,6 +640,14 @@ func (c *Client) ServerCapabilities() (uint16, uint32) {
 	return 0, 0
 }
 
+// ServerLimits reports the current negotiated frame and in-flight limits.
+func (c *Client) ServerLimits() (uint32, uint32) {
+	if conn := c.currentConnection(); conn != nil {
+		return conn.ServerLimits()
+	}
+	return 0, 0
+}
+
 // Domain client accessors.
 
 // KV returns the KV domain client.

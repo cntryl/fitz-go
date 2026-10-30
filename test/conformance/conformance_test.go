@@ -1274,6 +1274,30 @@ func TestConformanceSuite(t *testing.T) {
 		}
 	})
 
+	t.Run("CS-020_handshake_negotiation", func(t *testing.T) {
+		r := run("CS-020", "handshake negotiation", "P0", func() (Verdict, []string, error) {
+			f := connectFixture(t)
+			version, capabilities := f.Client().ServerCapabilities()
+			maxMessageBytes, maxInFlight := f.Client().ServerLimits()
+			if version != 2 || capabilities != 0 || maxMessageBytes == 0 || maxInFlight == 0 {
+				return VerdictFail, nil, fmt.Errorf(
+					"unexpected HELLO state: version=%d caps=%d max_message_bytes=%d max_in_flight=%d",
+					version, capabilities, maxMessageBytes, maxInFlight,
+				)
+			}
+			return VerdictPass, []string{
+				fmt.Sprintf("protocol_version=%d", version),
+				fmt.Sprintf("broker_caps=%d", capabilities),
+				fmt.Sprintf("max_message_bytes=%d", maxMessageBytes),
+				fmt.Sprintf("max_in_flight=%d", maxInFlight),
+			}, nil
+		})
+		results.record(r)
+		if r.Verdict != VerdictPass {
+			t.Errorf("CS-020: verdict=%s error=%s", r.Verdict, r.Error)
+		}
+	})
+
 	t.Run("CS-024_stream_event_boundary_and_replay", func(t *testing.T) {
 		r := run("CS-024", "400 KiB Stream event boundary and replay", "P0", func() (Verdict, []string, error) {
 			return runStreamBoundary(t)
