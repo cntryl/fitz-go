@@ -18,7 +18,7 @@ import (
 )
 
 func TestShouldTerminateSubscriptionWithTypedErrorGivenAsyncHandlerQueueOverflow(t *testing.T) {
-	conn := connection.New(testkit.NewWire2MockTransport(), connection.Config{
+	conn := connection.New(testkit.NewWire3MockTransport(), connection.Config{
 		AsyncHandlerMaxConcurrency: 1,
 		AsyncHandlerQueueCapacity:  1,
 	})

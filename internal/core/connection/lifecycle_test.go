@@ -73,7 +73,7 @@ func (t *authCloseRaceTransport) RemoteAddr() string {
 }
 
 func TestShouldConfirmAuthenticationOnlyOnceGivenConcurrentCalls(t *testing.T) {
-	conn := New(testkit.NewWire2MockTransport(), DefaultConfig())
+	conn := New(testkit.NewWire3MockTransport(), DefaultConfig())
 	t.Cleanup(func() {
 		require.NoError(t, conn.Close())
 	})
@@ -104,7 +104,7 @@ func TestShouldConfirmAuthenticationOnlyOnceGivenConcurrentCalls(t *testing.T) {
 
 func TestShouldAuthenticateAfterSilentConnectWindowGivenValidJWTWhenStartCalled(t *testing.T) {
 	// Arrange
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	cfg := DefaultConfig()
 	cfg.Token = "token"
 	cfg.AuthSettleDelay = 20 * time.Millisecond
@@ -170,7 +170,7 @@ func TestShouldReturnConnectionClosedGivenCloseDuringHelloNegotiation(t *testing
 }
 
 func TestShouldRemainOpenGivenIdleReadTimeoutWhenAuthenticated(t *testing.T) {
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	cfg := DefaultConfig()
 	cfg.Token = ""
 	cfg.ReadTimeout = 10 * time.Millisecond
@@ -190,7 +190,7 @@ func TestShouldRemainOpenGivenIdleReadTimeoutWhenAuthenticated(t *testing.T) {
 }
 
 func TestShouldReturnQueueFullGivenRequestWaitQueueSaturated(t *testing.T) {
-	conn := New(testkit.NewWire2MockTransport(), Config{
+	conn := New(testkit.NewWire3MockTransport(), Config{
 		Token:               "",
 		MaxInFlightRequests: 1,
 		MaxRequestQueueSize: 1,
@@ -205,7 +205,7 @@ func TestShouldReturnQueueFullGivenRequestWaitQueueSaturated(t *testing.T) {
 }
 
 func TestShouldSendHeartbeatGivenIdleAuthenticatedConnection(t *testing.T) {
-	transport := &heartbeatMockTransport{MockTransport: testkit.NewWire2MockTransport()}
+	transport := &heartbeatMockTransport{MockTransport: testkit.NewWire3MockTransport()}
 	cfg := DefaultConfig()
 	cfg.Token = ""
 	cfg.ReadTimeout = 5 * time.Millisecond
@@ -224,7 +224,7 @@ func TestShouldSendHeartbeatGivenIdleAuthenticatedConnection(t *testing.T) {
 
 func TestShouldReturnAuthenticationFailedGivenReadErrorWhenStartCalled(t *testing.T) {
 	// Arrange
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	transport.SetReadError(io.EOF)
 	cfg := DefaultConfig()
 	cfg.Token = "token"
@@ -238,7 +238,7 @@ func TestShouldReturnAuthenticationFailedGivenReadErrorWhenStartCalled(t *testin
 }
 
 func TestShouldLogReadErrorGivenLoggerWhenStartCalled(t *testing.T) {
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	transport.SetReadError(io.EOF)
 	recorder := newLogRecorder()
 	cfg := DefaultConfig()
@@ -270,7 +270,7 @@ func TestShouldConfirmAuthenticationGivenFirstValidResponseWhenStartCalled(t *te
 	// Arrange
 	frame := protocol.EncodeFrameOwned(protocol.MessageTypeNoticePublish, []byte("payload"))
 	defer frame.Release()
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	transport.SetReadFrames([][]byte{append([]byte(nil), frame.Bytes()...)})
 	cfg := DefaultConfig()
 	cfg.Token = "token"
@@ -287,7 +287,7 @@ func TestShouldConfirmAuthenticationGivenFirstValidResponseWhenStartCalled(t *te
 }
 
 func TestShouldCloseLifecycleGivenDecodeFailureAfterStartWhenDispatchLoopExits(t *testing.T) {
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	conn := New(transport, Config{Token: "", ReadTimeout: time.Second})
 
 	require.NoError(t, conn.Start(context.Background()))
@@ -312,7 +312,7 @@ func TestShouldCloseLifecycleGivenDecodeFailureAfterStartWhenDispatchLoopExits(t
 
 func TestShouldReturnConnectionClosedGivenCloseWhileRequestPendingWhenSendRequestCalled(t *testing.T) {
 	// Arrange
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	cfg := DefaultConfig()
 	cfg.Token = ""
 	cfg.ReadTimeout = time.Second
@@ -348,7 +348,7 @@ func TestShouldDispatchHandlersGivenIncomingNotifyFramesWhenStartCalled(t *testi
 	defer noticeFrame.Release()
 	scheduleFrame := protocol.EncodeFrameOwned(protocol.MessageTypeScheduleNotify, notifyPayload(9, "schedule://realm/area/resource/run", []byte("run")))
 	defer scheduleFrame.Release()
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	transport.SetReadFrames([][]byte{
 		append([]byte(nil), noticeFrame.Bytes()...),
 		append([]byte(nil), scheduleFrame.Bytes()...),
@@ -385,7 +385,7 @@ func TestShouldDispatchHandlersGivenIncomingNotifyFramesWhenStartCalled(t *testi
 }
 
 func TestShouldReturnGivenCloseBeforeStartWhenCloseCalled(t *testing.T) {
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	conn := New(transport, DefaultConfig())
 
 	closed := make(chan error, 1)

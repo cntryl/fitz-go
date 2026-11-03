@@ -34,7 +34,7 @@ func TestShouldWaitForServerHelloBeyondAuthenticationSettlement(t *testing.T) {
 		t.Fatal("Connect completed before capability negotiation")
 	case <-time.After(25 * time.Millisecond):
 	}
-	scripted.PushReadFrame(testkit.HelloFrame(wire2HelloPayload()))
+	scripted.PushReadFrame(testkit.HelloFrame(wire3HelloPayload()))
 
 	// Assert
 	require.NoError(t, <-connected)

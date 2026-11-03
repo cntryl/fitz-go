@@ -12,7 +12,7 @@ import (
 
 func TestShouldSendServiceNameInConnectGivenZeroOptionalCapabilities(t *testing.T) {
 	// Arrange
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	name := strings.Repeat("é", 64)
 	conn := New(transport, Config{ServiceName: " " + name + " "})
 	t.Cleanup(func() { _ = conn.Close() })

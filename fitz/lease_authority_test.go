@@ -48,7 +48,7 @@ func (s *scriptedManagedLeaseTransport) Write(ctx context.Context, frame []byte)
 	s.mu.Unlock()
 	messageType, _, err := protocol.DecodeFrame(frame)
 	if err == nil && messageType == protocol.MessageTypeConnect {
-		s.readCh <- testkit.HelloFrame(wire2HelloPayload())
+		s.readCh <- testkit.HelloFrame(wire3HelloPayload())
 	}
 	return nil
 }
@@ -405,7 +405,7 @@ func TestShouldOmitLeaseAuthorityGivenOrdinaryContext(t *testing.T) {
 	assert.Equal(t, LeaseAuthority{}, authority)
 }
 
-func wire2HelloPayload() []byte {
+func wire3HelloPayload() []byte {
 	payload := make([]byte, 22)
 	binary.BigEndian.PutUint16(payload, 3)
 	binary.BigEndian.PutUint32(payload[6:], 1<<20)

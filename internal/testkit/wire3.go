@@ -8,8 +8,8 @@ import (
 	"github.com/cntryl/fitz-go/internal/protocol"
 )
 
-// NewWire2MockTransport provides CONNECT/HELLO and request correlation for domain tests.
-func NewWire2MockTransport() *MockTransport { m := NewMockTransport(); m.autoHello = true; return m }
+// NewWire3MockTransport provides CONNECT/HELLO and request correlation for domain tests.
+func NewWire3MockTransport() *MockTransport { m := NewMockTransport(); m.autoHello = true; return m }
 
 // signal wakes a reader after fixture state changes. Caller holds mu.
 func (m *MockTransport) signal() {
@@ -19,7 +19,7 @@ func (m *MockTransport) signal() {
 	m.changed = make(chan struct{})
 }
 
-// HelloPayload advertises the Wire 2 base contract without optional capability bits.
+// HelloPayload advertises the Wire 3 core before its required numeric capability extension.
 func HelloPayload() []byte {
 	p := make([]byte, 22)
 	binary.BigEndian.PutUint16(p, 3)

@@ -26,7 +26,7 @@ func TestShouldEncodeQueueTTLExactlyLikeBrokerVector(t *testing.T) {
 
 func TestShouldCloseReservationAfterSuccessfulDelayedNack(t *testing.T) {
 	// Arrange
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	conn := connection.New(transport, connection.Config{})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() { _ = conn.Close() })

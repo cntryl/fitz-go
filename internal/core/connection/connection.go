@@ -645,6 +645,9 @@ func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
 	}
 	switch frame.MessageType {
 	case protocol.MessageTypeHello:
+		if c.mux.protocolVersion.Load() != 0 {
+			return false, errors.New("repeated HELLO cannot renegotiate an established session")
+		}
 		if frame.CorrelationID != 0 || frame.Flags != protocol.FlagExtensionsPresent || len(frame.Payload) != 22 {
 			return false, errors.New("malformed HELLO")
 		}

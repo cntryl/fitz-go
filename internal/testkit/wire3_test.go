@@ -71,7 +71,7 @@ func TestShouldLeaveUnsolicitedNotificationUncorrelated(t *testing.T) {
 
 func TestShouldCompleteQueuedMockResponseAfterMatchingRequest(t *testing.T) {
 	// Arrange
-	transport := NewWire2MockTransport()
+	transport := NewWire3MockTransport()
 	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeKvBegin, []byte{0})})
 	request := requestFrame(t, protocol.MessageTypeKvBegin, 42)
 	require.NoError(t, transport.Write(context.Background(), request))
@@ -91,7 +91,7 @@ func TestShouldCompleteQueuedMockResponseAfterMatchingRequest(t *testing.T) {
 
 func TestShouldKeepMockResponsePendingUntilMatchingRequest(t *testing.T) {
 	// Arrange
-	transport := NewWire2MockTransport()
+	transport := NewWire3MockTransport()
 	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeKvBegin, []byte{0})})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()

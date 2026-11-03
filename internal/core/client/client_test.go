@@ -168,7 +168,7 @@ func TestShouldReturnNilGivenNoConnectionWhenCloseCalledTwice(t *testing.T) {
 
 func TestShouldClosePendingRPCsGivenConnectionLossWhenMonitorConnectionEnds(t *testing.T) {
 	transport := testkit.NewMockTransport()
-	transport.SetReadFrames([][]byte{testkit.HelloFrame(wire2HelloPayload())})
+	transport.SetReadFrames([][]byte{testkit.HelloFrame(wire3HelloPayload())})
 	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -205,7 +205,7 @@ func TestShouldClosePendingRPCsGivenConnectionLossWhenMonitorConnectionEnds(t *t
 
 func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t *testing.T) {
 	oldTransport := testkit.NewMockTransport()
-	oldTransport.SetReadFrames([][]byte{testkit.HelloFrame(wire2HelloPayload())})
+	oldTransport.SetReadFrames([][]byte{testkit.HelloFrame(wire3HelloPayload())})
 	oldConn := connection.New(oldTransport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, oldConn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -213,7 +213,7 @@ func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t 
 	})
 
 	newTransport := testkit.NewMockTransport()
-	newTransport.SetReadFrames([][]byte{testkit.HelloFrame(wire2HelloPayload())})
+	newTransport.SetReadFrames([][]byte{testkit.HelloFrame(wire3HelloPayload())})
 	newConn := connection.New(newTransport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, newConn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -250,7 +250,7 @@ func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t 
 
 func TestShouldClosePendingRPCsGivenClientShutdownWhenMonitorConnectionEnds(t *testing.T) {
 	transport := testkit.NewMockTransport()
-	transport.SetReadFrames([][]byte{testkit.HelloFrame(wire2HelloPayload())})
+	transport.SetReadFrames([][]byte{testkit.HelloFrame(wire3HelloPayload())})
 	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 
@@ -1004,7 +1004,7 @@ func (s *scriptedTransport) Write(ctx context.Context, frame []byte) error {
 	s.written = append(s.written, append([]byte(nil), frame...))
 	messageType, _, err := protocol.DecodeFrame(frame)
 	if err == nil && messageType == protocol.MessageTypeConnect && s.helloOnConnect {
-		s.readCh <- testkit.HelloFrame(wire2HelloPayload())
+		s.readCh <- testkit.HelloFrame(wire3HelloPayload())
 	}
 	return nil
 }
@@ -1111,7 +1111,7 @@ func assertLogEntry(t *testing.T, entries []logRecord, level slog.Level, message
 	t.Fatalf("expected log entry level=%s message=%q, got %#v", level, message, entries)
 }
 
-func wire2HelloPayload() []byte {
+func wire3HelloPayload() []byte {
 	payload := make([]byte, 22)
 	binary.BigEndian.PutUint16(payload, 3)
 	binary.BigEndian.PutUint32(payload[6:], 1<<20)
