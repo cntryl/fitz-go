@@ -47,6 +47,7 @@ type AvailabilityHandler func(ctx context.Context, notif AvailabilityNotificatio
 
 type enqueueConfig struct {
 	delaySeconds uint64
+	ttlHours     *uint32
 }
 
 // EnqueueOption configures queue message publication.
@@ -247,7 +248,19 @@ func (c *client) EnqueueWithOptions(ctx context.Context, route string, body []by
 
 	var msgID uint64
 	err := c.conn.RunWithRetry(ctx, func() error {
-		resp, err := c.conn.SendRequestWithWriter(ctx, protocol.MessageTypeQueueEnqueue, enqueuePayloadWriter(route, body, cfg.delaySeconds))
+		writer := enqueuePayloadWriter(route, body, cfg.delaySeconds)
+		var flags uint8
+		if cfg.ttlHours != nil {
+			if *cfg.ttlHours == 0 {
+				return errors.New("TTL hours must be positive")
+			}
+			if !c.conn.SupportsCapability(protocol.CapabilityQueueMessageTTL) {
+				return errors.New("queue TTL capability was not negotiated")
+			}
+			writer = enqueueWriterWithTTL(route, body, cfg)
+			flags = protocol.FlagExtensionsPresent
+		}
+		resp, err := c.conn.SendRequestWithWriterAndFlags(ctx, protocol.MessageTypeQueueEnqueue, flags, writer)
 		if err != nil {
 			return fmt.Errorf("enqueue request failed: %w", err)
 		}

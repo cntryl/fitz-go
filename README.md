@@ -1,8 +1,10 @@
 # fitz-go
 
-`Connect` sends a Wire-2 `CONNECT` and waits for `HELLO` before publishing
+Current release candidate: **0.4.0**, requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](WIRE3_MIGRATION.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
+
+`Connect` sends a Wire 3 `CONNECT` and waits for `HELLO` before publishing
 domain handles. The hello supplies the negotiated message-size and
-in-flight-request limits. Capability bits are reserved as zero in Wire 2;
+in-flight-request limits. Legacy capability bits remain zero; numeric capability IDs are negotiated separately. In Wire 3,
 correlation and the updated domain encodings are part of the wire version.
 
 Reference Go client for Fitz.
@@ -62,8 +64,8 @@ func main() {
 }
 ```
 
-`WithServiceName` is optional and is sent in the Wire-2 `CONNECT` payload with
-the client build identity. Capability bits are reserved as zero in Wire 2.
+`WithServiceName` is optional and is sent in the Wire 3 `CONNECT` payload with
+the client build identity. Legacy capability bits remain zero; numeric capability IDs are negotiated separately.
 
 ## Canonical usage patterns
 

@@ -18,7 +18,7 @@ import (
 )
 
 func TestShouldTerminateSubscriptionWithTypedErrorGivenAsyncHandlerQueueOverflow(t *testing.T) {
-	conn := connection.New(testkit.NewWire2MockTransport(), connection.Config{
+	conn := connection.New(testkit.NewWire3MockTransport(), connection.Config{
 		AsyncHandlerMaxConcurrency: 1,
 		AsyncHandlerQueueCapacity:  1,
 	})
@@ -85,7 +85,7 @@ func (s *scriptedRestoreTransport) Write(ctx context.Context, frame []byte) erro
 	s.mu.Unlock()
 	kind, _, err := protocol.DecodeFrame(frame)
 	if err == nil && kind == protocol.MessageTypeConnect {
-		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+		s.readCh <- testkit.HelloFrame(testkit.HelloPayload())
 	}
 	return nil
 }

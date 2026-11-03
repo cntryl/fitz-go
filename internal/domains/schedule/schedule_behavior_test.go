@@ -42,7 +42,7 @@ func (t *scriptedTransport) Write(ctx context.Context, frame []byte) error {
 	t.mu.Unlock()
 	kind, _, e := protocol.DecodeFrame(frame)
 	if e == nil && kind == 1 {
-		t.reads <- protocol.EncodeFrame(2, testkit.HelloPayload())
+		t.reads <- testkit.HelloFrame(testkit.HelloPayload())
 	}
 	select {
 	case <-ctx.Done():

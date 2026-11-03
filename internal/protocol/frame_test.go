@@ -62,7 +62,7 @@ func TestShouldRejectInvalidFrameGivenTruncatedHeaderPayloadOrTrailingData(t *te
 func TestShouldRejectReservedFlagsGivenEncodedFrame(t *testing.T) {
 	// Arrange
 	frame := EncodeFrame(100, nil)
-	frame[2] = 4
+	frame[2] = 8
 	// Act
 	_, err := DecodeMessage(frame)
 	// Assert

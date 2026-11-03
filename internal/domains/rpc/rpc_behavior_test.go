@@ -69,7 +69,7 @@ func TestShouldReturnBrokerErrorGivenRejectedWorkerUnsubscribe(t *testing.T) {
 
 func TestShouldRejectWorkerConcurrencyAboveWireLimit(t *testing.T) {
 	// Arrange
-	conn := connection.New(testkit.NewWire2MockTransport(), connection.Config{})
+	conn := connection.New(testkit.NewWire3MockTransport(), connection.Config{})
 	client := NewClient(conn)
 
 	// Act
@@ -116,7 +116,7 @@ func (s *scriptedRPCRestoreTransport) Write(ctx context.Context, frame []byte) e
 	s.mu.Unlock()
 	kind, _, err := protocol.DecodeFrame(frame)
 	if err == nil && kind == protocol.MessageTypeConnect {
-		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+		s.readCh <- testkit.HelloFrame(testkit.HelloPayload())
 	}
 	return nil
 }
@@ -176,7 +176,7 @@ func waitForRPCWrites(t *testing.T, trans *scriptedRPCRestoreTransport, expected
 
 func newStartedRPCConnection(t *testing.T) (*connection.Connection, *testkit.MockTransport) {
 	t.Helper()
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -192,10 +192,10 @@ func newStartedRPCConnectionWithCapabilities(t *testing.T, capabilities uint32) 
 
 func newStartedRPCConnectionWithConfig(t *testing.T, capabilities uint32, config connection.Config) (*connection.Connection, *testkit.MockTransport) {
 	t.Helper()
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	payload := testkit.HelloPayload()
 	binary.BigEndian.PutUint32(payload[2:], capabilities)
-	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeServerHello, payload)})
+	transport.SetReadFrames([][]byte{testkit.HelloFrame(payload)})
 	conn := connection.New(transport, config)
 	require.NoError(t, conn.Start(context.Background()))
 	require.Eventually(t, func() bool {
@@ -375,7 +375,7 @@ func TestShouldAcknowledgeFinishedCleanupBeforeDelayedCancellationArrives(t *tes
 
 func TestShouldCountDispatchBufferingAgainstInboundDeadline(t *testing.T) {
 	// Arrange
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	conn := connection.New(transport, connection.Config{AsyncHandlerMaxConcurrency: 1, AsyncHandlerQueueCapacity: 1})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() { _ = conn.Close() })

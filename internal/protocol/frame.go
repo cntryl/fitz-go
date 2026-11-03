@@ -14,7 +14,7 @@ const (
 	MaxPayloadSize           = MaxMessageSize - HeaderLen
 	FlagAckRequested   uint8 = 1 << 0
 	FlagResponseFinal  uint8 = 1 << 1
-	validFlags               = FlagAckRequested | FlagResponseFinal
+	validFlags               = FlagAckRequested | FlagResponseFinal | FlagExtensionsPresent
 	pooledBufferMaxCap       = MaxMessageSize
 )
 
@@ -80,7 +80,7 @@ type Frame struct {
 	Payload       []byte
 }
 
-// EncodeFrame returns a complete wire-2 message with zero flags and correlation.
+// EncodeFrame returns a complete wire-3 message with zero flags and correlation.
 func EncodeFrame(msgType uint16, payload []byte) []byte {
 	frame := EncodeFrameOwned(msgType, payload)
 	if frame == nil {
@@ -151,8 +151,11 @@ func EncodeFrameWithHeaderAndPayloadWriter(msgType uint16, flags uint8, correlat
 	return frame, nil
 }
 
-// DecodeMessage decodes exactly one complete wire-2 message.
+// DecodeMessage decodes exactly one complete wire-3 message.
 func DecodeMessage(data []byte) (Frame, error) {
+	if len(data) > MaxMessageSize {
+		return Frame{}, errors.New("message exceeds maximum size")
+	}
 	if len(data) < HeaderLen {
 		return Frame{}, fmt.Errorf("message header is truncated: got %d bytes", len(data))
 	}

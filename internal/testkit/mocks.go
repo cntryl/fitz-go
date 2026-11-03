@@ -96,7 +96,7 @@ func (m *MockTransport) Write(ctx context.Context, frame []byte) error {
 			isControl = e == nil && (f.MessageType == 2 || f.MessageType == 3)
 		}
 		if !isControl {
-			m.readFrames = append(m.readFrames[:m.readIndex], append([][]byte{protocol.EncodeFrame(2, HelloPayload())}, m.readFrames[m.readIndex:]...)...)
+			m.readFrames = append(m.readFrames[:m.readIndex], append([][]byte{HelloFrame(HelloPayload())}, m.readFrames[m.readIndex:]...)...)
 		}
 	}
 	m.signal()

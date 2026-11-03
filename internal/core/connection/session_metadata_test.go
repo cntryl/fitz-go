@@ -12,7 +12,7 @@ import (
 
 func TestShouldSendServiceNameInConnectGivenZeroOptionalCapabilities(t *testing.T) {
 	// Arrange
-	transport := testkit.NewWire2MockTransport()
+	transport := testkit.NewWire3MockTransport()
 	name := strings.Repeat("é", 64)
 	conn := New(transport, Config{ServiceName: " " + name + " "})
 	t.Cleanup(func() { _ = conn.Close() })
@@ -21,7 +21,10 @@ func TestShouldSendServiceNameInConnectGivenZeroOptionalCapabilities(t *testing.
 	frames := transport.GetWrittenFrames()
 	// Assert
 	require.Len(t, frames, 1)
-	kind, payload, err := protocol.DecodeFrame(frames[0])
+	frame, err := protocol.DecodeMessage(frames[0])
+	require.NoError(t, err)
+	payload, _, err := protocol.DecodeExtensions(frame)
+	kind := frame.MessageType
 	require.NoError(t, err)
 	require.Equal(t, uint16(1), kind)
 	jwt, next, err := ReadString(payload, 8)
@@ -31,7 +34,7 @@ func TestShouldSendServiceNameInConnectGivenZeroOptionalCapabilities(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, name, actual)
 	version, bits := conn.ServerCapabilities()
-	require.Equal(t, uint16(2), version)
+	require.Equal(t, uint16(3), version)
 	require.Zero(t, bits)
 }
 func TestShouldRejectLegacyHelloGivenTruncatedNegotiation(t *testing.T) {

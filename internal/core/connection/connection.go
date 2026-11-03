@@ -184,7 +184,7 @@ func DefaultConfig() Config {
 		HeartbeatConfigured:       true,
 		HeartbeatInterval:         10 * time.Second,
 		HeartbeatTimeout:          30 * time.Second,
-		ClientBuild:               "fitz-go/0.3.0",
+		ClientBuild:               "fitz-go/0.4.0",
 	}
 }
 
@@ -251,7 +251,7 @@ func New(trans transport.Transport, cfg Config) *Connection {
 		cfg.HeartbeatTimeout = 30 * time.Second
 	}
 	if cfg.ClientBuild == "" {
-		cfg.ClientBuild = "fitz-go/0.3.0"
+		cfg.ClientBuild = "fitz-go/0.4.0"
 	}
 
 	tracer := cfg.Tracer
@@ -433,7 +433,7 @@ func (c *Connection) Start(ctx context.Context) error {
 		return fmt.Errorf("send CONNECT: %w", err)
 	}
 
-	// HELLO is the only successful wire-2 handshake response. A silent socket
+	// HELLO is the only successful wire-3 handshake response. A silent socket
 	// is not an authenticated or negotiated session.
 	negotiationTimeout := c.cfg.ReadTimeout
 	if negotiationTimeout <= 0 {
@@ -447,7 +447,7 @@ func (c *Connection) Start(ctx context.Context) error {
 		}
 		c.confirmAuthentication()
 		if c.logger != nil {
-			c.logger.InfoContext(ctx, "wire-2 connection negotiated")
+			c.logger.InfoContext(ctx, "wire-3 connection negotiated")
 		}
 		c.startHeartbeat()
 		return nil
@@ -483,17 +483,16 @@ func (c *Connection) Start(ctx context.Context) error {
 	}
 }
 
-// sendConnect sends the wire-2 version and client identity fields.
+// sendConnect sends the wire-3 version and client identity fields.
 func (c *Connection) sendConnect(ctx context.Context) error {
 	ctx, span := c.tracer.Start(ctx, "fitz.connection.send_connect", trace.WithAttributes(attribute.Int("fitz.msg_type", int(protocol.MessageTypeConnect))))
 	defer span.End()
 
 	var payload bytes.Buffer
 	var versions [8]byte
-	binary.BigEndian.PutUint16(versions[:2], 2)
-	binary.BigEndian.PutUint16(versions[2:4], 2)
-	// The current client has no optional wire capabilities; features that were
-	// formerly gated by capability bits are part of the wire-2 base layouts.
+	binary.BigEndian.PutUint16(versions[:2], 3)
+	binary.BigEndian.PutUint16(versions[2:4], 3)
+	// Legacy capability bits remain zero; numeric IDs use extension field 1.
 	payload.Write(versions[:])
 	writeConnectString := func(value string) {
 		var length [4]byte
@@ -504,7 +503,11 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 	writeConnectString(c.token)
 	writeConnectString(strings.TrimSpace(c.cfg.ServiceName))
 	writeConnectString(c.cfg.ClientBuild)
-	frame := protocol.EncodeFrameOwned(protocol.MessageTypeConnect, payload.Bytes())
+	value, err := protocol.EncodeExtensions(payload.Bytes(), []protocol.Extension{{ID: 1, Value: protocol.ClientCapabilityList()}})
+	if err != nil {
+		return err
+	}
+	frame := protocol.EncodeFrameOwnedWithHeader(protocol.MessageTypeConnect, protocol.FlagExtensionsPresent, 0, value)
 	if frame == nil {
 		err := errors.New("encode CONNECT frame")
 		span.RecordError(err)
@@ -521,7 +524,7 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 	}
 
 	c.writeMu.Lock()
-	err := c.transport.Write(writeCtx, frame.Bytes())
+	err = c.transport.Write(writeCtx, frame.Bytes())
 	c.writeMu.Unlock()
 	if err != nil {
 		span.RecordError(err)
@@ -531,7 +534,7 @@ func (c *Connection) sendConnect(ctx context.Context) error {
 	c.recordActivity()
 
 	// Both anonymous and authenticated connections use the bounded silent
-	// CONNECT window. HELLO supplies the Wire-2 limits before callers register
+	// CONNECT window. HELLO supplies the Wire 3 limits before callers register
 	// workers; a missing HELLO is not an authenticated negotiated session.
 
 	return nil
@@ -625,23 +628,37 @@ func (c *Connection) dispatchLoop() {
 }
 
 func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
+	if limit := c.maxMessageBytes.Load(); limit > 0 && uint64(len(data)) > uint64(limit) {
+		return false, errors.New("message exceeds negotiated limit")
+	}
 	frame, err := protocol.DecodeMessage(data)
 	if err != nil {
 		return false, err
 	}
+	core, capabilityIDs, err := protocol.DecodeExtensions(frame)
+	if err != nil {
+		return false, err
+	}
+	frame.Payload = core
 	if c.logger != nil {
 		c.logger.Debug("frame received", "msg_type", frame.MessageType, "correlation", frame.CorrelationID)
 	}
 	switch frame.MessageType {
 	case protocol.MessageTypeHello:
-		if frame.CorrelationID != 0 || len(frame.Payload) < 22 {
+		if c.mux.protocolVersion.Load() != 0 {
+			return false, errors.New("repeated HELLO cannot renegotiate an established session")
+		}
+		if frame.CorrelationID != 0 || frame.Flags != protocol.FlagExtensionsPresent || len(frame.Payload) != 22 {
 			return false, errors.New("malformed HELLO")
 		}
 		version := binary.BigEndian.Uint16(frame.Payload[:2])
-		if version != 2 {
+		if version != 3 {
 			return false, fmt.Errorf("unsupported negotiated wire version %d", version)
 		}
 		capabilities := binary.BigEndian.Uint32(frame.Payload[2:6])
+		if capabilities != 0 {
+			return false, errors.New("legacy HELLO capability bits must be zero")
+		}
 		maxMessageBytes := binary.BigEndian.Uint32(frame.Payload[6:10])
 		maxInFlight := binary.BigEndian.Uint32(frame.Payload[10:14])
 		sessionID := binary.BigEndian.Uint64(frame.Payload[14:22])
@@ -662,6 +679,11 @@ func (c *Connection) dispatchTransportFrame(data []byte) (bool, error) {
 			c.oneWaySem = make(chan struct{}, limit)
 		}
 		c.mux.SetCapabilities(version, capabilities)
+		var mask uint32
+		for _, id := range capabilityIDs {
+			mask |= 1 << id
+		}
+		c.mux.activeCapabilityIDs.Store(mask)
 		if sizer, ok := c.transport.(interface{ SetMaxFrameSize(size int) }); ok {
 			sizer.SetMaxFrameSize(int(localLimit))
 		}

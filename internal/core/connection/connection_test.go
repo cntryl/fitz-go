@@ -47,7 +47,7 @@ func (t *writeReorderingTransport) Write(ctx context.Context, frame []byte) erro
 		return err
 	}
 	if msgType == protocol.MessageTypeConnect {
-		t.frames <- protocol.EncodeFrame(2, testkit.HelloPayload())
+		t.frames <- testkit.HelloFrame(testkit.HelloPayload())
 		return nil
 	}
 
@@ -260,7 +260,7 @@ func (t *admissionBlockingTransport) Write(ctx context.Context, frame []byte) er
 	t.mu.Lock()
 	t.written = append(t.written, append([]byte(nil), frame...))
 	if msgType == 1 && t.helloOnConnect {
-		t.responseCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+		t.responseCh <- testkit.HelloFrame(testkit.HelloPayload())
 	}
 	if msgType != protocol.MessageTypeConnect {
 		t.requestWrites++
@@ -317,7 +317,7 @@ func (transport *admissionBlockingTransport) waitForRequestWrite(t *testing.T, e
 
 func (t *admissionBlockingTransport) pushResponse(msgType uint16, payload []byte) {
 	t.mu.Lock()
-	frame := testkit.CorrelateResponse(protocol.EncodeFrame(msgType, payload), t.written)
+	frame := testkit.CorrelateResponse(helloAwareFrame(msgType, payload), t.written)
 	t.mu.Unlock()
 	t.responseCh <- append([]byte(nil), frame...)
 }
@@ -881,4 +881,11 @@ func BenchmarkGetPutBuffer(b *testing.B) {
 		buf := connection.GetBuffer()
 		connection.PutBuffer(buf)
 	}
+}
+
+func helloAwareFrame(kind uint16, payload []byte) []byte {
+	if kind == 2 {
+		return testkit.HelloFrame(payload)
+	}
+	return protocol.EncodeFrame(kind, payload)
 }

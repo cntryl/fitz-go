@@ -14,7 +14,7 @@ import (
 )
 
 func TestShouldRejectAsyncHandlerLaunchGivenQueueFullWhenLaunchAsyncHandlerCalled(t *testing.T) {
-	conn := New(testkit.NewWire2MockTransport(), Config{AsyncHandlerMaxConcurrency: 1, AsyncHandlerQueueCapacity: 1})
+	conn := New(testkit.NewWire3MockTransport(), Config{AsyncHandlerMaxConcurrency: 1, AsyncHandlerQueueCapacity: 1})
 	t.Cleanup(func() {
 		_ = conn.Close()
 	})
@@ -67,7 +67,7 @@ func TestShouldRejectAsyncHandlerLaunchGivenQueueFullWhenLaunchAsyncHandlerCalle
 }
 
 func TestShouldExpireQueuedAsyncHandlerGivenTimeoutBeforeWorkerStartsWhenLaunchAsyncHandlerCalled(t *testing.T) {
-	conn := New(testkit.NewWire2MockTransport(), Config{AsyncHandlerMaxConcurrency: 1, AsyncHandlerQueueCapacity: 1})
+	conn := New(testkit.NewWire3MockTransport(), Config{AsyncHandlerMaxConcurrency: 1, AsyncHandlerQueueCapacity: 1})
 	t.Cleanup(func() {
 		_ = conn.Close()
 	})
@@ -109,7 +109,7 @@ func TestShouldEndQueuedAsyncHandlerSpanGivenShutdownWhenJobDrained(t *testing.T
 		require.NoError(t, tp.Shutdown(context.Background()))
 	})
 
-	conn := New(testkit.NewWire2MockTransport(), Config{
+	conn := New(testkit.NewWire3MockTransport(), Config{
 		AsyncHandlerMaxConcurrency: 1,
 		AsyncHandlerQueueCapacity:  1,
 		Tracer:                     tp.Tracer("fitz-go-async-test"),
@@ -165,7 +165,7 @@ func TestShouldCancelReceivedAsyncHandlerJobGivenShutdownBeforeSlotAcquired(t *t
 		require.NoError(t, tp.Shutdown(context.Background()))
 	})
 
-	conn := New(testkit.NewWire2MockTransport(), Config{
+	conn := New(testkit.NewWire3MockTransport(), Config{
 		AsyncHandlerMaxConcurrency: 1,
 		AsyncHandlerQueueCapacity:  1,
 		Tracer:                     tp.Tracer("fitz-go-async-test"),

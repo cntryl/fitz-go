@@ -8,8 +8,8 @@ import (
 	"github.com/cntryl/fitz-go/internal/protocol"
 )
 
-// NewWire2MockTransport provides CONNECT/HELLO and request correlation for domain tests.
-func NewWire2MockTransport() *MockTransport { m := NewMockTransport(); m.autoHello = true; return m }
+// NewWire3MockTransport provides CONNECT/HELLO and request correlation for domain tests.
+func NewWire3MockTransport() *MockTransport { m := NewMockTransport(); m.autoHello = true; return m }
 
 // signal wakes a reader after fixture state changes. Caller holds mu.
 func (m *MockTransport) signal() {
@@ -19,10 +19,10 @@ func (m *MockTransport) signal() {
 	m.changed = make(chan struct{})
 }
 
-// HelloPayload advertises the Wire 2 base contract without optional capability bits.
+// HelloPayload advertises the Wire 3 core before its required numeric capability extension.
 func HelloPayload() []byte {
 	p := make([]byte, 22)
-	binary.BigEndian.PutUint16(p, 2)
+	binary.BigEndian.PutUint16(p, 3)
 	binary.BigEndian.PutUint32(p[6:], 1<<20)
 	binary.BigEndian.PutUint32(p[10:], 64)
 	binary.BigEndian.PutUint64(p[14:], 1)
@@ -75,4 +75,15 @@ func WriteErrorCode(buf *bytes.Buffer, code uint32) {
 	} else {
 		buf.WriteByte(0)
 	}
+}
+
+// HelloFrame encodes a Wire 3 broker handshake for mocks.
+func HelloFrame(core []byte) []byte {
+	payload, err := protocol.EncodeExtensions(core, []protocol.Extension{{ID: 1, Value: protocol.ClientCapabilityList()}})
+	if err != nil {
+		panic(err)
+	}
+	frame := protocol.EncodeFrameOwnedWithHeader(2, protocol.FlagExtensionsPresent, 0, payload)
+	defer frame.Release()
+	return append([]byte(nil), frame.Bytes()...)
 }

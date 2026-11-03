@@ -17,6 +17,12 @@ type QueueAvailabilityHandler func(context.Context, QueueAvailabilityNotificatio
 
 type queueEnqueueConfig struct {
 	delaySeconds uint64
+	ttlHours     *uint32
+}
+
+// WithQueueEnqueueTTLHours selects a positive per-message lifetime in hours.
+func WithQueueEnqueueTTLHours(hours uint32) QueueEnqueueOption {
+	return func(cfg *queueEnqueueConfig) { cfg.ttlHours = &hours }
 }
 
 // QueueEnqueueOption configures queue message publication.
@@ -111,6 +117,11 @@ func (q *QueueItem) Complete(ctx context.Context) error {
 	return q.inner.Complete(ctx)
 }
 
+// Nack relinquishes this reservation and optionally delays its next visibility.
+func (q *QueueItem) Nack(ctx context.Context, visibilitySeconds uint64) error {
+	return q.inner.Nack(ctx, visibilitySeconds)
+}
+
 // CompleteWithToken acknowledges this queue item with an explicit token.
 func (q *QueueItem) CompleteWithToken(ctx context.Context, token uint64) error {
 	return q.inner.CompleteWithToken(ctx, token)
@@ -127,7 +138,11 @@ func (c *queueClient) EnqueueWithOptions(ctx context.Context, route string, body
 			opt(&cfg)
 		}
 	}
-	return c.inner.EnqueueWithOptions(ctx, route, body, internalqueue.WithDelaySeconds(cfg.delaySeconds))
+	options := []internalqueue.EnqueueOption{internalqueue.WithDelaySeconds(cfg.delaySeconds)}
+	if cfg.ttlHours != nil {
+		options = append(options, internalqueue.WithTTLHours(*cfg.ttlHours))
+	}
+	return c.inner.EnqueueWithOptions(ctx, route, body, options...)
 }
 
 func (c *queueClient) Reserve(ctx context.Context, route string, leaseSecs uint64, batchSize uint32) ([]*QueueItem, error) {

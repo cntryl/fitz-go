@@ -168,7 +168,7 @@ func TestShouldReturnNilGivenNoConnectionWhenCloseCalledTwice(t *testing.T) {
 
 func TestShouldClosePendingRPCsGivenConnectionLossWhenMonitorConnectionEnds(t *testing.T) {
 	transport := testkit.NewMockTransport()
-	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeHello, wire2HelloPayload())})
+	transport.SetReadFrames([][]byte{testkit.HelloFrame(wire3HelloPayload())})
 	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -205,7 +205,7 @@ func TestShouldClosePendingRPCsGivenConnectionLossWhenMonitorConnectionEnds(t *t
 
 func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t *testing.T) {
 	oldTransport := testkit.NewMockTransport()
-	oldTransport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeHello, wire2HelloPayload())})
+	oldTransport.SetReadFrames([][]byte{testkit.HelloFrame(wire3HelloPayload())})
 	oldConn := connection.New(oldTransport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, oldConn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -213,7 +213,7 @@ func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t 
 	})
 
 	newTransport := testkit.NewMockTransport()
-	newTransport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeHello, wire2HelloPayload())})
+	newTransport.SetReadFrames([][]byte{testkit.HelloFrame(wire3HelloPayload())})
 	newConn := connection.New(newTransport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, newConn.Start(context.Background()))
 	t.Cleanup(func() {
@@ -250,7 +250,7 @@ func TestShouldIgnoreStaleConnectionGivenReplacementWhenMonitorConnectionEnds(t 
 
 func TestShouldClosePendingRPCsGivenClientShutdownWhenMonitorConnectionEnds(t *testing.T) {
 	transport := testkit.NewMockTransport()
-	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeHello, wire2HelloPayload())})
+	transport.SetReadFrames([][]byte{testkit.HelloFrame(wire3HelloPayload())})
 	conn := connection.New(transport, connection.Config{Token: "", ReadTimeout: time.Second})
 	require.NoError(t, conn.Start(context.Background()))
 
@@ -373,10 +373,13 @@ func TestShouldAllowManualReconnectGivenConnectionLossWhenReconnectDisabled(t *t
 
 	writtenFrames := secondTransport.WrittenFrames()
 	require.Len(t, writtenFrames, 1)
-	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
+	connectFrame, err := protocol.DecodeMessage(writtenFrames[0])
+	require.NoError(t, err)
+	connectPayload, _, err := protocol.DecodeExtensions(connectFrame)
+	connectType := connectFrame.MessageType
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeConnect, connectType)
-	require.Equal(t, []byte{0, 2, 0, 2, 0, 0, 0, 0}, connectPayload[:8])
+	require.Equal(t, []byte{0, 3, 0, 3, 0, 0, 0, 0}, connectPayload[:8])
 	token, _, err := connection.ReadString(connectPayload, 8)
 	require.NoError(t, err)
 	assert.Equal(t, "token-1", token)
@@ -641,7 +644,10 @@ func TestShouldRefreshTokenAndRestoreNoticeSubscriptionGivenConnectionLossWhenRe
 
 	writtenFrames := secondTransport.WrittenFrames()
 	require.GreaterOrEqual(t, len(writtenFrames), 2)
-	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
+	connectFrame, err := protocol.DecodeMessage(writtenFrames[0])
+	require.NoError(t, err)
+	connectPayload, _, err := protocol.DecodeExtensions(connectFrame)
+	connectType := connectFrame.MessageType
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeConnect, connectType)
 	token, _, err := connection.ReadString(connectPayload, 8)
@@ -855,7 +861,10 @@ func TestShouldSendOnlyConnectFrameGivenAuthenticatedTokenWhenConnectCalled(t *t
 
 	writtenFrames := firstTransport.WrittenFrames()
 	require.Len(t, writtenFrames, 1)
-	connectType, connectPayload, err := protocol.DecodeFrame(writtenFrames[0])
+	connectFrame, err := protocol.DecodeMessage(writtenFrames[0])
+	require.NoError(t, err)
+	connectPayload, _, err := protocol.DecodeExtensions(connectFrame)
+	connectType := connectFrame.MessageType
 	require.NoError(t, err)
 	assert.Equal(t, protocol.MessageTypeConnect, connectType)
 	token, _, err := connection.ReadString(connectPayload, 8)
@@ -928,7 +937,7 @@ func TestShouldLogClientLifecycleGivenReconnectLoggerWhenConnectionRestored(t *t
 	assertLogEntry(t, entries, slog.LevelInfo, "connect started")
 	assertLogEntry(t, entries, slog.LevelInfo, "connect success")
 	assertLogEntry(t, entries, slog.LevelInfo, "connection authenticating")
-	assertLogEntry(t, entries, slog.LevelInfo, "wire-2 connection negotiated")
+	assertLogEntry(t, entries, slog.LevelInfo, "wire-3 connection negotiated")
 	assertLogEntry(t, entries, slog.LevelWarn, "reconnect attempt")
 	assertLogEntry(t, entries, slog.LevelInfo, "reconnect success")
 	assertLogEntry(t, entries, slog.LevelInfo, "client close")
@@ -995,7 +1004,7 @@ func (s *scriptedTransport) Write(ctx context.Context, frame []byte) error {
 	s.written = append(s.written, append([]byte(nil), frame...))
 	messageType, _, err := protocol.DecodeFrame(frame)
 	if err == nil && messageType == protocol.MessageTypeConnect && s.helloOnConnect {
-		s.readCh <- protocol.EncodeFrame(protocol.MessageTypeServerHello, wire2HelloPayload())
+		s.readCh <- testkit.HelloFrame(wire3HelloPayload())
 	}
 	return nil
 }
@@ -1102,9 +1111,9 @@ func assertLogEntry(t *testing.T, entries []logRecord, level slog.Level, message
 	t.Fatalf("expected log entry level=%s message=%q, got %#v", level, message, entries)
 }
 
-func wire2HelloPayload() []byte {
+func wire3HelloPayload() []byte {
 	payload := make([]byte, 22)
-	binary.BigEndian.PutUint16(payload, 2)
+	binary.BigEndian.PutUint16(payload, 3)
 	binary.BigEndian.PutUint32(payload[6:], 1<<20)
 	binary.BigEndian.PutUint32(payload[10:], 64)
 	binary.BigEndian.PutUint64(payload[14:], 1)

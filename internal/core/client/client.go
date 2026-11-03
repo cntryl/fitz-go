@@ -641,6 +641,14 @@ func (c *Client) ServerCapabilities() (uint16, uint32) {
 }
 
 // ServerLimits reports the current negotiated frame and in-flight limits.
+func (c *Client) CapabilityIDs() []uint32 {
+	if conn := c.currentConnection(); conn != nil {
+		return conn.CapabilityIDs()
+	}
+	return nil
+}
+
+// ServerLimits reports the current negotiated frame and in-flight limits.
 func (c *Client) ServerLimits() (uint32, uint32) {
 	if conn := c.currentConnection(); conn != nil {
 		return conn.ServerLimits()
@@ -725,7 +733,7 @@ func (c *Client) dialConnection(ctx context.Context, transportType TransportType
 	connCfg := connection.Config{
 		Token:                      token,
 		ServiceName:                c.config.ServiceName,
-		ClientBuild:                "fitz-go/0.3.0",
+		ClientBuild:                "fitz-go/0.4.0",
 		OnGoAway:                   c.config.OnGoAway,
 		MaxMessageBytes:            c.config.MaxFrameSize,
 		AuthSettleDelay:            c.config.AuthSettleDelay,
