@@ -35,6 +35,30 @@ func TestShouldSendAndReceiveMessageGivenValidQueueWhenBasicWorkflow(t *testing.
 	})
 }
 
+func TestShouldRelinquishTTLMessageImmediatelyThroughNack(t *testing.T) {
+	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
+		// Arrange
+		f := fixture.NewTestFixture(t, transport)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		f.ConnectOrFail(ctx)
+		route := f.UniqueRoute("queue")
+		_, err := f.Client().Queue().EnqueueWithOptions(ctx, route, []byte("wire3"), fitz.WithQueueEnqueueTTLHours(1))
+		require.NoError(t, err)
+		first, err := f.Client().Queue().Reserve(ctx, route, 30, 1)
+		require.NoError(t, err)
+		require.Len(t, first, 1)
+		// Act
+		require.NoError(t, first[0].Nack(ctx, 0))
+		second, err := f.Client().Queue().Reserve(ctx, route, 30, 1)
+		// Assert
+		require.NoError(t, err)
+		require.Len(t, second, 1)
+		require.Equal(t, []byte("wire3"), second[0].Body)
+		require.NoError(t, second[0].Complete(ctx))
+	})
+}
+
 func TestShouldDelayVisibilityGivenDelayedEnqueueWhenReserved(t *testing.T) {
 	fixture.RunWithBothTransports(t, func(t *testing.T, transport fixture.TransportType) {
 		f := fixture.NewTestFixture(t, transport)
@@ -194,7 +218,7 @@ func TestShouldCorrelateSameTypeReservesGivenOutOfOrderBrokerResponses(t *testin
 		require.NoError(t, f.Connect(ctx))
 		require.Eventually(t, f.Client().CorrelationEnabled, time.Second, 10*time.Millisecond)
 		version, capabilities := f.Client().ServerCapabilities()
-		require.Equal(t, uint16(2), version)
+		require.Equal(t, uint16(3), version)
 		require.Zero(t, capabilities)
 		parkedRoute := f.UniqueRoute("queue")
 		readyRoute := f.UniqueRoute("queue")

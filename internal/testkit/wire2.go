@@ -22,7 +22,7 @@ func (m *MockTransport) signal() {
 // HelloPayload advertises the Wire 2 base contract without optional capability bits.
 func HelloPayload() []byte {
 	p := make([]byte, 22)
-	binary.BigEndian.PutUint16(p, 2)
+	binary.BigEndian.PutUint16(p, 3)
 	binary.BigEndian.PutUint32(p[6:], 1<<20)
 	binary.BigEndian.PutUint32(p[10:], 64)
 	binary.BigEndian.PutUint64(p[14:], 1)
@@ -75,4 +75,15 @@ func WriteErrorCode(buf *bytes.Buffer, code uint32) {
 	} else {
 		buf.WriteByte(0)
 	}
+}
+
+// HelloFrame encodes a Wire 3 broker handshake for mocks.
+func HelloFrame(core []byte) []byte {
+	payload, err := protocol.EncodeExtensions(core, []protocol.Extension{{ID: 1, Value: protocol.ClientCapabilityList()}})
+	if err != nil {
+		panic(err)
+	}
+	frame := protocol.EncodeFrameOwnedWithHeader(2, protocol.FlagExtensionsPresent, 0, payload)
+	defer frame.Release()
+	return append([]byte(nil), frame.Bytes()...)
 }

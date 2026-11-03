@@ -32,6 +32,7 @@ const (
 	MessageTypeQueueSubscribe   uint16 = 207
 	MessageTypeQueueUnsubscribe uint16 = 208
 	MessageTypeQueueNotify      uint16 = 209 // Server -> Client only
+	MessageTypeQueueNack        uint16 = 210
 
 	// RPC Domain (300-399)
 	MessageTypeRpcSubscribeWorker   uint16 = 300

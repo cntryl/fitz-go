@@ -245,10 +245,11 @@ type Multiplexer struct {
 	responsesDropped atomic.Uint64
 	logger           *slog.Logger
 
-	closed            atomic.Bool
-	protocolVersion   atomic.Uint32
-	capabilities      atomic.Uint32
-	nextCorrelationID atomic.Uint64
+	closed              atomic.Bool
+	protocolVersion     atomic.Uint32
+	capabilities        atomic.Uint32
+	activeCapabilityIDs atomic.Uint32
+	nextCorrelationID   atomic.Uint64
 }
 
 // NewMultiplexer creates a new multiplexer.
@@ -743,6 +744,7 @@ func (m *Multiplexer) Close() error {
 	m.pending = make(map[uint16]*requestQueue)
 	m.correlated = make(map[uint64]pendingRequest)
 	m.capabilities.Store(0)
+	m.activeCapabilityIDs.Store(0)
 	m.protocolVersion.Store(0)
 
 	return nil

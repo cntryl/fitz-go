@@ -41,7 +41,7 @@ func (s *transactionScriptTransport) Write(ctx context.Context, frame []byte) er
 	s.mu.Unlock()
 	kind, _, err := protocol.DecodeFrame(frame)
 	if err == nil && kind == 1 {
-		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+		s.readCh <- testkit.HelloFrame(testkit.HelloPayload())
 	}
 	return nil
 }

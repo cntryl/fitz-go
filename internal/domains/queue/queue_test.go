@@ -45,7 +45,7 @@ func (s *scriptedRestoreTransport) Write(ctx context.Context, frame []byte) erro
 	s.mu.Unlock()
 	kind, _, err := protocol.DecodeFrame(frame)
 	if err == nil && kind == protocol.MessageTypeConnect {
-		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+		s.readCh <- testkit.HelloFrame(testkit.HelloPayload())
 	}
 	return nil
 }

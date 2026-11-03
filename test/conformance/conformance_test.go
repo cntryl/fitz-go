@@ -1279,7 +1279,7 @@ func TestConformanceSuite(t *testing.T) {
 			f := connectFixture(t)
 			version, capabilities := f.Client().ServerCapabilities()
 			maxMessageBytes, maxInFlight := f.Client().ServerLimits()
-			if version != 2 || capabilities != 0 || maxMessageBytes == 0 || maxInFlight == 0 {
+			if version != 3 || capabilities != 0 || maxMessageBytes == 0 || maxInFlight == 0 {
 				return VerdictFail, nil, fmt.Errorf(
 					"unexpected HELLO state: version=%d caps=%d max_message_bytes=%d max_in_flight=%d",
 					version, capabilities, maxMessageBytes, maxInFlight,

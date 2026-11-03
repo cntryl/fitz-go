@@ -116,7 +116,7 @@ func (s *scriptedRPCRestoreTransport) Write(ctx context.Context, frame []byte) e
 	s.mu.Unlock()
 	kind, _, err := protocol.DecodeFrame(frame)
 	if err == nil && kind == protocol.MessageTypeConnect {
-		s.readCh <- protocol.EncodeFrame(2, testkit.HelloPayload())
+		s.readCh <- testkit.HelloFrame(testkit.HelloPayload())
 	}
 	return nil
 }
@@ -195,7 +195,7 @@ func newStartedRPCConnectionWithConfig(t *testing.T, capabilities uint32, config
 	transport := testkit.NewWire2MockTransport()
 	payload := testkit.HelloPayload()
 	binary.BigEndian.PutUint32(payload[2:], capabilities)
-	transport.SetReadFrames([][]byte{protocol.EncodeFrame(protocol.MessageTypeServerHello, payload)})
+	transport.SetReadFrames([][]byte{testkit.HelloFrame(payload)})
 	conn := connection.New(transport, config)
 	require.NoError(t, conn.Start(context.Background()))
 	require.Eventually(t, func() bool {
